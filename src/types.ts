@@ -26,6 +26,13 @@ export interface Shelf extends Dimensions {
 }
 
 /**
+ * Configuración serializable del almacén.
+ */
+export interface WarehouseConfig {
+  shelves: Shelf[];
+}
+
+/**
  * Definición de un producto almacenable.
  */
 export interface Item extends Dimensions {

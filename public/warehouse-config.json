@@ -1,0 +1,52 @@
+{
+  "shelves": [
+    {
+      "id": "S01",
+      "label": "Recepcion",
+      "width": 2,
+      "height": 2,
+      "depth": 0.8,
+      "position": { "x": -4.5, "y": 1, "z": -2.2 }
+    },
+    {
+      "id": "S02",
+      "label": "Electronica",
+      "width": 2.4,
+      "height": 2.2,
+      "depth": 0.8,
+      "position": { "x": -1.5, "y": 1.1, "z": -2.2 }
+    },
+    {
+      "id": "S03",
+      "label": "Fragiles",
+      "width": 1.8,
+      "height": 2,
+      "depth": 0.7,
+      "position": { "x": 1.5, "y": 1, "z": -2.2 }
+    },
+    {
+      "id": "S04",
+      "label": "Picking Rapido",
+      "width": 2.6,
+      "height": 2.1,
+      "depth": 0.9,
+      "position": { "x": 4.8, "y": 1.05, "z": -2.2 }
+    },
+    {
+      "id": "S05",
+      "label": "Pesados",
+      "width": 2.2,
+      "height": 2.4,
+      "depth": 1,
+      "position": { "x": -3, "y": 1.2, "z": 2.2 }
+    },
+    {
+      "id": "S06",
+      "label": "Despacho",
+      "width": 2,
+      "height": 2,
+      "depth": 0.8,
+      "position": { "x": 0.6, "y": 1, "z": 2.2 }
+    }
+  ]
+}
