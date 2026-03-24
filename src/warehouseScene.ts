@@ -26,6 +26,14 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
           Agrega productos con <code>canPlace()</code> y luego ubicalos por SKU con una
           busqueda que enfoca la camara y resalta el producto correcto.
         </p>
+        <section class="nav-help">
+          <strong>Como moverse</strong>
+          <ul>
+            <li>Click izquierdo + arrastrar: rotar vista</li>
+            <li>Rueda del mouse: acercar o alejar</li>
+            <li>Click derecho + arrastrar: desplazarse lateralmente</li>
+          </ul>
+        </section>
         <form class="search-form" id="search-form">
           <label>
             <span>Buscar SKU</span>
@@ -243,9 +251,10 @@ function addShelves(
   const shelfMeshes = new Map<string, THREE.Mesh>();
 
   shelves.forEach((shelf, index) => {
+    const shelfColor = palette[index % palette.length];
     const geometry = new THREE.BoxGeometry(shelf.width, shelf.height, shelf.depth);
     const material = new THREE.MeshStandardMaterial({
-      color: palette[index % palette.length],
+      color: shelfColor,
       roughness: 0.72,
       metalness: 0.08
     });
@@ -256,11 +265,19 @@ function addShelves(
     mesh.receiveShadow = true;
     mesh.userData = { shelfId: shelf.id, ...shelf };
     scene.add(mesh);
+    scene.add(createShelfLabelSprite(`${shelf.id} · ${shelf.label}`, shelf, shelfColor));
     shelfMeshes.set(shelf.id, mesh);
 
     const label = document.createElement("li");
     label.id = `legend-${shelf.id}`;
-    label.innerHTML = `<strong>${shelf.id}</strong><span>${shelf.label}</span><small>0 productos</small>`;
+    label.innerHTML = `
+      <div class="legend-head">
+        <span class="legend-swatch" style="background:${shelfColor}"></span>
+        <strong>${shelf.id}</strong>
+      </div>
+      <span>${shelf.label}</span>
+      <small>0 productos</small>
+    `;
     legend.append(label);
 
     const option = document.createElement("option");
@@ -561,6 +578,45 @@ function highlightProduct(runtime: WarehouseRuntime, sku: string): boolean {
   return true;
 }
 
+function createShelfLabelSprite(text: string, shelf: Shelf, color: string): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 128;
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("No se pudo crear el contexto 2D para la etiqueta del estante.");
+  }
+
+  context.fillStyle = "rgba(34, 28, 20, 0.78)";
+  context.strokeStyle = color;
+  context.lineWidth = 8;
+  roundRect(context, 8, 8, 496, 112, 22);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = "#fff8ec";
+  context.font = "700 34px Segoe UI";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false
+    })
+  );
+  sprite.position.set(shelf.position.x, shelf.position.y + shelf.height / 2 + 0.7, shelf.position.z);
+  sprite.scale.set(2.6, 0.65, 1);
+
+  return sprite;
+}
+
 function skuToColor(sku: string): string {
   let hash = 0;
   for (let index = 0; index < sku.length; index += 1) {
@@ -618,4 +674,25 @@ function clampInputValue(currentValue: string, maxValue: number): string {
 
 function formatMetric(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+function roundRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(x + width - radius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + radius);
+  context.lineTo(x + width, y + height - radius);
+  context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  context.lineTo(x + radius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
 }
