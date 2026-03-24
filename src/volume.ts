@@ -1,4 +1,4 @@
-import type { Dimensions } from "./types";
+import type { Dimensions } from "./types.js";
 
 /**
  * Calcula el volumen de una entidad rectangular 3D.
