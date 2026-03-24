@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "demo:f2": "tsx scripts/demoPhase2.ts",
     "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.9.3",
+    "tsx": "^4.20.6",
     "vitest": "^3.2.4"
   }
 }
