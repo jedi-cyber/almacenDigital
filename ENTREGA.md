@@ -32,6 +32,3 @@ Secuencia recomendada para el video:
 5. Mostrar el highlight del producto.
 6. Buscar un SKU inexistente y mostrar el mensaje de error.
 
-## Notas
-- Si el video se entrega por Google Drive o YouTube no listado, asegúrate de que tenga permisos de visualizacion.
-- Si existen ramas separadas por fase, indicar en la entrega cuál contiene la demo visual de F3, F4 y F5.

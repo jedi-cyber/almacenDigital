@@ -97,7 +97,7 @@ Esto prioriza simplicidad y claridad sobre optimización extrema.
 
 ## Configuración del almacén
 
-Los estantes no están hardcodeados en la escena. Se cargan desde [warehouse-config.json](/c:/xampp/htdocs/almacenDigital/public/warehouse-config.json#L1), donde cada estante define:
+Los estantes no están hardcodeados en la escena. Se cargan desde [warehouse-config.json](warehouse-config.json#L1), donde cada estante define:
 
 - `id`
 - `label`
@@ -116,4 +116,4 @@ Los estantes no están hardcodeados en la escena. Se cargan desde [warehouse-con
 
 ## Entrega
 
-La guía breve de evidencias está en [ENTREGA.md](/c:/xampp/htdocs/almacenDigital/ENTREGA.md#L1).
+La guía breve de evidencias está en [ENTREGA.md](ENTREGA.md#L1).

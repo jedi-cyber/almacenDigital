@@ -27,7 +27,8 @@ code {
 .app-shell {
   display: grid;
   grid-template-columns: minmax(280px, 340px) 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .hud {
@@ -35,6 +36,8 @@ code {
   background: rgba(255, 249, 239, 0.8);
   backdrop-filter: blur(10px);
   border-right: 1px solid rgba(88, 59, 25, 0.12);
+  overflow-y: auto;
+  height: 100vh;
 }
 
 .eyebrow {
@@ -86,6 +89,55 @@ code {
   margin-top: 6px;
 }
 
+.click-info {
+  display: grid;
+  gap: 4px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(70, 100, 111, 0.08);
+  border: 1px solid rgba(70, 100, 111, 0.22);
+}
+
+.click-info strong {
+  font-size: 0.95rem;
+}
+
+.click-info span {
+  font-size: 0.82rem;
+  color: #4a5f6a;
+}
+
+.shelf-add {
+  margin-top: 18px;
+}
+
+.shelf-add summary {
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #4e3d2a;
+  padding: 8px 0;
+  user-select: none;
+  list-style: none;
+}
+
+.shelf-add summary::-webkit-details-marker {
+  display: none;
+}
+
+.shelf-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.field-row-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .search-form,
 .product-form {
   display: grid;
@@ -93,10 +145,55 @@ code {
   margin-top: 24px;
 }
 
+.search-form {
+  margin-top: 18px;
+}
+
 .search-form label,
 .product-form label {
   display: grid;
   gap: 8px;
+}
+
+.search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  gap: 10px;
+}
+
+.search-result {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(92, 122, 71, 0.08);
+  border: 1px solid rgba(92, 122, 71, 0.22);
+}
+
+.search-result-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.search-result-meta strong {
+  font-size: 0.95rem;
+}
+
+.search-result-meta span {
+  font-size: 0.82rem;
+  color: #6a563f;
+}
+
+.btn-danger {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  background: linear-gradient(135deg, #b94040 0%, #8c2a2a 100%);
+  color: #fff5f5;
 }
 
 .shelf-summary {
@@ -129,7 +226,8 @@ code {
 }
 
 .search-form span,
-.product-form span {
+.product-form span,
+.shelf-form span {
   font-size: 0.85rem;
   font-weight: 700;
   color: #4e3d2a;
@@ -145,7 +243,9 @@ code {
 .search-form button,
 .product-form input,
 .product-form select,
-.product-form button {
+.product-form button,
+.shelf-form input,
+.shelf-form button {
   width: 100%;
   border: 1px solid rgba(82, 60, 37, 0.12);
   border-radius: 12px;
@@ -155,18 +255,32 @@ code {
 
 .search-form input,
 .product-form input,
-.product-form select {
+.product-form select,
+.shelf-form input {
   background: rgba(255, 255, 255, 0.75);
   color: #2f2418;
 }
 
 .search-form button,
-.product-form button {
+.product-form button,
+.shelf-form button {
   border: 0;
   background: linear-gradient(135deg, #5c7a47 0%, #3f5b32 100%);
   color: #f9f5ea;
   font-weight: 700;
   cursor: pointer;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.icon-button svg {
+  width: 22px;
+  height: 22px;
 }
 
 .status-message {
@@ -231,7 +345,8 @@ code {
 
 .viewport {
   position: relative;
-  min-height: 60vh;
+  height: 100vh;
+  overflow: hidden;
   padding: 18px;
 }
 

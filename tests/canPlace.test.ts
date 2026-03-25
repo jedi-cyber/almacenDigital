@@ -160,4 +160,18 @@ describe("canPlace", () => {
 
     expect(placement).toBeNull();
   });
+
+  it("coloca un item rotado cuando la orientacion original no cabe", () => {
+    const existingItems = [createPlacedItem("A-024", { width: 2, height: 4, depth: 4 }, { x: 0, y: 0, z: 0 })];
+    const newItem = createItem("A-025", { width: 4, height: 2, depth: 4 });
+
+    const placement = canPlace(shelf, existingItems, newItem);
+
+    expect(placement).not.toBeNull();
+    // Probar que el item se roto para caber
+    expect(placement?.item.width).toBe(2);
+    expect(placement?.item.height).toBe(4);
+    expect(placement?.item.depth).toBe(4);
+    expect(placement?.localPosition).toEqual({ x: 2, y: 0, z: 0 });
+  });
 });
