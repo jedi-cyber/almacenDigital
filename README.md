@@ -8,10 +8,12 @@ Este repositorio cubre el Proyecto 1: `Motor Volumétrico y Asignación Espacial
 
 Funciones principales:
 - Calcula volumen total, ocupado y libre de un estante.
-- Determina si un nuevo producto puede colocarse en un estante usando colisiones AABB.
+- Determina si un nuevo producto puede colocarse en un estante usando colisiones AABB con soporte para rotación de ítems en 6 orientaciones.
 - Renderiza estantes 3D desde un archivo JSON.
 - Permite agregar productos en la escena sin superposición.
 - Permite buscar un producto por SKU, enfocar la cámara y resaltarlo visualmente.
+- Permite mover estantes arrastrándolos por el plano del suelo.
+- Permite rotar estantes 90° sobre el eje vertical.
 
 ## Tecnologías
 
@@ -24,15 +26,15 @@ Funciones principales:
 
 ## Estructura principal
 
-- [src/types.ts](/c:/xampp/htdocs/almacenDigital/src/types.ts): tipos base del dominio.
-- [src/volume.ts](/c:/xampp/htdocs/almacenDigital/src/volume.ts): cálculo de volumen.
-- [src/shelfStatus.ts](/c:/xampp/htdocs/almacenDigital/src/shelfStatus.ts): estado volumétrico del estante.
-- [src/canPlace.ts](/c:/xampp/htdocs/almacenDigital/src/canPlace.ts): algoritmo de colocación con AABB.
-- [src/warehouseScene.ts](/c:/xampp/htdocs/almacenDigital/src/warehouseScene.ts): escena principal 3D y flujo visual.
-- [src/main.ts](/c:/xampp/htdocs/almacenDigital/src/main.ts): punto de entrada de la app.
-- [public/warehouse-config.json](/c:/xampp/htdocs/almacenDigital/public/warehouse-config.json): configuración de estantes.
-- [tests/shelfStatus.test.ts](/c:/xampp/htdocs/almacenDigital/tests/shelfStatus.test.ts): pruebas de fase 1.
-- [tests/canPlace.test.ts](/c:/xampp/htdocs/almacenDigital/tests/canPlace.test.ts): pruebas de fase 2.
+- [src/types.ts](src/types.ts): tipos base del dominio.
+- [src/volume.ts](src/volume.ts): cálculo de volumen.
+- [src/shelfStatus.ts](src/shelfStatus.ts): estado volumétrico del estante.
+- [src/canPlace.ts](src/canPlace.ts): algoritmo de colocación con AABB.
+- [src/warehouseScene.ts](src/warehouseScene.ts): escena principal 3D y flujo visual.
+- [src/main.ts](src/main.ts): punto de entrada de la app.
+- [public/warehouse-config.json](public/warehouse-config.json): configuración de estantes.
+- [tests/shelfStatus.test.ts](tests/shelfStatus.test.ts): pruebas de fase 1.
+- [tests/canPlace.test.ts](tests/canPlace.test.ts): pruebas de fase 2.
 
 ## Requisitos
 
@@ -75,14 +77,32 @@ npm test
 
 1. Ejecuta `npm run dev`.
 2. Abre `http://localhost:5173/`.
-3. Navega la escena con el mouse:
-   - click izquierdo + arrastrar: rotar
-   - rueda: acercar o alejar
-   - click derecho + arrastrar: desplazamiento lateral
-4. Selecciona un estante.
-5. Ingresa `SKU`, `ancho`, `alto` y `profundidad`.
-6. Agrega el producto.
-7. Usa el buscador por SKU para enfocar y resaltar un producto existente.
+
+### Navegación de la cámara
+
+| Acción | Resultado |
+|---|---|
+| Click izquierdo + arrastrar | Rotar la vista |
+| Rueda del mouse | Acercar o alejar |
+| Click derecho + arrastrar | Desplazamiento lateral |
+
+### Gestión de estantes
+
+| Acción | Resultado |
+|---|---|
+| Click sobre un estante | Selecciona el estante (brillo amarillo) |
+| Click en espacio vacío | Deselecciona el estante |
+| Click + arrastrar sobre estante **seleccionado** | Mueve el estante por el suelo |
+| Tecla `R` con estante seleccionado | Rota el estante 90° (repetible) |
+
+> Mientras no hay estante seleccionado, arrastrar con el mouse rota la cámara normalmente.
+
+### Agregar y buscar productos
+
+3. Selecciona un estante en el panel izquierdo.
+4. Ingresa `SKU`, `ancho`, `alto` y `profundidad`.
+5. Haz clic en **Agregar producto**.
+6. Usa el buscador por SKU para enfocar la cámara y resaltar el producto en cian.
 
 ## Lógica de empaquetado
 
@@ -97,7 +117,7 @@ Esto prioriza simplicidad y claridad sobre optimización extrema.
 
 ## Configuración del almacén
 
-Los estantes no están hardcodeados en la escena. Se cargan desde [warehouse-config.json](warehouse-config.json#L1), donde cada estante define:
+Los estantes no están hardcodeados en la escena. Se cargan desde [warehouse-config.json](public/warehouse-config.json), donde cada estante define:
 
 - `id`
 - `label`
@@ -105,14 +125,16 @@ Los estantes no están hardcodeados en la escena. Se cargan desde [warehouse-con
 - `height`
 - `depth`
 - `position`
+- `rotationY` *(opcional)* — rotación inicial sobre el eje Y en radianes
 
 ## Estado de las fases
 
 - `F1`: implementada y probada con Vitest.
-- `F2`: implementada con pruebas unitarias de colocación y colisión.
+- `F2`: implementada con pruebas unitarias de colocación y colisión. Soporta rotación del ítem en 6 orientaciones y productos que superan la altura del estante.
 - `F3`: implementada en escena Three.js con JSON, luces y controles.
 - `F4`: implementada con formulario y creación de mallas de productos.
 - `F5`: implementada con búsqueda por SKU, tween de cámara y highlight.
+- `F5+`: arrastre de estantes con mouse, rotación con tecla `R`, selección visual.
 
 ## Entrega
 

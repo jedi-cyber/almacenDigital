@@ -79,17 +79,30 @@ export function aabbIntersects(a: Box3D, b: Box3D): boolean {
 export function canPlace(
   shelf: Shelf,
   placed: PlacedItem[],
-  newItem: Item
+  newItem: Item,
+  options?: { preferredSection?: number }
 ): PlacedItem | null {
   const itemPermutations = getItemPermutations(newItem);
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const preferredSection = options?.preferredSection ? Math.min(Math.max(options.preferredSection, 1), sections) : null;
+  const sectionHeight = shelf.height / sections;
 
   for (const itemVariant of itemPermutations) {
     if (!fitsInsideShelf(shelf, itemVariant)) {
       continue;
     }
 
+    if (preferredSection !== null && itemVariant.height > sectionHeight) {
+      continue;
+    }
+
     for (let x = 0; x <= shelf.width - itemVariant.width; x += SEARCH_STEP) {
-      for (let y = 0; y <= shelf.height - itemVariant.height; y += SEARCH_STEP) {
+      const minY = preferredSection !== null ? (preferredSection - 1) * sectionHeight : 0;
+      const maxY = preferredSection !== null
+        ? preferredSection * sectionHeight - itemVariant.height
+        : shelf.height - itemVariant.height;
+
+      for (let y = minY; y <= maxY; y += SEARCH_STEP) {
         for (let z = 0; z <= shelf.depth - itemVariant.depth; z += SEARCH_STEP) {
           const candidatePosition = { x, y, z };
           const candidateBox = toBox(candidatePosition, itemVariant);

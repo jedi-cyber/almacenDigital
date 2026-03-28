@@ -1,275 +1,43 @@
-import * as THREE from "three";
+﻿import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
+import type { HudRefs } from "./ui-builder.js";
+import { buildHtml } from "./ui-builder.js";
 import { calcShelfStatus } from "./shelfStatus.js";
-import { buildShelfMesh, focusOnShelf, pickMesh, SHELF_PALETTE } from "./scene.js";
+import {
+  addShelfBoard,
+  collectBoardOffsets,
+  flashShelfMesh,
+  focusOnProductFromAisle,
+  pickMesh,
+  refreshShelfSections,
+  removeLastShelfBoard,
+  SHELF_PALETTE,
+  updateShelfSectionPreview
+} from "./three-helpers.js";
 import type { Item, Shelf, WarehouseConfig } from "./types.js";
 import {
-  type WarehouseRuntime,
-  clearHighlight,
-  highlightProduct,
-  placeItem,
-  removeItem
-} from "./warehouse.js";
+  getDeleteSuccessMessage,
+  getDuplicateSkuMessage,
+  getMoveReadyMessage,
+  getNoSpaceMessage,
+  getPlacementSuccessMessage,
+  getProductName,
+  getSearchNotFoundMessage,
+  getSearchShelfMissingMessage,
+  getSearchSuccessMessage,
+  getShelfSectionUpdatedMessage,
+  getTransferNoSpaceMessage,
+  getTransferSuccessMessage,
+  UI_COPY
+} from "./ui-copy.js";
+import { populateShelves, setStatus, updateLegendCount } from "./ui-handlers.js";
+import { type WarehouseRuntime, clearHighlight, highlightProduct, placeItem, removeItem, transferItem, updateItemDimensions } from "./warehouse.js";
 
-export interface HudRefs {
-  canvas: HTMLCanvasElement;
-  legend: HTMLUListElement;
-  searchForm: HTMLFormElement;
-  productForm: HTMLFormElement;
-  shelfSelect: HTMLSelectElement;
-  statusMessage: HTMLParagraphElement;
-  shelfDimensions: HTMLParagraphElement;
-  shelfTotal: HTMLSpanElement;
-  shelfOccupied: HTMLSpanElement;
-  shelfFree: HTMLSpanElement;
-  searchResult: HTMLDivElement;
-  searchResultSku: HTMLElement;
-  searchResultShelf: HTMLElement;
-  deleteProductBtn: HTMLButtonElement;
-  clickInfo: HTMLDivElement;
-  clickInfoSku: HTMLElement;
-  clickInfoShelf: HTMLElement;
-  clickInfoDims: HTMLElement;
-  shelfForm: HTMLFormElement;
-}
+export { buildHtml, populateShelves, setStatus, updateLegendCount };
+export type { HudRefs };
 
-const HUD_TEMPLATE = `
-  <section class="app-shell">
-    <aside class="hud">
-      <span class="eyebrow">Fase 5</span>
-      <h1>Busqueda y Enfoque de Productos</h1>
-      <p>
-        Agrega productos con <code>canPlace()</code> y luego ubicalos por SKU con una
-        busqueda que enfoca la camara y resalta el producto correcto.
-      </p>
-      <section class="nav-help">
-        <strong>Como moverse</strong>
-        <ul>
-          <li>Click izquierdo + arrastrar: rotar vista</li>
-          <li>Rueda del mouse: acercar o alejar</li>
-          <li>Click derecho + arrastrar: desplazarse lateralmente</li>
-        </ul>
-      </section>
-      <div class="click-info" id="click-info" hidden>
-        <strong id="click-info-sku"></strong>
-        <span id="click-info-shelf"></span>
-        <span id="click-info-dims"></span>
-      </div>
-      <form class="search-form" id="search-form">
-        <label class="search-label">
-          <span>Buscar SKU</span>
-          <div class="search-row">
-            <input name="searchSku" type="text" placeholder="SKU-001" />
-            <button type="submit" class="icon-button" aria-label="Buscar producto">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M10.5 4a6.5 6.5 0 1 0 4.03 11.6l4.43 4.43 1.41-1.41-4.43-4.43A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </button>
-          </div>
-        </label>
-        <div class="search-result" id="search-result" hidden>
-          <div class="search-result-meta">
-            <strong id="search-result-sku"></strong>
-            <span id="search-result-shelf"></span>
-          </div>
-          <button type="button" class="btn-danger" id="delete-product-btn">Eliminar producto</button>
-        </div>
-      </form>
-      <form class="product-form" id="product-form">
-        <label>
-          <span>Estante</span>
-          <select name="shelfId" id="shelfId"></select>
-        </label>
-        <section class="shelf-summary">
-          <strong>Referencia del estante</strong>
-          <p id="shelf-dimensions"></p>
-          <div class="shelf-metrics">
-            <span id="shelf-total"></span>
-            <span id="shelf-occupied"></span>
-            <span id="shelf-free"></span>
-          </div>
-        </section>
-        <label>
-          <span>SKU</span>
-          <input name="sku" type="text" placeholder="SKU-001" required />
-        </label>
-        <div class="field-row">
-          <label>
-            <span>Ancho</span>
-            <input name="width" type="number" min="0.1" step="0.1" value="0.8" required />
-          </label>
-          <label>
-            <span>Alto</span>
-            <input name="height" type="number" min="0.1" step="0.1" value="0.8" required />
-          </label>
-          <label>
-            <span>Prof.</span>
-            <input name="depth" type="number" min="0.1" step="0.1" value="0.8" required />
-          </label>
-        </div>
-        <button type="submit">Registrar producto</button>
-      </form>
-      <details class="shelf-add">
-        <summary>+ Agregar estante</summary>
-        <form class="shelf-form" id="shelf-form">
-          <label>
-            <span>ID</span>
-            <input name="shelfId" type="text" placeholder="S07" required />
-          </label>
-          <label>
-            <span>Nombre</span>
-            <input name="label" type="text" placeholder="Bodega Norte" required />
-          </label>
-          <div class="field-row">
-            <label>
-              <span>Ancho</span>
-              <input name="width" type="number" min="0.5" step="0.1" value="2" required />
-            </label>
-            <label>
-              <span>Alto</span>
-              <input name="height" type="number" min="0.5" step="0.1" value="2" required />
-            </label>
-            <label>
-              <span>Prof.</span>
-              <input name="depth" type="number" min="0.5" step="0.1" value="0.8" required />
-            </label>
-          </div>
-          <div class="field-row-2">
-            <label>
-              <span>Pos. X</span>
-              <input name="x" type="number" step="0.1" value="0" required />
-            </label>
-            <label>
-              <span>Pos. Z</span>
-              <input name="z" type="number" step="0.1" value="0" required />
-            </label>
-          </div>
-          <button type="submit">Agregar estante</button>
-        </form>
-      </details>
-      <p class="status-message" id="status-message" aria-live="polite">
-        Agrega un producto y luego buscalo por SKU para probar la fase 5.
-      </p>
-      <ul class="legend" id="legend"></ul>
-    </aside>
-    <div class="viewport">
-      <canvas class="scene-canvas"></canvas>
-    </div>
-  </section>
-`;
-
-/**
- * Inyecta el HTML del HUD en el contenedor y devuelve referencias tipadas a los elementos del DOM.
- */
-export function buildHtml(container: HTMLElement): HudRefs {
-  container.innerHTML = HUD_TEMPLATE;
-
-  const canvas = container.querySelector<HTMLCanvasElement>(".scene-canvas");
-  const legend = container.querySelector<HTMLUListElement>("#legend");
-  const searchForm = container.querySelector<HTMLFormElement>("#search-form");
-  const productForm = container.querySelector<HTMLFormElement>("#product-form");
-  const shelfSelect = container.querySelector<HTMLSelectElement>("#shelfId");
-  const statusMessage = container.querySelector<HTMLParagraphElement>("#status-message");
-  const shelfDimensions = container.querySelector<HTMLParagraphElement>("#shelf-dimensions");
-  const shelfTotal = container.querySelector<HTMLSpanElement>("#shelf-total");
-  const shelfOccupied = container.querySelector<HTMLSpanElement>("#shelf-occupied");
-  const shelfFree = container.querySelector<HTMLSpanElement>("#shelf-free");
-  const searchResult = container.querySelector<HTMLDivElement>("#search-result");
-  const searchResultSku = container.querySelector<HTMLElement>("#search-result-sku");
-  const searchResultShelf = container.querySelector<HTMLElement>("#search-result-shelf");
-  const deleteProductBtn = container.querySelector<HTMLButtonElement>("#delete-product-btn");
-  const clickInfo = container.querySelector<HTMLDivElement>("#click-info");
-  const clickInfoSku = container.querySelector<HTMLElement>("#click-info-sku");
-  const clickInfoShelf = container.querySelector<HTMLElement>("#click-info-shelf");
-  const clickInfoDims = container.querySelector<HTMLElement>("#click-info-dims");
-  const shelfForm = container.querySelector<HTMLFormElement>("#shelf-form");
-
-  if (
-    !canvas ||
-    !legend ||
-    !searchForm ||
-    !productForm ||
-    !shelfSelect ||
-    !statusMessage ||
-    !shelfDimensions ||
-    !shelfTotal ||
-    !shelfOccupied ||
-    !shelfFree ||
-    !searchResult ||
-    !searchResultSku ||
-    !searchResultShelf ||
-    !deleteProductBtn ||
-    !clickInfo ||
-    !clickInfoSku ||
-    !clickInfoShelf ||
-    !clickInfoDims ||
-    !shelfForm
-  ) {
-    throw new Error("No se pudieron crear los elementos base de la escena.");
-  }
-
-  return {
-    canvas,
-    legend,
-    searchForm,
-    productForm,
-    shelfSelect,
-    statusMessage,
-    shelfDimensions,
-    shelfTotal,
-    shelfOccupied,
-    shelfFree,
-    searchResult,
-    searchResultSku,
-    searchResultShelf,
-    deleteProductBtn,
-    clickInfo,
-    clickInfoSku,
-    clickInfoShelf,
-    clickInfoDims,
-    shelfForm
-  };
-}
-
-/**
- * Popula la leyenda visual y el selector de estantes con los datos de la configuración.
- */
-export function populateShelves(
-  legend: HTMLUListElement,
-  shelfSelect: HTMLSelectElement,
-  shelves: Shelf[]
-): void {
-  shelves.forEach((shelf, index) => {
-    const color = SHELF_PALETTE[index % SHELF_PALETTE.length];
-
-    const li = document.createElement("li");
-    li.id = `legend-${shelf.id}`;
-    li.innerHTML = `
-      <div class="legend-head">
-        <span class="legend-swatch" style="background:${color}"></span>
-        <strong>${shelf.id}</strong>
-      </div>
-      <span>${shelf.label}</span>
-      <small>0 productos</small>
-    `;
-    legend.append(li);
-
-    const option = document.createElement("option");
-    option.value = shelf.id;
-    option.textContent = `${shelf.id} | ${shelf.label}`;
-    shelfSelect.append(option);
-  });
-}
-
-/**
- * Conecta el formulario de registro de productos a la lógica de la aplicación.
- * Devuelve la función refreshShelfSummary para que el orquestador pueda invocarla externamente.
- */
-export function wireProductForm(params: {
+export interface ProductFormDeps {
   config: WarehouseConfig;
   form: HTMLFormElement;
   runtime: WarehouseRuntime;
@@ -277,113 +45,14 @@ export function wireProductForm(params: {
   shelfMeshes: Map<string, THREE.Mesh>;
   statusMessage: HTMLParagraphElement;
   shelfDimensions: HTMLParagraphElement;
+  selectedShelfDisplay: HTMLParagraphElement;
   shelfTotal: HTMLSpanElement;
   shelfOccupied: HTMLSpanElement;
   shelfFree: HTMLSpanElement;
-}): (shelfId: string) => void {
-  const {
-    config,
-    form,
-    runtime,
-    scene,
-    shelfMeshes,
-    statusMessage,
-    shelfDimensions,
-    shelfTotal,
-    shelfOccupied,
-    shelfFree
-  } = params;
-
-  const widthField = getNumberInput(form, "width");
-  const heightField = getNumberInput(form, "height");
-  const depthField = getNumberInput(form, "depth");
-  const shelfField = form.elements.namedItem("shelfId");
-
-  const refreshShelfSummary = (shelfId: string) => {
-    const shelf = config.shelves.find((s) => s.id === shelfId);
-    if (!shelf) return;
-
-    const status = calcShelfStatus(shelf, runtime.productsByShelf.get(shelfId) ?? []);
-
-    shelfDimensions.textContent =
-      `Ancho ${shelf.width} | Alto ${shelf.height} | Profundidad ${shelf.depth}`;
-    shelfTotal.textContent = `Volumen total: ${formatMetric(status.total)}`;
-    shelfOccupied.textContent = `Ocupado: ${formatMetric(status.occupied)}`;
-    shelfFree.textContent = `Libre: ${formatMetric(status.free)}`;
-
-    widthField.max = String(shelf.width);
-    heightField.max = String(shelf.height);
-    depthField.max = String(shelf.depth);
-
-    widthField.value = clampInputValue(widthField.value, shelf.width);
-    heightField.value = clampInputValue(heightField.value, shelf.height);
-    depthField.value = clampInputValue(depthField.value, shelf.depth);
-  };
-
-  refreshShelfSummary(config.shelves[0]?.id ?? "");
-
-  if (shelfField instanceof HTMLSelectElement) {
-    shelfField.addEventListener("change", () => refreshShelfSummary(shelfField.value));
-  }
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    const data = new FormData(form);
-    const shelfId = String(data.get("shelfId") ?? "");
-    const sku = String(data.get("sku") ?? "").trim();
-    const width = Number(data.get("width"));
-    const height = Number(data.get("height"));
-    const depth = Number(data.get("depth"));
-
-    const shelf = config.shelves.find((s) => s.id === shelfId);
-    const shelfMesh = shelfMeshes.get(shelfId);
-
-    if (!shelf || !shelfMesh) {
-      setStatus(statusMessage, "No se encontro el estante seleccionado.", true);
-      return;
-    }
-
-    if (!sku || width <= 0 || height <= 0 || depth <= 0) {
-      setStatus(statusMessage, "Ingresa un SKU y dimensiones validas mayores a cero.", true);
-      return;
-    }
-
-    const item: Item = { sku, name: `Producto ${sku}`, width, height, depth };
-    const placement = placeItem(runtime, scene, item, shelf, shelfMesh);
-
-    if (!placement) {
-      setStatus(
-        statusMessage,
-        `No hay espacio para ${sku} en ${shelf.id}. El algoritmo no encontro una posicion valida.`,
-        true
-      );
-      return;
-    }
-
-    const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
-    updateLegendCount(shelfId, count);
-    refreshShelfSummary(shelfId);
-    setStatus(
-      statusMessage,
-      `${sku} agregado en ${shelf.id} en local (${placement.localPosition.x}, ${placement.localPosition.y}, ${placement.localPosition.z}).`,
-      false
-    );
-
-    form.reset();
-    if (shelfField instanceof HTMLSelectElement) {
-      shelfField.value = shelfId;
-    }
-    refreshShelfSummary(shelfId);
-  });
-
-  return refreshShelfSummary;
+  onShelfUpdated?: () => void;
 }
 
-/**
- * Conecta el formulario de búsqueda a la lógica de foco de cámara y eliminación de productos.
- */
-export function wireSearchForm(params: {
+export interface SearchFormDeps {
   searchForm: HTMLFormElement;
   runtime: WarehouseRuntime;
   shelfMeshes: Map<string, THREE.Mesh>;
@@ -395,9 +64,297 @@ export function wireSearchForm(params: {
   searchResult: HTMLDivElement;
   searchResultSku: HTMLElement;
   searchResultShelf: HTMLElement;
+  moveProductBtn: HTMLButtonElement;
   deleteProductBtn: HTMLButtonElement;
+  transferProductBtn: HTMLButtonElement;
+  transferPanel: HTMLElement;
+  transferShelfSelect: HTMLSelectElement;
+  transferSectionSelect: HTMLSelectElement;
+  transferConfirmBtn: HTMLButtonElement;
+  transferCancelBtn: HTMLButtonElement;
+  productEditor: HTMLElement;
+  editorSkuDisplay: HTMLElement;
+  editorForm: HTMLFormElement;
+  editorName: HTMLInputElement;
+  editorWidth: HTMLInputElement;
+  editorHeight: HTMLInputElement;
+  editorDepth: HTMLInputElement;
+  onMoveRequested: (sku: string) => void;
   onProductRemoved: (shelfId: string) => void;
-}): void {
+}
+
+export interface SceneClickDeps {
+  canvas: HTMLCanvasElement;
+  camera: THREE.PerspectiveCamera;
+  runtime: WarehouseRuntime;
+  config: WarehouseConfig;
+  clickInfo: HTMLDivElement;
+  clickInfoSku: HTMLElement;
+  clickInfoShelf: HTMLElement;
+  clickInfoDims: HTMLElement;
+  isSuppressed?: () => boolean;
+  onProductSelected?: (sku: string) => void;
+  onSelectionCleared?: () => void;
+}
+
+
+export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary: (shelfId: string) => void; handleRemoveBoard: () => void } {
+  const {
+    config,
+    form,
+    runtime,
+    scene,
+    shelfMeshes,
+    statusMessage,
+    shelfDimensions,
+    selectedShelfDisplay,
+    shelfTotal,
+    shelfOccupied,
+    shelfFree,
+    onShelfUpdated
+  } = params;
+
+  const widthField = getNumberInput(form, "width");
+  const heightField = getNumberInput(form, "height");
+  const depthField = getNumberInput(form, "depth");
+  const shelfField = form.elements.namedItem("shelfId");
+  const sectionField = form.elements.namedItem("section");
+  const productShelfField = form.querySelector<HTMLSelectElement>("#product-shelf-select");
+  const sectionsField = getNumberInput(form, "shelfSections");
+  const updateShelfSectionsBtn = document.querySelector<HTMLButtonElement>("#update-shelf-sections-btn");
+  const addBoardBtn = document.querySelector<HTMLButtonElement>("#add-board-btn");
+  const dimensionHint = form.querySelector<HTMLDivElement>("#dimension-hint");
+
+  attachMaxClamp(widthField);
+  attachMaxClamp(heightField);
+  attachMaxClamp(depthField);
+
+  const refreshShelfSummary = (shelfId: string) => {
+    const shelf = config.shelves.find((s) => s.id === shelfId);
+    if (!shelf) return;
+    const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+    const sectionHeight = shelf.height / sections;
+    const shelfMesh = shelfMeshes.get(shelfId);
+    const shelfLabel = shelf.label ?? shelf.id;
+
+    const status = calcShelfStatus(shelf, runtime.productsByShelf.get(shelfId) ?? []);
+
+    shelfDimensions.textContent =
+      `Pisos ${sections} | Ancho ${shelf.width} | Alto ${shelf.height} | Profundidad ${shelf.depth}`;
+    selectedShelfDisplay.textContent = `${UI_COPY.productForm.selectedShelfLabel}: ${shelf.id} · ${shelfLabel}`;
+    shelfTotal.textContent = `Volumen total: ${formatMetric(status.total)}`;
+    shelfOccupied.textContent = `Ocupado: ${formatMetric(status.occupied)}`;
+    shelfFree.textContent = `Libre: ${formatMetric(status.free)}`;
+
+    widthField.max = String(shelf.width);
+    heightField.max = String(shelf.height);
+    depthField.max = String(shelf.depth);
+    sectionsField.value = String(sections);
+
+    widthField.placeholder = `Max ${formatInputValue(shelf.width)}`;
+    heightField.placeholder = `Max ${formatInputValue(sectionHeight)}`;
+    depthField.placeholder = `Max ${formatInputValue(shelf.depth)}`;
+
+    widthField.value = clampInputValue(widthField.value, shelf.width);
+    heightField.value = clampInputValue(heightField.value, sectionHeight);
+    depthField.value = clampInputValue(depthField.value, shelf.depth);
+
+    heightField.max = String(sectionHeight);
+
+    if (sectionField instanceof HTMLSelectElement) {
+      const previousValue = Number(sectionField.value || "1");
+      sectionField.replaceChildren();
+      for (let section = 1; section <= sections; section += 1) {
+        const option = document.createElement("option");
+        option.value = String(section);
+        option.textContent = `Piso ${section}`;
+        sectionField.append(option);
+      }
+      sectionField.value = String(Math.min(Math.max(previousValue, 1), sections));
+    }
+
+    if (productShelfField) {
+      if (productShelfField.options.length === 0) {
+        config.shelves.forEach((entry) => {
+          const option = document.createElement("option");
+          option.value = entry.id;
+          option.textContent = `${entry.id} · ${entry.label}`;
+          productShelfField.append(option);
+        });
+      }
+      productShelfField.value = shelf.id;
+    }
+
+    if (dimensionHint) {
+      const activeSection = sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1;
+      dimensionHint.textContent =
+        `Piso ${activeSection} seleccionado. Maximo para este nivel: ${formatInputValue(shelf.width)} m de ancho, ${formatInputValue(sectionHeight)} m de alto y ${formatInputValue(shelf.depth)} m de profundidad.`;
+    }
+
+    if (shelfMesh) {
+      updateShelfSectionPreview(
+        shelfMesh,
+        sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1
+      );
+    }
+  };
+
+  refreshShelfSummary(config.shelves[0]?.id ?? "");
+
+  const handleShelfChange = () => {
+    if (!(shelfField instanceof HTMLSelectElement)) return;
+    if (productShelfField) {
+      productShelfField.value = shelfField.value;
+    }
+    refreshShelfSummary(shelfField.value);
+  };
+
+  const handleProductShelfChange = () => {
+    if (!(shelfField instanceof HTMLSelectElement) || !productShelfField) return;
+    shelfField.value = productShelfField.value;
+    refreshShelfSummary(productShelfField.value);
+  };
+
+  const handleSectionChange = () => {
+    const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
+    refreshShelfSummary(shelfId);
+  };
+
+  const handleUpdateShelfSections = () => {
+    const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
+    const shelfMesh = shelfMeshes.get(shelfId);
+    if (!shelf || !shelfMesh) {
+      setStatus(statusMessage, UI_COPY.status.shelfNotFound, true);
+      return;
+    }
+
+    const nextSections = Math.max(1, Math.floor(Number(sectionsField.value)));
+    shelf.sections = nextSections;
+    const shelfIndex = config.shelves.findIndex((entry) => entry.id === shelfId);
+    const shelfColor = SHELF_PALETTE[(shelfIndex >= 0 ? shelfIndex : 0) % SHELF_PALETTE.length];
+
+    // Al fijar secciones manualmente, descartar posiciones personalizadas
+    shelf.boardOffsets = undefined;
+    refreshShelfSections(shelfMesh, shelf, shelfColor);
+    refreshShelfSummary(shelfId);
+    onShelfUpdated?.();
+    setStatus(statusMessage, getShelfSectionUpdatedMessage(shelf.id, nextSections), false);
+  };
+
+  const handleAddBoard = () => {
+    const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
+    const shelfMesh = shelfMeshes.get(shelfId);
+    if (!shelf || !shelfMesh) return;
+
+    const shelfIndex = config.shelves.findIndex((entry) => entry.id === shelfId);
+    const color = SHELF_PALETTE[(shelfIndex >= 0 ? shelfIndex : 0) % SHELF_PALETTE.length];
+
+    // Insertar en el centro del espacio libre más grande entre pisos existentes
+    const offsets = [0, ...(shelf.boardOffsets ?? Array.from(
+      { length: Math.max(0, (shelf.sections ?? 1) - 1) },
+      (_, i) => (i + 1) / (shelf.sections ?? 1)
+    )), 1].sort((a, b) => a - b);
+
+    let bestFraction = 0.5;
+    let bestGap = 0;
+    for (let i = 0; i < offsets.length - 1; i++) {
+      const gap = offsets[i + 1] - offsets[i];
+      if (gap > bestGap) { bestGap = gap; bestFraction = (offsets[i] + offsets[i + 1]) / 2; }
+    }
+
+    addShelfBoard(shelfMesh, shelf, color, bestFraction);
+    shelf.sections = (shelf.sections ?? 1) + 1;
+    shelf.boardOffsets = collectBoardOffsets(shelfMesh, shelf.height);
+    refreshShelfSummary(shelfId);
+    onShelfUpdated?.();
+  };
+
+  const handleRemoveBoard = () => {
+    const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
+    const shelfMesh = shelfMeshes.get(shelfId);
+    if (!shelf || !shelfMesh) return;
+
+    if (removeLastShelfBoard(shelfMesh)) {
+      shelf.sections = Math.max(1, (shelf.sections ?? 1) - 1);
+      shelf.boardOffsets = collectBoardOffsets(shelfMesh, shelf.height);
+      if (shelf.boardOffsets.length === 0) shelf.boardOffsets = undefined;
+      refreshShelfSummary(shelfId);
+      onShelfUpdated?.();
+    }
+  };
+
+  const handleProductFormSubmit = (event: SubmitEvent) => {
+    event.preventDefault();
+
+    const data = new FormData(form);
+    const shelfId = String(data.get("shelfId") ?? "");
+    const sku = String(data.get("sku") ?? "").trim();
+    const preferredSection = Number(data.get("section") ?? "1");
+    const width = Number(data.get("width"));
+    const height = Number(data.get("height"));
+    const depth = Number(data.get("depth"));
+
+    const shelf = config.shelves.find((s) => s.id === shelfId);
+    const shelfMesh = shelfMeshes.get(shelfId);
+
+    if (!shelf || !shelfMesh) {
+      setStatus(statusMessage, UI_COPY.status.shelfNotFound, true);
+      return;
+    }
+
+    if (!sku || width <= 0 || height <= 0 || depth <= 0) {
+      setStatus(statusMessage, UI_COPY.status.invalidProductForm, true);
+      return;
+    }
+
+    if (runtime.productMeshBySku.has(sku)) {
+      setStatus(statusMessage, getDuplicateSkuMessage(sku), true);
+      return;
+    }
+
+    const item: Item = { sku, name: getProductName(sku), width, height, depth };
+    const placement = placeItem(runtime, scene, item, shelf, shelfMesh, preferredSection);
+
+    if (!placement) {
+      setStatus(statusMessage, getNoSpaceMessage(sku, shelf.id, preferredSection), true);
+      return;
+    }
+
+    const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
+    updateLegendCount(shelfId, count);
+    refreshShelfSummary(shelfId);
+    flashShelfMesh(shelfMesh);
+    setStatus(statusMessage, getPlacementSuccessMessage(sku, shelf.id, placement.localPosition, preferredSection), false);
+
+    form.reset();
+    if (shelfField instanceof HTMLSelectElement) {
+      shelfField.value = shelfId;
+    }
+    refreshShelfSummary(shelfId);
+  };
+
+  if (shelfField instanceof HTMLSelectElement) {
+    shelfField.addEventListener("change", handleShelfChange);
+  }
+
+  productShelfField?.addEventListener("change", handleProductShelfChange);
+
+  if (sectionField instanceof HTMLSelectElement) {
+    sectionField.addEventListener("change", handleSectionChange);
+  }
+
+  updateShelfSectionsBtn?.addEventListener("click", handleUpdateShelfSections);
+  addBoardBtn?.addEventListener("click", handleAddBoard);
+
+  form.addEventListener("submit", handleProductFormSubmit);
+
+  return { refreshShelfSummary, handleRemoveBoard };
+}
+
+export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   const {
     searchForm,
     runtime,
@@ -410,33 +367,117 @@ export function wireSearchForm(params: {
     searchResult,
     searchResultSku,
     searchResultShelf,
+    moveProductBtn,
     deleteProductBtn,
+    transferProductBtn,
+    transferPanel,
+    transferShelfSelect,
+    transferSectionSelect,
+    transferConfirmBtn,
+    transferCancelBtn,
+    productEditor,
+    editorSkuDisplay,
+    editorForm,
+    editorName,
+    editorWidth,
+    editorHeight,
+    editorDepth,
+    onMoveRequested,
     onProductRemoved
   } = params;
 
+  const clearSearchBtn = searchForm.querySelector<HTMLButtonElement>("#clear-search-btn");
+
+  attachMaxClamp(editorWidth);
+  attachMaxClamp(editorHeight);
+  attachMaxClamp(editorDepth);
+
   let activeSku: string | null = null;
+  let confirmPending = false;
+  let confirmTimeout: number | null = null;
+  productEditor.hidden = true;
+
+  // ── Poblar el selector de estantes del panel de traslado ──────────────────
+  config.shelves.forEach((shelf) => {
+    const option = document.createElement("option");
+    option.value = shelf.id;
+    option.textContent = `${shelf.id} · ${shelf.label}`;
+    transferShelfSelect.append(option);
+  });
+
+  const populateTransferSections = (shelfId: string) => {
+    const shelf = config.shelves.find((s) => s.id === shelfId);
+    const sections = Math.max(1, Math.floor(shelf?.sections ?? 1));
+    transferSectionSelect.replaceChildren();
+    for (let i = 1; i <= sections; i++) {
+      const option = document.createElement("option");
+      option.value = String(i);
+      option.textContent = `Piso ${i}`;
+      transferSectionSelect.append(option);
+    }
+  };
+
+  populateTransferSections(config.shelves[0]?.id ?? "");
+
+  transferShelfSelect.addEventListener("change", () => {
+    populateTransferSections(transferShelfSelect.value);
+  });
+
+  const setIconButtonLabel = (button: HTMLButtonElement, label: string) => {
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    const hiddenLabel = button.querySelector(".visually-hidden");
+    if (hiddenLabel) hiddenLabel.textContent = label;
+  };
+
+  const applyEditorLimits = (shelf: Shelf, localPositionY: number) => {
+    const sectionHeight = getSectionHeightForPosition(shelf, localPositionY);
+
+    editorWidth.max = String(shelf.width);
+    editorHeight.max = String(sectionHeight);
+    editorDepth.max = String(shelf.depth);
+
+    editorWidth.placeholder = `Max ${formatInputValue(shelf.width)}`;
+    editorHeight.placeholder = `Max ${formatInputValue(sectionHeight)}`;
+    editorDepth.placeholder = `Max ${formatInputValue(shelf.depth)}`;
+
+    editorWidth.value = clampInputValue(editorWidth.value, shelf.width);
+    editorHeight.value = clampInputValue(editorHeight.value, sectionHeight);
+    editorDepth.value = clampInputValue(editorDepth.value, shelf.depth);
+  };
+
+  const productActions = moveProductBtn.closest<HTMLElement>("#product-actions");
+
+  const resetDeleteBtn = () => {
+    confirmPending = false;
+    if (confirmTimeout !== null) {
+      window.clearTimeout(confirmTimeout);
+      confirmTimeout = null;
+    }
+    setIconButtonLabel(deleteProductBtn, UI_COPY.buttons.deleteProduct);
+    deleteProductBtn.classList.remove("btn-danger--confirm");
+  };
+
+  const hideTransferPanel = () => {
+    transferPanel.hidden = true;
+  };
 
   const hideResult = () => {
     searchResult.hidden = true;
+    if (productActions) productActions.hidden = true;
+    productEditor.hidden = true;
+    hideTransferPanel();
     activeSku = null;
+    resetDeleteBtn();
+    if (clearSearchBtn) clearSearchBtn.hidden = true;
   };
 
-  searchForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    const sku = String(new FormData(searchForm).get("searchSku") ?? "").trim();
-
-    if (!sku) {
-      hideResult();
-      setStatus(statusMessage, "Ingresa un SKU para ejecutar la busqueda.", true);
-      return;
-    }
-
+  const selectProduct = (sku: string) => {
     const targetMesh = runtime.productMeshBySku.get(sku);
     if (!targetMesh) {
       clearHighlight(runtime);
       hideResult();
-      setStatus(statusMessage, `No existe un producto registrado con SKU ${sku}.`, true);
+      setStatus(statusMessage, getSearchNotFoundMessage(sku), true);
       return;
     }
 
@@ -445,29 +486,78 @@ export function wireSearchForm(params: {
     if (!shelfMesh) {
       clearHighlight(runtime);
       hideResult();
-      setStatus(statusMessage, `No se encontro el estante asociado al SKU ${sku}.`, true);
+      setStatus(statusMessage, getSearchShelfMissingMessage(sku), true);
       return;
     }
 
     const shelfLabel = config.shelves.find((s) => s.id === shelfId)?.label ?? shelfId;
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
     activeSku = sku;
     searchResultSku.textContent = sku;
     searchResultShelf.textContent = `${shelfId} · ${shelfLabel}`;
     searchResult.hidden = false;
+    if (productActions) productActions.hidden = false;
+    if (clearSearchBtn) clearSearchBtn.hidden = false;
 
-    focusOnShelf(shelfMesh, camera, controls);
+    const input = searchForm.elements.namedItem("searchSku");
+    if (input instanceof HTMLInputElement) input.value = sku;
+
+    // Poblar y mostrar el editor
+    const { name: productName, width, height, depth, localPosition } = targetMesh.userData as {
+      name: string;
+      width: number;
+      height: number;
+      depth: number;
+      localPosition?: { y: number };
+    };
+    editorSkuDisplay.textContent = `Nombre: ${sku}`;
+    editorName.value = productName ?? "";
+    editorWidth.value = String(width);
+    editorHeight.value = String(height);
+    editorDepth.value = String(depth);
+    if (shelf) {
+      applyEditorLimits(shelf, localPosition?.y ?? 0);
+    }
+    productEditor.hidden = false;
+
+    focusOnProductFromAisle(targetMesh, shelfMesh, camera, controls);
     highlightProduct(runtime, sku);
-    setStatus(
-      statusMessage,
-      `SKU ${sku} encontrado en ${shelfId}. Camara enfocada y producto resaltado.`,
-      false
-    );
-  });
+    setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId), false);
+  };
 
-  deleteProductBtn.addEventListener("click", () => {
+  const handleSearchSubmit = (event: SubmitEvent) => {
+    event.preventDefault();
+
+    const sku = String(new FormData(searchForm).get("searchSku") ?? "").trim();
+
+    if (!sku) {
+      hideResult();
+      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
+      return;
+    }
+
+    selectProduct(sku);
+  };
+
+  const handleMoveProductClick = () => {
+    if (!activeSku) return;
+    onMoveRequested(activeSku);
+    setStatus(statusMessage, getMoveReadyMessage(activeSku), false);
+  };
+
+  const handleDeleteProductClick = () => {
     if (!activeSku) return;
 
+    if (!confirmPending) {
+      confirmPending = true;
+      setIconButtonLabel(deleteProductBtn, UI_COPY.buttons.confirmDelete);
+      deleteProductBtn.classList.add("btn-danger--confirm");
+      confirmTimeout = window.setTimeout(resetDeleteBtn, 3000);
+      return;
+    }
+
     const sku = activeSku;
+    resetDeleteBtn();
     const removedShelfId = removeItem(runtime, scene, sku);
     hideResult();
 
@@ -475,37 +565,138 @@ export function wireSearchForm(params: {
       const remaining = runtime.productsByShelf.get(removedShelfId)?.length ?? 0;
       updateLegendCount(removedShelfId, remaining);
       onProductRemoved(removedShelfId);
-      setStatus(statusMessage, `Producto ${sku} eliminado del estante ${removedShelfId}.`, false);
+      setStatus(statusMessage, getDeleteSuccessMessage(sku, removedShelfId), false);
     }
 
     const input = searchForm.elements.namedItem("searchSku");
     if (input instanceof HTMLInputElement) input.value = "";
-  });
+  };
+
+  const handleTransferProductClick = () => {
+    if (!activeSku) return;
+    // Pre-seleccionar el estante actual del producto
+    const mesh = runtime.productMeshBySku.get(activeSku);
+    if (mesh) {
+      const currentShelfId = String(mesh.userData.shelfId);
+      transferShelfSelect.value = currentShelfId;
+      populateTransferSections(currentShelfId);
+    }
+    transferPanel.hidden = false;
+  };
+
+  const handleTransferConfirm = () => {
+    if (!activeSku) return;
+
+    const mesh = runtime.productMeshBySku.get(activeSku);
+    const fromShelfId = mesh ? String(mesh.userData.shelfId) : "";
+    const toShelfId = transferShelfSelect.value;
+    const toSection = Number(transferSectionSelect.value);
+
+    const result = transferItem(runtime, scene, config, shelfMeshes, activeSku, toShelfId, toSection);
+
+    if (!result) {
+      setStatus(statusMessage, getTransferNoSpaceMessage(activeSku, toShelfId, toSection), true);
+      return;
+    }
+
+    const sku = activeSku;
+    hideTransferPanel();
+    hideResult();
+
+    // Actualizar contadores de la leyenda
+    if (fromShelfId && fromShelfId !== toShelfId) {
+      updateLegendCount(fromShelfId, runtime.productsByShelf.get(fromShelfId)?.length ?? 0);
+      onProductRemoved(fromShelfId);
+    }
+    updateLegendCount(toShelfId, runtime.productsByShelf.get(toShelfId)?.length ?? 0);
+
+    // Enfocar el producto en su nueva posición
+    const newMesh = runtime.productMeshBySku.get(sku);
+    const newShelfMesh = shelfMeshes.get(toShelfId);
+    if (newMesh && newShelfMesh) {
+      focusOnProductFromAisle(newMesh, newShelfMesh, camera, controls);
+      highlightProduct(runtime, sku);
+    }
+
+    setStatus(statusMessage, getTransferSuccessMessage(sku, fromShelfId, toShelfId, toSection), false);
+
+    const input = searchForm.elements.namedItem("searchSku");
+    if (input instanceof HTMLInputElement) input.value = "";
+  };
+
+  const handleTransferCancel = () => {
+    hideTransferPanel();
+  };
+
+  const handleEditorSave = (event: SubmitEvent) => {
+    event.preventDefault();
+    if (!activeSku) return;
+
+    const name = editorName.value.trim();
+    const width = Number(editorWidth.value);
+    const height = Number(editorHeight.value);
+    const depth = Number(editorDepth.value);
+
+    if (width <= 0 || height <= 0 || depth <= 0) {
+      setStatus(statusMessage, UI_COPY.status.invalidProductForm, true);
+      return;
+    }
+
+    const mesh = runtime.productMeshBySku.get(activeSku);
+    const shelfId = mesh ? String(mesh.userData.shelfId) : "";
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
+    const shelfMesh = shelfMeshes.get(shelfId);
+    if (!shelf || !shelfMesh || !mesh) return;
+
+    const widthMax = Number(editorWidth.max);
+    const heightMax = Number(editorHeight.max);
+    const depthMax = Number(editorDepth.max);
+
+    if (width > widthMax || height > heightMax || depth > depthMax) {
+      applyEditorLimits(shelf, (mesh.userData.localPosition as { y?: number } | undefined)?.y ?? 0);
+      setStatus(statusMessage, UI_COPY.status.productTooLargeForShelf, true);
+      return;
+    }
+
+    const ok = updateItemDimensions(runtime, scene, activeSku, { name, width, height, depth }, shelfMesh);
+    if (ok) {
+      highlightProduct(runtime, activeSku);
+      setStatus(statusMessage, `Producto ${activeSku} actualizado correctamente.`, false);
+    }
+  };
+
+  const handleClearSearch = () => {
+    clearHighlight(runtime);
+    hideResult();
+    const input = searchForm.elements.namedItem("searchSku");
+    if (input instanceof HTMLInputElement) input.value = "";
+    setStatus(statusMessage, UI_COPY.status.initial, false);
+  };
+
+  searchForm.addEventListener("submit", handleSearchSubmit);
+  editorForm.addEventListener("submit", handleEditorSave);
+  clearSearchBtn?.addEventListener("click", handleClearSearch);
+  moveProductBtn.addEventListener("click", handleMoveProductClick);
+  deleteProductBtn.addEventListener("click", handleDeleteProductClick);
+  transferProductBtn.addEventListener("click", handleTransferProductClick);
+  transferConfirmBtn.addEventListener("click", handleTransferConfirm);
+  transferCancelBtn.addEventListener("click", handleTransferCancel);
+
+  return selectProduct;
 }
 
-/**
- * Registra el listener de click sobre el canvas para seleccionar mallas de producto
- * via raycasting y mostrar sus detalles en el panel de info.
- */
-export function wireSceneClick(params: {
-  canvas: HTMLCanvasElement;
-  camera: THREE.PerspectiveCamera;
-  runtime: WarehouseRuntime;
-  config: WarehouseConfig;
-  clickInfo: HTMLDivElement;
-  clickInfoSku: HTMLElement;
-  clickInfoShelf: HTMLElement;
-  clickInfoDims: HTMLElement;
-}): void {
-  const { canvas, camera, runtime, config, clickInfo, clickInfoSku, clickInfoShelf, clickInfoDims } =
+export function wireSceneClick(params: SceneClickDeps): void {
+  const { canvas, camera, runtime, config, clickInfo, clickInfoSku, clickInfoShelf, clickInfoDims, isSuppressed, onProductSelected, onSelectionCleared } =
     params;
 
-  canvas.addEventListener("click", (event) => {
+  const handleSceneClick = (event: MouseEvent) => {
+    if (isSuppressed?.()) return;
     const meshes = [...runtime.productMeshBySku.values()];
     const hit = pickMesh(event, camera, canvas, meshes);
 
     if (!hit) {
       clickInfo.hidden = true;
+      onSelectionCleared?.();
       return;
     }
 
@@ -522,102 +713,11 @@ export function wireSceneClick(params: {
     clickInfoShelf.textContent = shelf ? `${shelfId} · ${shelf.label}` : shelfId;
     clickInfoDims.textContent = `${width} × ${height} × ${depth} m`;
     clickInfo.hidden = false;
-  });
-}
 
-/** Muestra un mensaje de estado con clase visual de éxito o error. */
-export function setStatus(
-  element: HTMLParagraphElement,
-  message: string,
-  isError: boolean
-): void {
-  element.textContent = message;
-  element.dataset.state = isError ? "error" : "success";
-}
+    onProductSelected?.(sku);
+  };
 
-/** Actualiza el contador de productos en la leyenda del estante indicado. */
-export function updateLegendCount(shelfId: string, count: number): void {
-  const legendItem = document.querySelector<HTMLLIElement>(`#legend-${shelfId}`);
-  const counter = legendItem?.querySelector("small");
-  if (counter) {
-    counter.textContent = `${count} producto${count === 1 ? "" : "s"}`;
-  }
-}
-
-/**
- * Conecta el formulario de creación de estantes: valida los campos, construye
- * la malla y el sprite, los añade a la escena y actualiza el runtime y el HUD.
- */
-export function wireShelfForm(params: {
-  form: HTMLFormElement;
-  config: WarehouseConfig;
-  runtime: WarehouseRuntime;
-  scene: THREE.Scene;
-  shelfMeshes: Map<string, THREE.Mesh>;
-  legend: HTMLUListElement;
-  shelfSelect: HTMLSelectElement;
-  statusMessage: HTMLParagraphElement;
-}): void {
-  const { form, config, runtime, scene, shelfMeshes, legend, shelfSelect, statusMessage } = params;
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const data = new FormData(form);
-
-    const id = String(data.get("shelfId") ?? "").trim();
-    const label = String(data.get("label") ?? "").trim();
-    const width = Number(data.get("width"));
-    const height = Number(data.get("height"));
-    const depth = Number(data.get("depth"));
-    const x = Number(data.get("x"));
-    const z = Number(data.get("z"));
-
-    if (!id || !label) {
-      setStatus(statusMessage, "Ingresa un ID y un nombre para el estante.", true);
-      return;
-    }
-
-    if (config.shelves.some((s) => s.id === id)) {
-      setStatus(statusMessage, `Ya existe un estante con ID "${id}".`, true);
-      return;
-    }
-
-    if (width <= 0 || height <= 0 || depth <= 0) {
-      setStatus(statusMessage, "Las dimensiones del estante deben ser mayores a cero.", true);
-      return;
-    }
-
-    const shelf = { id, label, width, height, depth, position: { x, y: height / 2, z } };
-    const color = SHELF_PALETTE[config.shelves.length % SHELF_PALETTE.length];
-    const { mesh, sprite } = buildShelfMesh(shelf, color);
-    scene.add(mesh);
-    scene.add(sprite);
-
-    config.shelves.push(shelf);
-    shelfMeshes.set(id, mesh);
-    runtime.productsByShelf.set(id, []);
-    runtime.productMeshesByShelf.set(id, []);
-
-    const li = document.createElement("li");
-    li.id = `legend-${id}`;
-    li.innerHTML = `
-      <div class="legend-head">
-        <span class="legend-swatch" style="background:${color}"></span>
-        <strong>${id}</strong>
-      </div>
-      <span>${label}</span>
-      <small>0 productos</small>
-    `;
-    legend.append(li);
-
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = `${id} | ${label}`;
-    shelfSelect.append(option);
-
-    setStatus(statusMessage, `Estante ${id} "${label}" agregado en (${x}, ${z}).`, false);
-    form.reset();
-  });
+  canvas.addEventListener("click", handleSceneClick);
 }
 
 function getNumberInput(form: HTMLFormElement, name: string): HTMLInputElement {
@@ -628,12 +728,68 @@ function getNumberInput(form: HTMLFormElement, name: string): HTMLInputElement {
   return field;
 }
 
+function attachMaxClamp(input: HTMLInputElement): void {
+  const clamp = () => {
+    if (!input.value) return;
+
+    const value = Number(input.value);
+    if (!Number.isFinite(value)) return;
+
+    const min = Number(input.min);
+    const max = Number(input.max);
+    let nextValue = value;
+
+    if (Number.isFinite(min)) {
+      nextValue = Math.max(nextValue, min);
+    }
+
+    if (Number.isFinite(max)) {
+      nextValue = Math.min(nextValue, max);
+    }
+
+    if (nextValue !== value) {
+      input.value = formatInputValue(nextValue);
+    }
+  };
+
+  input.addEventListener("input", clamp);
+  input.addEventListener("blur", clamp);
+}
+
+function getSectionHeightForPosition(shelf: Shelf, localPositionY: number): number {
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const offsets = shelf.boardOffsets && shelf.boardOffsets.length > 0
+    ? shelf.boardOffsets.map((fraction) => fraction * shelf.height)
+    : Array.from({ length: sections - 1 }, (_, index) => ((index + 1) * shelf.height) / sections);
+  const bounds = [0, ...offsets, shelf.height].sort((a, b) => a - b);
+  const safePositionY = clamp(localPositionY, 0, shelf.height);
+
+  for (let index = 0; index < bounds.length - 1; index += 1) {
+    const lowerBound = bounds[index];
+    const upperBound = bounds[index + 1];
+    const isInsideSection = safePositionY >= lowerBound && (safePositionY < upperBound || index === bounds.length - 2);
+    if (isInsideSection) {
+      return upperBound - lowerBound;
+    }
+  }
+
+  return shelf.height / sections;
+}
+
 function clampInputValue(currentValue: string, maxValue: number): string {
   const parsed = Number(currentValue);
   if (!Number.isFinite(parsed) || parsed <= 0) return String(Math.min(0.8, maxValue));
   return String(Math.min(parsed, maxValue));
 }
 
+function formatInputValue(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
 function formatMetric(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }

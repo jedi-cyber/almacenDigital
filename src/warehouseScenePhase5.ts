@@ -5,6 +5,15 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { canPlace } from "./canPlace.js";
 import { calcShelfStatus } from "./shelfStatus.js";
 import type { Item, PlacedItem, Shelf, WarehouseConfig } from "./types.js";
+import {
+  getNoSpaceMessage,
+  getPlacementSuccessMessage,
+  getProductName,
+  getSearchNotFoundMessage,
+  getSearchShelfMissingMessage,
+  getSearchSuccessMessage,
+  UI_COPY
+} from "./ui-copy.js";
 
 interface WarehouseRuntime {
   productsByShelf: Map<string, PlacedItem[]>;
@@ -20,26 +29,24 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   container.innerHTML = `
     <section class="app-shell">
       <aside class="hud">
-        <span class="eyebrow">Fase 5</span>
-        <h1>Busqueda y Enfoque de Productos</h1>
+        <h1>${UI_COPY.page.title}</h1>
         <p>
-          Agrega productos con <code>canPlace()</code> y luego ubicalos por SKU con una
-          busqueda que enfoca la camara y resalta el producto correcto.
+          ${UI_COPY.page.legacyDescription}
         </p>
         <form class="search-form" id="search-form">
           <label>
-            <span>Buscar SKU</span>
+            <span>${UI_COPY.search.label}</span>
             <input name="searchSku" type="text" placeholder="SKU-001" />
           </label>
-          <button type="submit">Buscar</button>
+          <button type="submit">${UI_COPY.buttons.search}</button>
         </form>
         <form class="product-form" id="product-form">
           <label>
-            <span>Estante</span>
+            <span>${UI_COPY.productForm.steps.selectShelf}</span>
             <select name="shelfId" id="shelfId"></select>
           </label>
           <section class="shelf-summary">
-            <strong>Referencia del estante</strong>
+            <strong>${UI_COPY.productForm.shelfSummary.legacyTitle}</strong>
             <p id="shelf-dimensions"></p>
             <div class="shelf-metrics">
               <span id="shelf-total"></span>
@@ -48,27 +55,27 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
             </div>
           </section>
           <label>
-            <span>SKU</span>
+            <span>${UI_COPY.productForm.steps.productCode}</span>
             <input name="sku" type="text" placeholder="SKU-001" required />
           </label>
           <div class="field-row">
             <label>
-              <span>Ancho</span>
+              <span>${UI_COPY.productForm.dimensions.legacyLabels.width}</span>
               <input name="width" type="number" min="0.1" step="0.1" value="0.8" required />
             </label>
             <label>
-              <span>Alto</span>
+              <span>${UI_COPY.productForm.dimensions.legacyLabels.height}</span>
               <input name="height" type="number" min="0.1" step="0.1" value="0.8" required />
             </label>
             <label>
-              <span>Prof.</span>
+              <span>${UI_COPY.productForm.dimensions.legacyLabels.depth}</span>
               <input name="depth" type="number" min="0.1" step="0.1" value="0.8" required />
             </label>
           </div>
-          <button type="submit">Agregar</button>
+          <button type="submit">${UI_COPY.buttons.legacyRegisterProduct}</button>
         </form>
         <p class="status-message" id="status-message" aria-live="polite">
-          Agrega un producto y luego buscalo por SKU para probar la fase 5.
+          ${UI_COPY.status.legacyInitial}
         </p>
         <ul class="legend" id="legend"></ul>
       </aside>
@@ -189,8 +196,8 @@ export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
 
   const config = (await response.json()) as WarehouseConfig;
 
-  if (!Array.isArray(config.shelves) || config.shelves.length < 6) {
-    throw new Error("La configuracion del almacen debe incluir al menos 6 estantes.");
+  if (!Array.isArray(config.shelves) || config.shelves.length < 5) {
+    throw new Error("La configuracion del almacen debe incluir al menos 5 estantes.");
   }
 
   return config;
@@ -349,18 +356,18 @@ function wireProductForm(params: {
     const shelfMesh = shelfMeshes.get(shelfId);
 
     if (!shelf || !shelfMesh) {
-      setStatus(statusMessage, "No se encontro el estante seleccionado.", true);
+      setStatus(statusMessage, UI_COPY.status.shelfNotFound, true);
       return;
     }
 
     if (!sku || width <= 0 || height <= 0 || depth <= 0) {
-      setStatus(statusMessage, "Ingresa un SKU y dimensiones validas mayores a cero.", true);
+      setStatus(statusMessage, UI_COPY.status.legacyInvalidProductForm, true);
       return;
     }
 
     const item: Item = {
       sku,
-      name: `Producto ${sku}`,
+      name: getProductName(sku),
       width,
       height,
       depth
@@ -369,11 +376,7 @@ function wireProductForm(params: {
     const placement = canPlace(shelf, placedItems, item);
 
     if (!placement) {
-      setStatus(
-        statusMessage,
-        `No hay espacio para ${sku} en ${shelf.id}. El algoritmo no encontro una posicion valida.`,
-        true
-      );
+      setStatus(statusMessage, getNoSpaceMessage(sku, shelf.id), true);
       return;
     }
 
@@ -388,11 +391,7 @@ function wireProductForm(params: {
 
     updateLegendCount(shelf.id, placedItems.length);
     refreshShelfSummary(shelf.id);
-    setStatus(
-      statusMessage,
-      `${sku} agregado en ${shelf.id} en local (${placement.localPosition.x}, ${placement.localPosition.y}, ${placement.localPosition.z}).`,
-      false
-    );
+    setStatus(statusMessage, getPlacementSuccessMessage(sku, shelf.id, placement.localPosition), false);
 
     form.reset();
     if (shelfField instanceof HTMLSelectElement) {
@@ -419,14 +418,14 @@ function wireSearchForm(params: {
     const sku = String(formData.get("searchSku") ?? "").trim();
 
     if (!sku) {
-      setStatus(statusMessage, "Ingresa un SKU para ejecutar la busqueda.", true);
+      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
       return;
     }
 
     const targetMesh = runtime.productMeshBySku.get(sku);
     if (!targetMesh) {
       clearHighlight(runtime);
-      setStatus(statusMessage, `No existe un producto registrado con SKU ${sku}.`, true);
+      setStatus(statusMessage, getSearchNotFoundMessage(sku), true);
       return;
     }
 
@@ -434,13 +433,13 @@ function wireSearchForm(params: {
     const shelfMesh = shelfMeshes.get(shelfId);
     if (!shelfMesh) {
       clearHighlight(runtime);
-      setStatus(statusMessage, `No se encontro el estante asociado al SKU ${sku}.`, true);
+      setStatus(statusMessage, getSearchShelfMissingMessage(sku), true);
       return;
     }
 
     focusOnShelf(shelfMesh, camera, controls);
     highlightProduct(runtime, sku);
-    setStatus(statusMessage, `SKU ${sku} encontrado en ${shelfId}. Camara enfocada y producto resaltado.`, false);
+    setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId), false);
   });
 }
 

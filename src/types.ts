@@ -22,7 +22,12 @@ export interface Vector3D {
 export interface Shelf extends Dimensions {
   id: string;
   label: string;
+  sections?: number;
+  /** Posiciones de pisos intermedios como fracción [0..1] de la altura (0=base, 1=techo).
+   *  Cuando está presente, sobreescribe el espaciado uniforme de `sections`. */
+  boardOffsets?: number[];
   position: Vector3D;
+  rotationY?: number;
 }
 
 /**
