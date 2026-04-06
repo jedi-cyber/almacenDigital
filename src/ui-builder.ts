@@ -330,10 +330,17 @@ function buildHudTemplate(): string {
             <div class="dimension-hint" id="selected-shelf-display" aria-live="polite" data-testid="selected-shelf-display">
               ${UI_COPY.productForm.selectedShelfLabel}: -
             </div>
-            <label>
-              <span>${UI_COPY.productForm.steps.productCode}</span>
-              <input name="sku" type="text" placeholder="Ej. Producto A" required data-testid="product-sku-input" />
-            </label>
+            <div class="sku-name-group">
+              <label>
+                <span>${UI_COPY.productForm.skuLabel}</span>
+                <input name="sku" type="text" placeholder="Ej. SKU-001" required data-testid="product-sku-input" />
+              </label>
+              <div class="sku-name-divider" aria-hidden="true"></div>
+              <label>
+                <span>${UI_COPY.productForm.steps.productName}</span>
+                <input name="productName" type="text" placeholder="Ej. Caja de tornillos" data-testid="product-name-input" />
+              </label>
+            </div>
 
             <section class="dimension-group">
               <div class="dimension-group-head">
@@ -366,12 +373,15 @@ function buildHudTemplate(): string {
 
         <section class="product-editor" id="product-editor" aria-labelledby="product-editor-title" data-testid="product-editor" hidden>
           <strong id="product-editor-title">${UI_COPY.productEditor.title}</strong>
-          <p class="editor-sku" id="editor-sku-display" aria-live="polite"></p>
           <form id="editor-form" class="editor-form" aria-label="${UI_COPY.productEditor.title}" data-testid="editor-form">
-            <label>
-              <span>${UI_COPY.productEditor.nameLabel}</span>
-              <input id="editor-name" type="text" placeholder="Ej. Caja de tornillos" />
-            </label>
+            <div class="sku-name-group">
+              <p class="editor-sku" id="editor-sku-display" aria-live="polite"></p>
+              <div class="sku-name-divider" aria-hidden="true"></div>
+              <label>
+                <span>${UI_COPY.productEditor.nameLabel}</span>
+                <input id="editor-name" type="text" placeholder="Ej. Caja de tornillos" />
+              </label>
+            </div>
             <div class="field-row">
               <label>
                 <span>${UI_COPY.productForm.dimensions.legacyLabels.width}</span>

@@ -503,28 +503,32 @@ export function skuToColor(sku: string): string {
   return `#${(hash & 0xffffff).toString(16).padStart(6, "0")}`;
 }
 
-function createSkuLabelSprite(sku: string): THREE.Sprite {
+function createSkuLabelSprite(sku: string, name: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
-  canvas.height = 64;
+  canvas.height = 80;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("No se pudo crear el contexto 2D para la etiqueta del producto.");
 
   ctx.fillStyle = "rgba(20, 14, 8, 0.80)";
-  roundRect(ctx, 4, 4, 248, 56, 14);
+  roundRect(ctx, 4, 4, 248, 72, 14);
   ctx.fill();
 
-  ctx.fillStyle = "#fff8ec";
-  ctx.font = "700 26px Segoe UI";
   ctx.textAlign = "center";
+  ctx.fillStyle = "#fff8ec";
+  ctx.font = "700 24px Segoe UI";
   ctx.textBaseline = "middle";
-  ctx.fillText(sku, 128, 32);
+  ctx.fillText(sku, 128, 26);
+
+  ctx.fillStyle = "#ffd580";
+  ctx.font = "400 18px Segoe UI";
+  ctx.fillText(name, 128, 54, 236);
 
   const texture = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false })
   );
-  sprite.scale.set(0.8, 0.2, 1);
+  sprite.scale.set(0.8, 0.25, 1);
   return sprite;
 }
 
@@ -845,7 +849,7 @@ export function addProductInstance(
   instancedMesh.instanceMatrix.needsUpdate = true;
   instancedMesh.instanceColor!.needsUpdate = true;
 
-  const labelSprite = createSkuLabelSprite(item.sku);
+  const labelSprite = createSkuLabelSprite(item.sku, item.name);
   labelSprite.position.set(worldPos.x, worldPos.y + item.height / 2 + 0.12, worldPos.z);
 
   return { instanceIndex, labelSprite };

@@ -67,9 +67,11 @@ export const UI_COPY = {
     description: "Registra el producto despues de elegir el estante y revisar el espacio disponible.",
     steps: {
       selectShelf: "1. Elige ubicacion",
-      productCode: "2. Ingresa el nombre",
+      productCode: "2. Ingresa el SKU y nombre",
+      productName: "Nombre del producto",
       measures: "3. Define medidas"
     },
+    skuLabel: "SKU",
     sectionLabel: "Piso o nivel del estante",
     shelfManager: {
       title: "Gestionar estante",

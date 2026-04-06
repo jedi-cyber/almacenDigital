@@ -422,6 +422,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     const data = new FormData(form);
     const shelfId = String(data.get("shelfId") ?? "");
     const sku = String(data.get("sku") ?? "").trim();
+    const productName = String(data.get("productName") ?? "").trim() || getProductName(sku);
     const preferredSection = Number(data.get("section") ?? "1");
     const width = Number(data.get("width"));
     const height = Number(data.get("height"));
@@ -445,7 +446,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
       return;
     }
 
-    const item: Item = { sku, name: getProductName(sku), width, height, depth };
+    const item: Item = { sku, name: productName, width, height, depth };
     const placement = placeItem(runtime, scene, item, shelf, shelfMesh, preferredSection);
 
     if (!placement) {
@@ -647,7 +648,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     const input = searchForm.elements.namedItem("searchSku");
     if (input instanceof HTMLInputElement) input.value = sku;
 
-    editorSkuDisplay.textContent = `Nombre: ${sku}`;
+    editorSkuDisplay.textContent = `SKU: ${sku}`;
     editorName.value = item.name ?? "";
     editorWidth.value = String(item.width);
     editorHeight.value = String(item.height);
