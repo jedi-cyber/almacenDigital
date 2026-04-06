@@ -482,6 +482,14 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   heightField.addEventListener("input", createOrUpdateGhost);
   depthField.addEventListener("input", createOrUpdateGhost);
 
+  // Eliminar el fantasma cuando el card del formulario se cierra.
+  const productCard = form.closest<HTMLElement>("[data-card]");
+  if (productCard) {
+    new MutationObserver(() => {
+      if (productCard.dataset.collapsed === "true") removeGhost();
+    }).observe(productCard, { attributes: true, attributeFilter: ["data-collapsed"] });
+  }
+
   updateShelfSectionsBtn?.addEventListener("click", handleUpdateShelfSections);
   addBoardBtn?.addEventListener("click", handleAddBoard);
   updateShelfSizeBtn?.addEventListener("click", handleUpdateShelfSize);

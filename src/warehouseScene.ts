@@ -36,6 +36,9 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   const shelfSprites = new Map<string, THREE.Sprite>();
 
   config.shelves.forEach((shelf, index) => {
+    // Garantizar que el estante descanse sobre el suelo (Y = altura/2).
+    shelf.position.y = shelf.height / 2;
+
     const color = SHELF_PALETTE[index % SHELF_PALETTE.length];
     const { mesh, sprite } = buildShelfMesh(shelf, color);
     scene.add(mesh);
