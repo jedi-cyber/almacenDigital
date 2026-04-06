@@ -28,18 +28,7 @@ Resultado esperado: las cajas aparecen en escena sin superponerse, con animació
 
 Buscar un SKU existente con el buscador. La cámara hace tween hacia el producto y éste se resalta en cian. Buscar un SKU inexistente muestra un mensaje de error.
 
-Secuencia recomendada para el video:
-
-1. Abrir la aplicación (con XAMPP activo).
-2. Mostrar que los estantes y productos del estado anterior se restauran automáticamente.
-3. Agregar uno o dos productos nuevos.
-4. Buscar un SKU existente y mostrar la animación de cámara y el highlight.
-5. Eliminar un producto y verificar que desaparece de la escena.
-6. Transferir un producto a otro estante.
-7. Buscar un SKU inexistente y mostrar el mensaje de error.
-8. Activar modo edición: mover un estante arrastrándolo, rotarlo con `R`.
-9. Agregar un piso intermedio a un estante y guardar.
-10. Recargar la página y mostrar que el estado persiste.
+Video: `https://youtu.be/Vzc7hMxE7jk`
 
 ## F6 — Persistencia
 

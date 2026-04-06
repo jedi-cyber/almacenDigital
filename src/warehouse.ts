@@ -401,8 +401,11 @@ export function transferItem(
   targetSkus.push(sku);
   runtime.productSkusByShelf.set(targetShelfId, targetSkus);
 
-  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
-  persistPlacedItem(targetShelfId, placement.item, placement.localPosition);
+  // Primero eliminar el registro anterior y solo después guardar el nuevo,
+  // para evitar que el DELETE llegue después del POST y borre el producto trasladado.
+  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
+    .then(() => persistPlacedItem(targetShelfId, placement.item, placement.localPosition))
+    .catch(console.error);
 
   return placement;
 }
