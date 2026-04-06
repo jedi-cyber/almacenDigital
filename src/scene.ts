@@ -2,7 +2,7 @@ import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import type { Item, PlacedItem, Shelf } from "./types.js";
+import type { Item, Shelf } from "./types.js";
 
 export interface SceneObjects {
   scene: THREE.Scene;
@@ -78,6 +78,132 @@ export function addFloor(scene: THREE.Scene): void {
 }
 
 /**
+ * Agrega una pared detrás de cada estante, a 10 cm de su cara trasera, y conecta
+ * en esquina los pares indicados en JOIN_PAIRS para que no queden huecos.
+ *
+ * La cara trasera se determina por el vecino más cercano con la misma orientación:
+ * el pasillo queda entre ambos, la pared va al lado opuesto.
+ */
+export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
+  const wallMat = new THREE.MeshStandardMaterial({ color: "#c8bfa8", roughness: 0.88, metalness: 0.02 });
+  const wallT = 0.20;
+  const gap = 0.10;
+
+  // Pares de estantes cuyas paredes deben unirse en esquina.
+  const JOIN_PAIRS: [string, string][] = [["S02", "S03"], ["S03", "S05"], ["S05", "S04"]];
+
+  // Registro de la posición y extensión de la pared de cada estante.
+  type WallRec = {
+    isRotated: boolean;
+    crossPos: number; // x (pared vertical) o z (pared horizontal)
+    runMin: number;   // extremo menor a lo largo del eje corriente
+    runMax: number;   // extremo mayor
+    wallH: number;
+  };
+  const recs = new Map<string, WallRec>();
+
+  // ── Paso 1: generar las paredes individuales ──────────────────────────────
+  for (const shelf of shelves) {
+    const rotY = shelf.rotationY ?? 0;
+    const isRotated = Math.abs(Math.sin(rotY)) > 0.7;
+    const wallH = shelf.position.y + shelf.height / 2 + 0.6;
+    const wallY = wallH / 2;
+
+    if (isRotated) {
+      let nearestDx = Infinity;
+      for (const other of shelves) {
+        if (other.id === shelf.id) continue;
+        if (Math.abs(Math.sin(other.rotationY ?? 0)) <= 0.7) continue;
+        const dx = other.position.x - shelf.position.x;
+        if (Math.abs(dx) < Math.abs(nearestDx)) nearestDx = dx;
+      }
+      const backSign = isFinite(nearestDx) ? (nearestDx > 0 ? -1 : 1) : (shelf.position.x <= 0 ? -1 : 1);
+      const wallX = shelf.position.x + backSign * (shelf.depth / 2 + gap + wallT / 2);
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, shelf.width), wallMat.clone());
+      wall.position.set(wallX, wallY, shelf.position.z);
+      wall.receiveShadow = true;
+      wall.castShadow = true;
+      scene.add(wall);
+      recs.set(shelf.id, {
+        isRotated: true,
+        crossPos: wallX,
+        runMin: shelf.position.z - shelf.width / 2,
+        runMax: shelf.position.z + shelf.width / 2,
+        wallH
+      });
+    } else {
+      let nearestDz = Infinity;
+      for (const other of shelves) {
+        if (other.id === shelf.id) continue;
+        if (Math.abs(Math.sin(other.rotationY ?? 0)) > 0.7) continue;
+        const dz = other.position.z - shelf.position.z;
+        if (Math.abs(dz) < Math.abs(nearestDz)) nearestDz = dz;
+      }
+      const backSign = isFinite(nearestDz) ? (nearestDz > 0 ? -1 : 1) : (shelf.position.z >= 0 ? 1 : -1);
+      const wallZ = shelf.position.z + backSign * (shelf.depth / 2 + gap + wallT / 2);
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(shelf.width, wallH, wallT), wallMat.clone());
+      wall.position.set(shelf.position.x, wallY, wallZ);
+      wall.receiveShadow = true;
+      wall.castShadow = true;
+      scene.add(wall);
+      recs.set(shelf.id, {
+        isRotated: false,
+        crossPos: wallZ,
+        runMin: shelf.position.x - shelf.width / 2,
+        runMax: shelf.position.x + shelf.width / 2,
+        wallH
+      });
+    }
+  }
+
+  // ── Paso 2: añadir conectores en esquina para los pares indicados ─────────
+  const addConnectorBox = (
+    w: number, h: number, d: number, x: number, y: number, z: number
+  ) => {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat.clone());
+    box.position.set(x, y, z);
+    box.receiveShadow = true;
+    box.castShadow = true;
+    scene.add(box);
+  };
+
+  for (const [idA, idB] of JOIN_PAIRS) {
+    const rA = recs.get(idA);
+    const rB = recs.get(idB);
+    if (!rA || !rB) continue;
+    if (rA.isRotated === rB.isRotated) continue; // mismo eje → no se unen en esquina
+
+    // v = pared vertical (a lo largo de Z), h = pared horizontal (a lo largo de X)
+    const v = rA.isRotated ? rA : rB;
+    const h = rA.isRotated ? rB : rA;
+    const maxH = Math.max(v.wallH, h.wallH);
+
+    // El vértice de la esquina en plano XZ
+    const cornerX = v.crossPos;
+    const cornerZ = h.crossPos;
+
+    // Extremo de la pared vertical más próximo a cornerZ
+    const vEnd = Math.abs(v.runMax - cornerZ) < Math.abs(v.runMin - cornerZ) ? v.runMax : v.runMin;
+    // Extremo de la pared horizontal más próximo a cornerX
+    const hEnd = Math.abs(h.runMax - cornerX) < Math.abs(h.runMin - cornerX) ? h.runMax : h.runMin;
+
+    // Extensión vertical (amplía la pared V hasta cornerZ)
+    if (Math.abs(vEnd - cornerZ) > 0.01) {
+      const extD = Math.abs(vEnd - cornerZ) + wallT / 2;
+      const shift = cornerZ > vEnd ? wallT / 4 : -wallT / 4;
+      addConnectorBox(wallT, maxH, extD, cornerX, maxH / 2, (vEnd + cornerZ) / 2 + shift);
+    }
+
+    // Extensión horizontal (amplía la pared H hasta cornerX)
+    if (Math.abs(hEnd - cornerX) > 0.01) {
+      const extW = Math.abs(hEnd - cornerX) + wallT / 2;
+      const shift = cornerX > hEnd ? wallT / 4 : -wallT / 4;
+      addConnectorBox(extW, maxH, wallT, (hEnd + cornerX) / 2 + shift, maxH / 2, cornerZ);
+    }
+  }
+}
+
+/**
  * Crea la malla BoxGeometry y el sprite de etiqueta de un estante dado su color.
  * La malla raíz es un bounding box invisible usado para raycasting y cálculos de posición;
  * la geometría visual real (postes + tableros) se construye como hijos con nombre __shelf_visual__.
@@ -101,9 +227,6 @@ export function buildShelfMesh(
   return { mesh, sprite: createShelfLabelSprite(`${shelf.id} · ${shelf.label}`, shelf, color) };
 }
 
-/**
- * Crea la malla 3D de un producto posicionada en coordenadas globales dentro del estante.
- */
 export function updateShelfSectionPreview(shelfMesh: THREE.Mesh, section: number): void {
   const sections = Math.max(1, Math.floor(Number(shelfMesh.userData.sections ?? 1)));
   const targetSection = Math.min(Math.max(section, 1), sections);
@@ -138,53 +261,6 @@ export function updateShelfSectionPreview(shelfMesh: THREE.Mesh, section: number
   preview.position.set(0, -geometry.height / 2 + sectionHeight * (targetSection - 0.5), 0);
   preview.renderOrder = 2;
   shelfMesh.add(preview);
-}
-
-export function createProductMesh(
-  item: Item,
-  placement: PlacedItem,
-  shelfMesh: THREE.Mesh
-): THREE.Mesh {
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(item.width, item.height, item.depth),
-    new THREE.MeshStandardMaterial({
-      color: skuToColor(item.sku),
-      roughness: 0.55,
-      metalness: 0.14
-    })
-  );
-  mesh.position.copy(localToWorld(placement.localPosition, item, shelfMesh));
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData = {
-    shelfId: shelfMesh.userData.shelfId,
-    ...item,
-    localPosition: placement.localPosition
-  };
-
-  const label = createSkuLabelSprite(item.sku);
-  label.position.set(0, item.height / 2 + 0.12, 0);
-  mesh.add(label);
-
-  return mesh;
-}
-
-/**
- * Libera la geometría, material y texturas del sprite hijo de una malla de producto.
- */
-export function disposeProductMesh(mesh: THREE.Mesh): void {
-  mesh.geometry.dispose();
-  if (Array.isArray(mesh.material)) {
-    mesh.material.forEach((m) => m.dispose());
-  } else {
-    mesh.material.dispose();
-  }
-  mesh.children.forEach((child) => {
-    if (child instanceof THREE.Sprite) {
-      (child.material as THREE.SpriteMaterial).map?.dispose();
-      child.material.dispose();
-    }
-  });
 }
 
 /**
@@ -308,6 +384,17 @@ export function focusOnProduct(
 
 const _camBox = new THREE.Box3();
 const _insideState = new Map<THREE.Mesh, boolean>();
+const _raycaster = new THREE.Raycaster();
+const _pointer = new THREE.Vector2();
+
+// ── InstancedMesh helpers ────────────────────────────────────────────────────
+
+const MAX_INSTANCES_PER_GEO = 256;
+const _iMatrix = new THREE.Matrix4();
+const _iPos = new THREE.Vector3();
+const _iRot = new THREE.Quaternion();
+const _iScl = new THREE.Vector3();
+const _iColor = new THREE.Color();
 
 /**
  * Comprueba cada frame si la cámara está dentro de algún estante y aplica un fade
@@ -364,11 +451,12 @@ export function pickMesh(
   meshes: THREE.Mesh[]
 ): THREE.Mesh | null {
   const rect = canvas.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  const raycaster = new THREE.Raycaster();
-  raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
-  const hits = raycaster.intersectObjects(meshes, false);
+  _pointer.set(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  _raycaster.setFromCamera(_pointer, camera);
+  const hits = _raycaster.intersectObjects(meshes, false);
   return hits.length > 0 ? (hits[0].object as THREE.Mesh) : null;
 }
 
@@ -401,20 +489,6 @@ export function flashShelfMesh(mesh: THREE.Mesh): void {
         }
       }
     );
-  });
-}
-
-/**
- * Anima la aparición de una malla de producto escalando de 0 a 1 con GSAP.
- */
-export function animateProductAppearance(mesh: THREE.Mesh): void {
-  mesh.scale.set(0, 0, 0);
-  gsap.to(mesh.scale, {
-    x: 1,
-    y: 1,
-    z: 1,
-    duration: 0.4,
-    ease: "power2.out"
   });
 }
 
@@ -613,10 +687,39 @@ export function removeLastShelfBoard(mesh: THREE.Mesh): boolean {
   return true;
 }
 
+/**
+ * Elimina el tablón que separa el piso indicado (1-based) del siguiente.
+ * Si es el último piso, elimina el tablón inferior. Devuelve true si se eliminó alguno.
+ */
+export function removeShelfBoardAtSection(mesh: THREE.Mesh, section: number): boolean {
+  const boards = mesh.children
+    .filter((c) => c.userData.isDraggableBoard)
+    .sort((a, b) => a.position.y - b.position.y);
+
+  if (boards.length === 0) return false;
+
+  const boardIndex = Math.min(section - 1, boards.length - 1);
+  const target = boards[boardIndex];
+
+  if (target instanceof THREE.Mesh) {
+    target.geometry.dispose();
+    (target.material as THREE.MeshStandardMaterial).dispose();
+    mesh.remove(target);
+    return true;
+  }
+  return false;
+}
+
 export function refreshShelfSections(mesh: THREE.Mesh, shelf: Shelf, color: string): void {
   mesh.userData = { ...mesh.userData, ...shelf, sections: shelf.sections ?? 1, shelfId: shelf.id };
   clearShelfHelpers(mesh);
   buildShelfStructure(mesh, shelf, color);
+}
+
+export function resizeShelfMesh(mesh: THREE.Mesh, shelf: Shelf, color: string): void {
+  (mesh.geometry as THREE.BufferGeometry).dispose();
+  mesh.geometry = new THREE.BoxGeometry(shelf.width, shelf.height, shelf.depth);
+  refreshShelfSections(mesh, shelf, color);
 }
 
 function clearShelfHelpers(mesh: THREE.Mesh): void {
@@ -638,15 +741,15 @@ function clearShelfHelpers(mesh: THREE.Mesh): void {
 }
 
 export function focusOnProductFromAisle(
-  productMesh: THREE.Mesh,
+  productPos: THREE.Vector3,
   shelfMesh: THREE.Mesh,
   camera: THREE.PerspectiveCamera,
   controls: OrbitControls
 ): void {
-  const target = productMesh.position.clone();
+  const target = productPos.clone();
   const viewDistance = 2.5;
   const elevation = 1.0;
-  const aisleNormal = getAisleFacingNormal(shelfMesh, controls.target);
+  const aisleNormal = getAisleFacingNormal(shelfMesh, camera.position);
   const camTarget = target
     .clone()
     .addScaledVector(aisleNormal, viewDistance)
@@ -676,39 +779,213 @@ export function focusOnProductFromAisle(
   });
 }
 
-function getAisleFacingNormal(shelfMesh: THREE.Mesh, fallbackTarget: THREE.Vector3): THREE.Vector3 {
+function getAisleFacingNormal(shelfMesh: THREE.Mesh, cameraPosition: THREE.Vector3): THREE.Vector3 {
   const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(shelfMesh.quaternion).setY(0).normalize();
   const backward = forward.clone().multiplyScalar(-1);
-  const aislePoint = estimateAislePoint(shelfMesh, fallbackTarget);
-  const toAisle = aislePoint.sub(shelfMesh.position).setY(0);
+  const toCamera = cameraPosition.clone().sub(shelfMesh.position).setY(0);
 
-  if (toAisle.lengthSq() < 1e-4) {
+  if (toCamera.lengthSq() < 1e-4) {
     return forward;
   }
 
-  return forward.dot(toAisle) >= backward.dot(toAisle) ? forward : backward;
+  return forward.dot(toCamera) >= backward.dot(toCamera) ? forward : backward;
 }
 
-function estimateAislePoint(shelfMesh: THREE.Mesh, fallbackTarget: THREE.Vector3): THREE.Vector3 {
-  const parent = shelfMesh.parent;
-  if (!parent) {
-    return fallbackTarget.clone();
+/** Returns the string key used to group products by geometry. */
+export function makeProductGeoKey(width: number, height: number, depth: number): string {
+  return `${width}:${height}:${depth}`;
+}
+
+/**
+ * Returns the InstancedMesh for the given dimensions, creating and adding it to
+ * the scene if it doesn't exist yet. All instances share one geometry and one
+ * material; per-instance color is applied via setColorAt.
+ */
+export function getOrCreateInstancedMesh(
+  width: number,
+  height: number,
+  depth: number,
+  instancedMeshByGeo: Map<string, THREE.InstancedMesh>,
+  scene: THREE.Scene
+): THREE.InstancedMesh {
+  const key = makeProductGeoKey(width, height, depth);
+  let mesh = instancedMeshByGeo.get(key);
+  if (!mesh) {
+    mesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(width, height, depth),
+      new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.14 }),
+      MAX_INSTANCES_PER_GEO
+    );
+    mesh.count = 0;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData.geoKey = key;
+    scene.add(mesh);
+    instancedMeshByGeo.set(key, mesh);
+  }
+  return mesh;
+}
+
+/**
+ * Appends a new instance at worldPos with the product's color.
+ * Returns the assigned instanceIndex and a floating label sprite
+ * (caller must add the sprite to the scene).
+ */
+export function addProductInstance(
+  item: Item,
+  worldPos: THREE.Vector3,
+  instancedMesh: THREE.InstancedMesh
+): { instanceIndex: number; labelSprite: THREE.Sprite } {
+  const instanceIndex = instancedMesh.count;
+  _iMatrix.identity();
+  _iMatrix.setPosition(worldPos);
+  instancedMesh.setMatrixAt(instanceIndex, _iMatrix);
+  instancedMesh.setColorAt(instanceIndex, _iColor.set(skuToColor(item.sku)));
+  instancedMesh.count++;
+  instancedMesh.instanceMatrix.needsUpdate = true;
+  instancedMesh.instanceColor!.needsUpdate = true;
+
+  const labelSprite = createSkuLabelSprite(item.sku);
+  labelSprite.position.set(worldPos.x, worldPos.y + item.height / 2 + 0.12, worldPos.z);
+
+  return { instanceIndex, labelSprite };
+}
+
+/**
+ * Removes an instance by swapping it with the last one (O(1) removal).
+ * Updates instanceOwner. Returns the sku relocated from the last slot,
+ * or null if the removed instance was already the last.
+ */
+export function removeProductInstance(
+  instancedMesh: THREE.InstancedMesh,
+  instanceIndex: number,
+  instanceOwner: Map<string, string>,
+  geoKey: string
+): string | null {
+  const lastIndex = instancedMesh.count - 1;
+  let movedSku: string | null = null;
+
+  if (instanceIndex !== lastIndex) {
+    instancedMesh.getMatrixAt(lastIndex, _iMatrix);
+    instancedMesh.setMatrixAt(instanceIndex, _iMatrix);
+
+    if (instancedMesh.instanceColor) {
+      instancedMesh.getColorAt(lastIndex, _iColor);
+      instancedMesh.setColorAt(instanceIndex, _iColor);
+    }
+
+    movedSku = instanceOwner.get(`${geoKey}/${lastIndex}`) ?? null;
+    if (movedSku !== null) {
+      instanceOwner.set(`${geoKey}/${instanceIndex}`, movedSku);
+    }
+    instanceOwner.delete(`${geoKey}/${lastIndex}`);
+  } else {
+    instanceOwner.delete(`${geoKey}/${lastIndex}`);
   }
 
-  const shelfPositions = parent.children
-    .filter(
-      (child): child is THREE.Mesh =>
-        child instanceof THREE.Mesh && typeof child.userData?.shelfId === "string"
-    )
-    .map((child) => child.position);
+  instancedMesh.count--;
+  instancedMesh.instanceMatrix.needsUpdate = true;
+  if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
 
-  if (shelfPositions.length === 0) {
-    return fallbackTarget.clone();
-  }
+  return movedSku;
+}
 
-  const center = new THREE.Vector3();
-  shelfPositions.forEach((position) => center.add(position));
-  return center.multiplyScalar(1 / shelfPositions.length);
+/**
+ * Moves an instance to a new world position while preserving its current scale.
+ * THREE.Matrix4.setPosition only modifies the translation column, so rotation
+ * and scale stored in the matrix are untouched.
+ */
+export function setInstanceWorldPosition(
+  instancedMesh: THREE.InstancedMesh,
+  instanceIndex: number,
+  pos: THREE.Vector3
+): void {
+  instancedMesh.getMatrixAt(instanceIndex, _iMatrix);
+  _iMatrix.setPosition(pos);
+  instancedMesh.setMatrixAt(instanceIndex, _iMatrix);
+  instancedMesh.instanceMatrix.needsUpdate = true;
+}
+
+/** Extracts the world position of an instance from its matrix. */
+export function getInstanceWorldPosition(
+  instancedMesh: THREE.InstancedMesh,
+  instanceIndex: number
+): THREE.Vector3 {
+  instancedMesh.getMatrixAt(instanceIndex, _iMatrix);
+  return new THREE.Vector3().setFromMatrixPosition(_iMatrix);
+}
+
+/** Scales an instance from 0 to 1 using GSAP (appearance animation). */
+export function animateInstanceAppearance(
+  instancedMesh: THREE.InstancedMesh,
+  instanceIndex: number
+): void {
+  const proxy = { scale: 0 };
+  gsap.to(proxy, {
+    scale: 1,
+    duration: 0.4,
+    ease: "power2.out",
+    onUpdate: () => {
+      instancedMesh.getMatrixAt(instanceIndex, _iMatrix);
+      _iMatrix.decompose(_iPos, _iRot, _iScl);
+      _iScl.setScalar(proxy.scale);
+      _iMatrix.compose(_iPos, _iRot, _iScl);
+      instancedMesh.setMatrixAt(instanceIndex, _iMatrix);
+      instancedMesh.instanceMatrix.needsUpdate = true;
+    }
+  });
+}
+
+/** Scales an instance from 1 to 0 using GSAP, then calls onComplete. */
+export function animateInstanceRemoval(
+  instancedMesh: THREE.InstancedMesh,
+  instanceIndex: number,
+  onComplete: () => void
+): void {
+  const proxy = { scale: 1 };
+  gsap.to(proxy, {
+    scale: 0,
+    duration: 0.3,
+    ease: "power2.in",
+    onUpdate: () => {
+      instancedMesh.getMatrixAt(instanceIndex, _iMatrix);
+      _iMatrix.decompose(_iPos, _iRot, _iScl);
+      _iScl.setScalar(proxy.scale);
+      _iMatrix.compose(_iPos, _iRot, _iScl);
+      instancedMesh.setMatrixAt(instanceIndex, _iMatrix);
+      instancedMesh.instanceMatrix.needsUpdate = true;
+    },
+    onComplete
+  });
+}
+
+/**
+ * Raycasts against all InstancedMeshes and returns the SKU of the hit instance,
+ * or null if nothing was hit.
+ */
+export function pickProduct(
+  event: MouseEvent,
+  camera: THREE.PerspectiveCamera,
+  canvas: HTMLCanvasElement,
+  instancedMeshes: THREE.InstancedMesh[],
+  instanceOwner: Map<string, string>
+): string | null {
+  const rect = canvas.getBoundingClientRect();
+  _pointer.set(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  _raycaster.setFromCamera(_pointer, camera);
+  const hits = _raycaster.intersectObjects(instancedMeshes, false);
+  if (hits.length === 0) return null;
+
+  const hit = hits[0];
+  if (hit.instanceId === undefined) return null;
+
+  const geoKey = (hit.object as THREE.InstancedMesh).userData.geoKey as string | undefined;
+  if (!geoKey) return null;
+
+  return instanceOwner.get(`${geoKey}/${hit.instanceId}`) ?? null;
 }
 
 function roundRect(

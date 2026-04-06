@@ -223,6 +223,32 @@ function buildHudTemplate(): string {
             </div>
             <p class="shelf-config-help">${UI_COPY.productForm.shelfConfig.addBoardHelp}</p>
           </section>
+
+          <section class="shelf-config">
+            <div class="shelf-config-head">
+              <strong>${UI_COPY.productForm.shelfSizeConfig.title}</strong>
+              <span>${UI_COPY.productForm.shelfSizeConfig.updateHelp}</span>
+            </div>
+            <div class="shelf-config-row">
+              <label>
+                <span>${UI_COPY.productForm.dimensions.labels.width}</span>
+                <input id="shelf-width-input" type="number" min="0.5" step="0.1" />
+              </label>
+              <label>
+                <span>${UI_COPY.productForm.dimensions.labels.height}</span>
+                <input id="shelf-height-input" type="number" min="0.5" step="0.1" />
+              </label>
+              <label>
+                <span>${UI_COPY.productForm.dimensions.labels.depth}</span>
+                <input id="shelf-depth-input" type="number" min="0.5" step="0.1" />
+              </label>
+            </div>
+            <div class="shelf-config-actions">
+              <button type="button" id="update-shelf-size-btn" class="shelf-config-action-btn">
+                ${UI_COPY.productForm.shelfSizeConfig.updateBtn}
+              </button>
+            </div>
+          </section>
         </section>
 
         <section class="floating-panel" id="edit-panel" hidden aria-hidden="true" aria-label="${UI_COPY.editPanel.title}" data-testid="edit-panel">
@@ -256,6 +282,10 @@ function buildHudTemplate(): string {
             <button type="button" id="delete-product-btn" class="shelf-config-action-btn shelf-config-action-btn--danger">
               ${UI_COPY.buttons.deleteProduct}
             </button>
+            <label class="manager-field">
+              <span>${UI_COPY.productForm.sectionLabel}</span>
+              <select id="remove-board-section-select" aria-label="${UI_COPY.productForm.sectionLabel}"></select>
+            </label>
             <button type="button" id="remove-board-btn" class="shelf-config-action-btn shelf-config-action-btn--soft">
               ${UI_COPY.buttons.removeBoard}
             </button>
@@ -292,6 +322,10 @@ function buildHudTemplate(): string {
             <label>
               <span>${UI_COPY.productForm.steps.selectShelf}</span>
               <select id="product-shelf-select" aria-label="${UI_COPY.productForm.steps.selectShelf}" data-testid="product-shelf-select"></select>
+            </label>
+            <label>
+              <span>${UI_COPY.productForm.sectionLabel}</span>
+              <select id="product-section-select" aria-label="${UI_COPY.productForm.sectionLabel}" data-testid="product-section-select"></select>
             </label>
             <div class="dimension-hint" id="selected-shelf-display" aria-live="polite" data-testid="selected-shelf-display">
               ${UI_COPY.productForm.selectedShelfLabel}: -

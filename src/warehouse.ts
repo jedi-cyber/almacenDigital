@@ -1,23 +1,50 @@
-import gsap from "gsap";
 import * as THREE from "three";
 
 import { canPlace } from "./canPlace.js";
-import { animateProductAppearance, createProductMesh, disposeProductMesh } from "./scene.js";
+import {
+  addProductInstance,
+  animateInstanceAppearance,
+  animateInstanceRemoval,
+  getOrCreateInstancedMesh,
+  makeProductGeoKey,
+  removeProductInstance,
+} from "./scene.js";
 import type { Item, PlacedItem, Shelf, WarehouseConfig } from "./types.js";
 
+// ── Runtime types ─────────────────────────────────────────────────────────────
+
+export interface ProductEntry {
+  geoKey: string;
+  instanceIndex: number;
+  shelfId: string;
+  item: Item;
+  localPosition: { x: number; y: number; z: number };
+  labelSprite: THREE.Sprite;
+}
 
 export interface WarehouseRuntime {
+  /** Logical placement data, consumed by canPlace. */
   productsByShelf: Map<string, PlacedItem[]>;
-  productMeshesByShelf: Map<string, THREE.Mesh[]>;
-  productMeshBySku: Map<string, THREE.Mesh>;
-  highlightedMesh: THREE.Mesh | null;
+  /** Quick lookup of which SKUs live on each shelf. */
+  productSkusByShelf: Map<string, string[]>;
+  /** One InstancedMesh per unique (w×h×d) geometry group. */
+  instancedMeshByGeo: Map<string, THREE.InstancedMesh>;
+  /** Per-SKU render + metadata entry. */
+  productEntryBySku: Map<string, ProductEntry>;
+  /** Reverse raycasting map: "${geoKey}/${instanceIndex}" → sku. */
+  instanceOwner: Map<string, string>;
+  /** Currently highlighted product, with its original color and GSAP proxy. */
+  highlighted: {
+    sku: string;
+    originalColor: THREE.Color;
+    colorProxy: { r: number; g: number; b: number };
+  } | null;
 }
 
 const API = "/api";
 
-/**
- * Guarda la configuración de estantes en la base de datos.
- */
+// ── Config persistence ────────────────────────────────────────────────────────
+
 export function saveWarehouseConfig(config: WarehouseConfig): void {
   fetch(`${API}/config.php`, {
     method: "POST",
@@ -26,10 +53,6 @@ export function saveWarehouseConfig(config: WarehouseConfig): void {
   }).catch(console.error);
 }
 
-/**
- * Carga la configuración de estantes desde la base de datos.
- * Si la BD está vacía, usa warehouse-config.json como semilla inicial.
- */
 export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
   const response = await fetch(`${API}/config.php`);
   if (!response.ok) {
@@ -42,7 +65,6 @@ export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
     return config;
   }
 
-  // BD vacía → cargar desde archivo y sembrar la BD
   const fallback = await fetch("/warehouse-config.json");
   if (!fallback.ok) {
     throw new Error("No se pudo cargar la configuracion del archivo.");
@@ -56,37 +78,71 @@ export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
   return defaultConfig;
 }
 
-/**
- * Carga todos los productos almacenados en la base de datos.
- */
 export async function loadPlacedProducts(): Promise<
   Array<{ shelfId: string; item: Item; localPosition: { x: number; y: number; z: number } }>
 > {
   try {
     const response = await fetch(`${API}/productos.php`);
     if (!response.ok) return [];
-    const data = (await response.json()) as { products: Array<{ shelfId: string; item: Item; localPosition: { x: number; y: number; z: number } }> };
+    const data = (await response.json()) as {
+      products: Array<{ shelfId: string; item: Item; localPosition: { x: number; y: number; z: number } }>;
+    };
     return data.products ?? [];
   } catch {
     return [];
   }
 }
 
-/**
- * Inicializa el estado del runtime con los mapas vacíos para cada estante.
- */
+// ── Runtime lifecycle ─────────────────────────────────────────────────────────
+
 export function createRuntime(config: WarehouseConfig): WarehouseRuntime {
   return {
     productsByShelf: new Map(config.shelves.map((s) => [s.id, []])),
-    productMeshesByShelf: new Map(config.shelves.map((s) => [s.id, []])),
-    productMeshBySku: new Map(),
-    highlightedMesh: null
+    productSkusByShelf: new Map(config.shelves.map((s) => [s.id, []])),
+    instancedMeshByGeo: new Map(),
+    productEntryBySku: new Map(),
+    instanceOwner: new Map(),
+    highlighted: null,
   };
 }
 
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/** Registers the SKU in instanceOwner and productEntryBySku after adding an instance. */
+function registerInstance(
+  runtime: WarehouseRuntime,
+  sku: string,
+  geoKey: string,
+  instanceIndex: number,
+  shelfId: string,
+  item: Item,
+  localPosition: { x: number; y: number; z: number },
+  labelSprite: THREE.Sprite
+): void {
+  runtime.instanceOwner.set(`${geoKey}/${instanceIndex}`, sku);
+  runtime.productEntryBySku.set(sku, { geoKey, instanceIndex, shelfId, item, localPosition, labelSprite });
+}
+
+/** Updates productEntryBySku when swap-with-last relocates an instance. */
+function applySwap(
+  runtime: WarehouseRuntime,
+  movedSku: string | null,
+  newInstanceIndex: number
+): void {
+  if (movedSku === null) return;
+  const entry = runtime.productEntryBySku.get(movedSku);
+  if (entry) entry.instanceIndex = newInstanceIndex;
+}
+
+function disposeLabelSprite(sprite: THREE.Sprite): void {
+  (sprite.material as THREE.SpriteMaterial).map?.dispose();
+  sprite.material.dispose();
+}
+
+// ── Product CRUD ──────────────────────────────────────────────────────────────
+
 /**
- * Restaura un producto ya conocido en la escena sin ejecutar el algoritmo canPlace.
- * Usado al recargar la página para repoblar desde la base de datos.
+ * Restores a product from the database into the scene without running canPlace.
  */
 export function restoreItem(
   runtime: WarehouseRuntime,
@@ -97,23 +153,29 @@ export function restoreItem(
   shelfMesh: THREE.Mesh
 ): void {
   const placedItem: PlacedItem = { item, localPosition };
-  const mesh = createProductMesh(item, placedItem, shelfMesh);
-  scene.add(mesh);
+
+  const instancedMesh = getOrCreateInstancedMesh(
+    item.width, item.height, item.depth,
+    runtime.instancedMeshByGeo, scene
+  );
+  const { instanceIndex, labelSprite } = addProductInstance(item, computeWorldPos(localPosition, item, shelfMesh), instancedMesh);
+  scene.add(labelSprite);
+
+  const geoKey = makeProductGeoKey(item.width, item.height, item.depth);
+  registerInstance(runtime, item.sku, geoKey, instanceIndex, shelfId, item, localPosition, labelSprite);
 
   const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
   placedItems.push(placedItem);
   runtime.productsByShelf.set(shelfId, placedItems);
 
-  const meshes = runtime.productMeshesByShelf.get(shelfId) ?? [];
-  meshes.push(mesh);
-  runtime.productMeshesByShelf.set(shelfId, meshes);
-  runtime.productMeshBySku.set(item.sku, mesh);
+  const skus = runtime.productSkusByShelf.get(shelfId) ?? [];
+  skus.push(item.sku);
+  runtime.productSkusByShelf.set(shelfId, skus);
 }
 
 /**
- * Ejecuta canPlace y, si hay espacio, crea la malla, la agrega a la escena,
- * actualiza el runtime y persiste en la base de datos.
- * Devuelve el PlacedItem resultante, o null si no hubo lugar disponible.
+ * Runs canPlace, creates the instance, and persists to the database.
+ * Returns the PlacedItem on success, or null if there is no space.
  */
 export function placeItem(
   runtime: WarehouseRuntime,
@@ -127,17 +189,24 @@ export function placeItem(
   const placement = canPlace(shelf, placedItems, item, { preferredSection });
   if (!placement) return null;
 
-  const mesh = createProductMesh(placement.item, placement, shelfMesh);
-  scene.add(mesh);
-  animateProductAppearance(mesh);
+  const instancedMesh = getOrCreateInstancedMesh(
+    placement.item.width, placement.item.height, placement.item.depth,
+    runtime.instancedMeshByGeo, scene
+  );
+  const worldPos = computeWorldPos(placement.localPosition, placement.item, shelfMesh);
+  const { instanceIndex, labelSprite } = addProductInstance(placement.item, worldPos, instancedMesh);
+  scene.add(labelSprite);
+  animateInstanceAppearance(instancedMesh, instanceIndex);
+
+  const geoKey = makeProductGeoKey(placement.item.width, placement.item.height, placement.item.depth);
+  registerInstance(runtime, placement.item.sku, geoKey, instanceIndex, shelf.id, placement.item, placement.localPosition, labelSprite);
 
   placedItems.push(placement);
   runtime.productsByShelf.set(shelf.id, placedItems);
 
-  const meshes = runtime.productMeshesByShelf.get(shelf.id) ?? [];
-  meshes.push(mesh);
-  runtime.productMeshesByShelf.set(shelf.id, meshes);
-  runtime.productMeshBySku.set(placement.item.sku, mesh);
+  const skus = runtime.productSkusByShelf.get(shelf.id) ?? [];
+  skus.push(placement.item.sku);
+  runtime.productSkusByShelf.set(shelf.id, skus);
 
   persistPlacedItem(shelf.id, placement.item, placement.localPosition);
 
@@ -149,110 +218,121 @@ export function updateItemPlacement(
   sku: string,
   localPosition: { x: number; y: number; z: number }
 ): boolean {
-  const mesh = runtime.productMeshBySku.get(sku);
-  if (!mesh) return false;
+  const entry = runtime.productEntryBySku.get(sku);
+  if (!entry) return false;
 
-  const shelfId = String(mesh.userData.shelfId);
-  const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
-  const placedItem = placedItems.find((entry) => entry.item.sku === sku);
-  if (!placedItem) return false;
+  entry.localPosition = { ...localPosition };
 
-  placedItem.localPosition = { ...localPosition };
-  mesh.userData.localPosition = { ...localPosition };
-  persistPlacedItem(shelfId, placedItem.item, placedItem.localPosition);
+  const placedItems = runtime.productsByShelf.get(entry.shelfId) ?? [];
+  const placedItem = placedItems.find((p) => p.item.sku === sku);
+  if (placedItem) placedItem.localPosition = { ...localPosition };
+
+  persistPlacedItem(entry.shelfId, entry.item, localPosition);
   return true;
 }
 
 /**
- * Elimina un producto de la escena, del runtime y de la base de datos.
- * Devuelve el ID del estante afectado, o null si el SKU no existía.
+ * Animates the instance to scale 0, then removes it from the scene, runtime, and database.
+ * Returns the shelfId of the affected shelf, or null if the SKU wasn't found.
  */
 export function removeItem(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
   sku: string
 ): string | null {
-  const mesh = runtime.productMeshBySku.get(sku);
-  if (!mesh) return null;
+  const entry = runtime.productEntryBySku.get(sku);
+  if (!entry) return null;
 
-  const shelfId = String(mesh.userData.shelfId);
+  const { geoKey, instanceIndex, shelfId, labelSprite } = entry;
+  const instancedMesh = runtime.instancedMeshByGeo.get(geoKey);
 
   clearHighlight(runtime);
 
-  runtime.productMeshBySku.delete(sku);
+  scene.remove(labelSprite);
+  disposeLabelSprite(labelSprite);
 
-  gsap.to(mesh.scale, {
-    x: 0,
-    y: 0,
-    z: 0,
-    duration: 0.3,
-    ease: "power2.in",
-    onComplete: () => {
-      scene.remove(mesh);
-      disposeProductMesh(mesh);
-    }
-  });
+  runtime.productEntryBySku.delete(sku);
 
-  const meshList = runtime.productMeshesByShelf.get(shelfId) ?? [];
-  runtime.productMeshesByShelf.set(shelfId, meshList.filter((m) => m !== mesh));
+  runtime.productSkusByShelf.set(
+    shelfId,
+    (runtime.productSkusByShelf.get(shelfId) ?? []).filter((s) => s !== sku)
+  );
+  runtime.productsByShelf.set(
+    shelfId,
+    (runtime.productsByShelf.get(shelfId) ?? []).filter((p) => p.item.sku !== sku)
+  );
 
-  const itemList = runtime.productsByShelf.get(shelfId) ?? [];
-  runtime.productsByShelf.set(shelfId, itemList.filter((p) => p.item.sku !== sku));
+  if (instancedMesh) {
+    animateInstanceRemoval(instancedMesh, instanceIndex, () => {
+      const movedSku = removeProductInstance(instancedMesh, instanceIndex, runtime.instanceOwner, geoKey);
+      applySwap(runtime, movedSku, instanceIndex);
+    });
+  }
 
-  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, {
-    method: "DELETE"
-  }).catch(console.error);
+  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
 
   return shelfId;
 }
 
-/**
- * Resalta un producto con efecto emisivo cian intermitente.
- * Limpia cualquier resaltado anterior antes de aplicar el nuevo.
- */
+// ── Highlight ─────────────────────────────────────────────────────────────────
+
+import gsap from "gsap";
+
 export function highlightProduct(runtime: WarehouseRuntime, sku: string): boolean {
   clearHighlight(runtime);
 
-  const target = runtime.productMeshBySku.get(sku);
-  if (!target) return false;
+  const entry = runtime.productEntryBySku.get(sku);
+  if (!entry) return false;
 
-  const material = target.material;
-  if (!(material instanceof THREE.MeshStandardMaterial)) return false;
+  const instancedMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
+  if (!instancedMesh || !instancedMesh.instanceColor) return false;
 
-  material.emissive.setHex(0x00ffff);
-  material.emissiveIntensity = 0.8;
+  const originalColor = new THREE.Color();
+  instancedMesh.getColorAt(entry.instanceIndex, originalColor);
 
-  runtime.highlightedMesh = target;
-  gsap.to(material, {
-    emissiveIntensity: 0.1,
+  const cyan = new THREE.Color(0x00ffff);
+  const colorProxy = { r: originalColor.r, g: originalColor.g, b: originalColor.b };
+
+  gsap.to(colorProxy, {
+    r: cyan.r,
+    g: cyan.g,
+    b: cyan.b,
     duration: 0.7,
     repeat: -1,
     yoyo: true,
-    ease: "sine.inOut"
+    ease: "sine.inOut",
+    onUpdate: () => {
+      instancedMesh.setColorAt(entry.instanceIndex, _tmpColor.setRGB(colorProxy.r, colorProxy.g, colorProxy.b));
+      instancedMesh.instanceColor!.needsUpdate = true;
+    }
   });
 
+  runtime.highlighted = { sku, originalColor, colorProxy };
   return true;
 }
 
-/**
- * Limpia el efecto emisivo de todos los productos y cancela el intervalo de parpadeo.
- */
+const _tmpColor = new THREE.Color();
+
 export function clearHighlight(runtime: WarehouseRuntime): void {
-  if (runtime.highlightedMesh) {
-    const material = runtime.highlightedMesh.material;
-    if (material instanceof THREE.MeshStandardMaterial) {
-      gsap.killTweensOf(material);
-      material.emissive.setHex(0x000000);
-      material.emissiveIntensity = 0;
+  if (!runtime.highlighted) return;
+
+  const { sku, originalColor, colorProxy } = runtime.highlighted;
+  gsap.killTweensOf(colorProxy);
+
+  const entry = runtime.productEntryBySku.get(sku);
+  if (entry) {
+    const instancedMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
+    if (instancedMesh && instancedMesh.instanceColor) {
+      instancedMesh.setColorAt(entry.instanceIndex, originalColor);
+      instancedMesh.instanceColor.needsUpdate = true;
     }
-    runtime.highlightedMesh = null;
   }
+
+  runtime.highlighted = null;
 }
 
-/**
- * Traslada un producto de su estante/piso actual a otro estante y/o piso.
- * Devuelve el nuevo PlacedItem si tuvo éxito, o null si no hay espacio en el destino.
- */
+// ── Transfer ──────────────────────────────────────────────────────────────────
+
 export function transferItem(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
@@ -262,20 +342,15 @@ export function transferItem(
   targetShelfId: string,
   targetSection?: number
 ): PlacedItem | null {
-  const mesh = runtime.productMeshBySku.get(sku);
-  if (!mesh) return null;
+  const entry = runtime.productEntryBySku.get(sku);
+  if (!entry) return null;
 
-  const currentShelfId = String(mesh.userData.shelfId);
-  const currentPlacedItems = runtime.productsByShelf.get(currentShelfId) ?? [];
-  const placedItem = currentPlacedItems.find((p) => p.item.sku === sku);
-  if (!placedItem) return null;
+  const { item, shelfId: currentShelfId, geoKey, instanceIndex, labelSprite } = entry;
 
-  const { item } = placedItem;
   const targetShelf = config.shelves.find((s) => s.id === targetShelfId);
   const targetShelfMesh = shelfMeshes.get(targetShelfId);
   if (!targetShelf || !targetShelfMesh) return null;
 
-  // Ítems del estante destino, excluyendo el producto actual (por si es el mismo estante)
   const targetPlacedItems = (runtime.productsByShelf.get(targetShelfId) ?? []).filter(
     (p) => p.item.sku !== sku
   );
@@ -283,52 +358,57 @@ export function transferItem(
   const placement = canPlace(targetShelf, targetPlacedItems, item, { preferredSection: targetSection });
   if (!placement) return null;
 
-  // Limpiar resaltado antes de eliminar la malla
   clearHighlight(runtime);
 
-  // Quitar del estante actual en runtime
-  runtime.productMeshBySku.delete(sku);
-  runtime.productMeshesByShelf.set(
+  // ── Remove from current location ───────────────────────────────────────────
+  const instancedMesh = runtime.instancedMeshByGeo.get(geoKey)!;
+  scene.remove(labelSprite);
+  disposeLabelSprite(labelSprite);
+
+  runtime.productEntryBySku.delete(sku);
+  runtime.instanceOwner.delete(`${geoKey}/${instanceIndex}`);
+
+  runtime.productSkusByShelf.set(
     currentShelfId,
-    (runtime.productMeshesByShelf.get(currentShelfId) ?? []).filter((m) => m !== mesh)
+    (runtime.productSkusByShelf.get(currentShelfId) ?? []).filter((s) => s !== sku)
   );
   runtime.productsByShelf.set(
     currentShelfId,
-    currentPlacedItems.filter((p) => p.item.sku !== sku)
+    (runtime.productsByShelf.get(currentShelfId) ?? []).filter((p) => p.item.sku !== sku)
   );
 
-  // Eliminar la malla antigua de la escena
-  scene.remove(mesh);
-  disposeProductMesh(mesh);
+  const movedSku = removeProductInstance(instancedMesh, instanceIndex, runtime.instanceOwner, geoKey);
+  applySwap(runtime, movedSku, instanceIndex);
 
-  // Borrar del DB (registro antiguo)
-  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
+  // ── Add to target location ─────────────────────────────────────────────────
+  const newInstancedMesh = getOrCreateInstancedMesh(
+    placement.item.width, placement.item.height, placement.item.depth,
+    runtime.instancedMeshByGeo, scene
+  );
+  const worldPos = computeWorldPos(placement.localPosition, placement.item, targetShelfMesh);
+  const { instanceIndex: newIndex, labelSprite: newLabel } = addProductInstance(placement.item, worldPos, newInstancedMesh);
+  scene.add(newLabel);
+  animateInstanceAppearance(newInstancedMesh, newIndex);
 
-  // Crear la nueva malla en el estante destino
-  const newMesh = createProductMesh(placement.item, placement, targetShelfMesh);
-  scene.add(newMesh);
-  animateProductAppearance(newMesh);
+  const newGeoKey = makeProductGeoKey(placement.item.width, placement.item.height, placement.item.depth);
+  registerInstance(runtime, sku, newGeoKey, newIndex, targetShelfId, placement.item, placement.localPosition, newLabel);
 
-  // Registrar en el estante destino
   const targetItems = runtime.productsByShelf.get(targetShelfId) ?? [];
   targetItems.push(placement);
   runtime.productsByShelf.set(targetShelfId, targetItems);
 
-  const targetMeshes = runtime.productMeshesByShelf.get(targetShelfId) ?? [];
-  targetMeshes.push(newMesh);
-  runtime.productMeshesByShelf.set(targetShelfId, targetMeshes);
-  runtime.productMeshBySku.set(sku, newMesh);
+  const targetSkus = runtime.productSkusByShelf.get(targetShelfId) ?? [];
+  targetSkus.push(sku);
+  runtime.productSkusByShelf.set(targetShelfId, targetSkus);
 
-  // Persistir nueva ubicación
+  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
   persistPlacedItem(targetShelfId, placement.item, placement.localPosition);
 
   return placement;
 }
 
-/**
- * Actualiza las dimensiones de un producto existente en escena, runtime y BD.
- * Recrea la malla con las nuevas dimensiones manteniendo la posición actual.
- */
+// ── Dimension update ──────────────────────────────────────────────────────────
+
 export function updateItemDimensions(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
@@ -336,40 +416,52 @@ export function updateItemDimensions(
   newDimensions: { name: string; width: number; height: number; depth: number },
   shelfMesh: THREE.Mesh
 ): boolean {
-  const oldMesh = runtime.productMeshBySku.get(sku);
-  if (!oldMesh) return false;
+  const entry = runtime.productEntryBySku.get(sku);
+  if (!entry) return false;
 
-  const shelfId = String(oldMesh.userData.shelfId);
+  const { geoKey, instanceIndex, shelfId, localPosition, labelSprite } = entry;
+  const instancedMesh = runtime.instancedMeshByGeo.get(geoKey);
+  if (!instancedMesh) return false;
+
   const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
   const placedItem = placedItems.find((p) => p.item.sku === sku);
   if (!placedItem) return false;
 
+  clearHighlight(runtime);
+
+  // Update logical item
   if (newDimensions.name) placedItem.item.name = newDimensions.name;
   placedItem.item.width = newDimensions.width;
   placedItem.item.height = newDimensions.height;
   placedItem.item.depth = newDimensions.depth;
 
-  clearHighlight(runtime);
-  scene.remove(oldMesh);
-  disposeProductMesh(oldMesh);
+  // Remove old instance
+  scene.remove(labelSprite);
+  disposeLabelSprite(labelSprite);
+  runtime.productEntryBySku.delete(sku);
+  runtime.instanceOwner.delete(`${geoKey}/${instanceIndex}`);
 
-  const newMesh = createProductMesh(placedItem.item, placedItem, shelfMesh);
-  scene.add(newMesh);
+  const movedSku = removeProductInstance(instancedMesh, instanceIndex, runtime.instanceOwner, geoKey);
+  applySwap(runtime, movedSku, instanceIndex);
 
-  const meshList = runtime.productMeshesByShelf.get(shelfId) ?? [];
-  const idx = meshList.indexOf(oldMesh);
-  if (idx >= 0) meshList[idx] = newMesh;
-  runtime.productMeshesByShelf.set(shelfId, meshList);
-  runtime.productMeshBySku.set(sku, newMesh);
+  // Add new instance with updated dimensions
+  const newInstancedMesh = getOrCreateInstancedMesh(
+    placedItem.item.width, placedItem.item.height, placedItem.item.depth,
+    runtime.instancedMeshByGeo, scene
+  );
+  const worldPos = computeWorldPos(localPosition, placedItem.item, shelfMesh);
+  const { instanceIndex: newIdx, labelSprite: newLabel } = addProductInstance(placedItem.item, worldPos, newInstancedMesh);
+  scene.add(newLabel);
 
-  persistPlacedItem(shelfId, placedItem.item, placedItem.localPosition);
+  const newGeoKey = makeProductGeoKey(placedItem.item.width, placedItem.item.height, placedItem.item.depth);
+  registerInstance(runtime, sku, newGeoKey, newIdx, shelfId, placedItem.item, localPosition, newLabel);
+
+  persistPlacedItem(shelfId, placedItem.item, localPosition);
   return true;
 }
 
-/**
- * Elimina un estante, todos sus productos y sus mallas de la escena.
- * La actualización de config y shelfMeshes/shelfSprites la hace el llamador.
- */
+// ── Shelf removal ─────────────────────────────────────────────────────────────
+
 export function removeShelf(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
@@ -379,23 +471,47 @@ export function removeShelf(
 ): void {
   clearHighlight(runtime);
 
-  const items = runtime.productsByShelf.get(shelfId) ?? [];
-  items.forEach(({ item }) => {
-    fetch(`${API}/productos.php?sku=${encodeURIComponent(item.sku)}`, { method: "DELETE" }).catch(console.error);
-  });
+  const skus = [...(runtime.productSkusByShelf.get(shelfId) ?? [])];
 
-  const meshes = runtime.productMeshesByShelf.get(shelfId) ?? [];
-  meshes.forEach((mesh) => {
-    runtime.productMeshBySku.delete(String(mesh.userData.sku));
-    scene.remove(mesh);
-    disposeProductMesh(mesh);
-  });
+  for (const sku of skus) {
+    fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
+
+    const entry = runtime.productEntryBySku.get(sku);
+    if (!entry) continue;
+
+    scene.remove(entry.labelSprite);
+    disposeLabelSprite(entry.labelSprite);
+
+    const instancedMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
+    if (instancedMesh) {
+      const movedSku = removeProductInstance(instancedMesh, entry.instanceIndex, runtime.instanceOwner, entry.geoKey);
+      applySwap(runtime, movedSku, entry.instanceIndex);
+    }
+
+    runtime.productEntryBySku.delete(sku);
+  }
 
   runtime.productsByShelf.delete(shelfId);
-  runtime.productMeshesByShelf.delete(shelfId);
+  runtime.productSkusByShelf.delete(shelfId);
 
   scene.remove(shelfMesh);
   scene.remove(shelfSprite);
+}
+
+// ── Internal utils ────────────────────────────────────────────────────────────
+
+function computeWorldPos(
+  localPosition: { x: number; y: number; z: number },
+  item: Pick<Item, "width" | "height" | "depth">,
+  shelfMesh: THREE.Mesh
+): THREE.Vector3 {
+  const p = (shelfMesh.geometry as THREE.BoxGeometry).parameters as THREE.BoxGeometry["parameters"];
+  const localPoint = new THREE.Vector3(
+    -p.width / 2 + localPosition.x + item.width / 2,
+    -p.height / 2 + localPosition.y + item.height / 2,
+    -p.depth / 2 + localPosition.z + item.depth / 2
+  );
+  return shelfMesh.localToWorld(localPoint);
 }
 
 function persistPlacedItem(

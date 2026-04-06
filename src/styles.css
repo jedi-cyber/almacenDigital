@@ -93,6 +93,7 @@ code {
   position: relative;
   padding: 32px 24px;
   background: var(--color-surface);
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   border-right: 1px solid var(--color-border);
   overflow-y: auto;
@@ -210,6 +211,7 @@ code {
   background: var(--color-overlay);
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-soft);
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }
 
@@ -409,7 +411,7 @@ code {
 
 .product-editor > strong {
   font-size: 0.9rem;
-  color: #3d2b10;
+  color: var(--color-text);
 }
 
 .editor-sku {
@@ -452,7 +454,7 @@ code {
 }
 
 .editor-transfer .icon-action-btn--wide {
-  width: 100%;
+  width: fit-content;
   justify-content: center;
 }
 
@@ -468,7 +470,7 @@ code {
 
 .transfer-panel strong {
   font-size: 0.9rem;
-  color: #2c4a7a;
+  color: var(--color-text);
 }
 
 .transfer-fields {
@@ -514,7 +516,7 @@ code {
 
 .transfer-confirm-btn {
   background: rgba(60, 100, 180, 0.14);
-  color: #1a3a6a;
+  color: var(--color-text);
 }
 
 .transfer-confirm-btn:hover {
@@ -523,7 +525,7 @@ code {
 
 .transfer-cancel-btn {
   background: rgba(74, 53, 32, 0.08);
-  color: #5a4030;
+  color: var(--color-text);
 }
 
 .transfer-cancel-btn:hover {
@@ -540,7 +542,7 @@ code {
 }
 
 .shelf-summary--manager {
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--color-surface-strong);
 }
 
 .shelf-config {
@@ -856,6 +858,7 @@ code {
   background: var(--color-overlay);
   color: var(--color-text);
   box-shadow: var(--shadow-soft);
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   cursor: pointer;
 }
@@ -928,6 +931,7 @@ code {
   font-weight: 700;
   cursor: pointer;
   box-shadow: var(--shadow-soft);
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }
 
@@ -938,6 +942,7 @@ code {
   border-radius: 16px;
   background: var(--color-surface-soft);
   border: 1px solid var(--color-border-soft);
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow-soft);
 }

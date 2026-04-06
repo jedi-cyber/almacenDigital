@@ -82,6 +82,11 @@ export const UI_COPY = {
       updateHelp: "Usa este valor para repartir el estante en pisos iguales.",
       addBoardHelp: "Agrega un piso extra sin reemplazar los niveles actuales."
     },
+    shelfSizeConfig: {
+      title: "Editar tamaño del estante",
+      updateHelp: "Modifica las dimensiones del estante. Los productos que queden fuera de los nuevos limites se veran expuestos.",
+      updateBtn: "Aplicar tamaño"
+    },
     shelfSummary: {
       title: "Resumen del estante seleccionado",
       legacyTitle: "Referencia del estante"

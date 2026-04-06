@@ -1,10 +1,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { SHELF_PALETTE, addFloor, addLights, buildScene, buildShelfMesh, collectBoardOffsets, localToWorld, updateShelfTransparency } from "./scene.js";
+import { SHELF_PALETTE, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
 import type { PlacedItem, Shelf, WarehouseConfig } from "./types.js";
+import { getSectionBoundaries } from "./canPlace.js";
 import {
   createRuntime,
   loadPlacedProducts,
@@ -29,6 +30,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 
   addLights(scene);
   addFloor(scene);
+  addWalls(scene, config.shelves);
 
   const shelfMeshes = new Map<string, THREE.Mesh>();
   const shelfSprites = new Map<string, THREE.Sprite>();
@@ -65,7 +67,11 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     shelfTotal: refs.shelfTotal,
     shelfOccupied: refs.shelfOccupied,
     shelfFree: refs.shelfFree,
-    onShelfUpdated: () => saveWarehouseConfig(config)
+    onShelfUpdated: () => saveWarehouseConfig(config),
+    onShelfResized: (shelfId, shelf) => {
+      const sprite = shelfSprites.get(shelfId);
+      if (sprite) sprite.position.y = shelf.position.y + shelf.height / 2 + 0.7;
+    }
   });
 
   const dragController = wireShelfDrag(
@@ -237,15 +243,15 @@ function wireShelfDrag(
   /** Configura dragPlane como un plano vertical que mira hacia la cámara,
    *  pasando por la posición del producto. Permite capturar movimiento vertical
    *  del mouse para cambiar de piso al arrastrar. */
-  const setupProductDragPlane = (productMesh: THREE.Mesh, shelfMesh: THREE.Mesh | undefined) => {
+  const setupProductDragPlane = (productPos: THREE.Vector3, shelfMesh: THREE.Mesh | undefined) => {
     if (shelfMesh) {
       const faceNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(shelfMesh.quaternion);
-      const toCam = new THREE.Vector3().subVectors(camera.position, productMesh.position).normalize();
+      const toCam = new THREE.Vector3().subVectors(camera.position, productPos).normalize();
       if (faceNormal.dot(toCam) < 0) faceNormal.negate();
-      dragPlane.setFromNormalAndCoplanarPoint(faceNormal, productMesh.position);
+      dragPlane.setFromNormalAndCoplanarPoint(faceNormal, productPos);
     } else {
       dragPlane.normal.set(0, 1, 0);
-      dragPlane.constant = -productMesh.position.y;
+      dragPlane.constant = -productPos.y;
     }
   };
 
@@ -285,20 +291,25 @@ function wireShelfDrag(
     if (!editModeEnabled) return;
 
     if (pendingProductSku) {
-      const productMesh = runtime.productMeshBySku.get(pendingProductSku);
-      if (productMesh) {
-        activeShelfId = String(productMesh.userData.shelfId);
-        activeProductSku = String(productMesh.userData.sku);
-        draggedProductLocalPosition = { ...(productMesh.userData.localPosition as { x: number; y: number; z: number }) };
+      const pendingEntry = runtime.productEntryBySku.get(pendingProductSku);
+      if (pendingEntry) {
+        const pendingIMesh = runtime.instancedMeshByGeo.get(pendingEntry.geoKey);
+        const pendingWorldPos = pendingIMesh
+          ? getInstanceWorldPosition(pendingIMesh, pendingEntry.instanceIndex)
+          : new THREE.Vector3();
+
+        activeShelfId = pendingEntry.shelfId;
+        activeProductSku = pendingProductSku;
+        draggedProductLocalPosition = { ...pendingEntry.localPosition };
         pointerDownPos = { x: event.clientX, y: event.clientY };
-        setupProductDragPlane(productMesh, shelfMeshes.get(activeShelfId));
+        setupProductDragPlane(pendingWorldPos, shelfMeshes.get(activeShelfId));
 
         toNdc(event);
         raycaster.setFromCamera(pointerNdc, camera);
         if (raycaster.ray.intersectPlane(dragPlane, intersectPoint)) {
           lastIntersect.copy(intersectPoint);
         } else {
-          lastIntersect.copy(productMesh.position);
+          lastIntersect.copy(pendingWorldPos);
         }
 
         dragging = true;
@@ -315,28 +326,35 @@ function wireShelfDrag(
     toNdc(event);
     raycaster.setFromCamera(pointerNdc, camera);
 
-    const productHits = raycaster.intersectObjects([...runtime.productMeshBySku.values()], false);
+    const productHits = raycaster.intersectObjects([...runtime.instancedMeshByGeo.values()], false);
     if (productHits.length > 0) {
-      const productMesh = productHits[0].object as THREE.Mesh;
-      const shelfId = String(productMesh.userData.shelfId);
-      const localPosition = productMesh.userData.localPosition as { x: number; y: number; z: number } | undefined;
+      const hit = productHits[0];
+      const hitIMesh = hit.object as THREE.InstancedMesh;
+      const hitInstanceId = hit.instanceId;
+      if (hitInstanceId !== undefined) {
+        const hitGeoKey = hitIMesh.userData.geoKey as string;
+        const hitSku = runtime.instanceOwner.get(`${hitGeoKey}/${hitInstanceId}`);
+        const hitEntry = hitSku ? runtime.productEntryBySku.get(hitSku) : undefined;
+        if (hitEntry && hitSku) {
+          const hitWorldPos = getInstanceWorldPosition(hitIMesh, hitInstanceId);
+          activeShelfId = hitEntry.shelfId;
+          activeProductSku = hitSku;
+          draggedProductLocalPosition = { ...hitEntry.localPosition };
+          pointerDownPos = { x: event.clientX, y: event.clientY };
+          setupProductDragPlane(hitWorldPos, shelfMeshes.get(hitEntry.shelfId));
 
-      activeShelfId = shelfId;
-      activeProductSku = String(productMesh.userData.sku);
-      draggedProductLocalPosition = localPosition ? { ...localPosition } : null;
-      pointerDownPos = { x: event.clientX, y: event.clientY };
-      setupProductDragPlane(productMesh, shelfMeshes.get(shelfId));
+          if (raycaster.ray.intersectPlane(dragPlane, intersectPoint)) {
+            lastIntersect.copy(intersectPoint);
+          }
 
-      if (raycaster.ray.intersectPlane(dragPlane, intersectPoint)) {
-        lastIntersect.copy(intersectPoint);
+          dragging = true;
+          controls.enabled = false;
+          canvas.style.cursor = "grabbing";
+          canvas.setPointerCapture(event.pointerId);
+          applySelection(hitEntry.shelfId);
+          return;
+        }
       }
-
-      dragging = true;
-      controls.enabled = false;
-      canvas.style.cursor = "grabbing";
-      canvas.setPointerCapture(event.pointerId);
-      applySelection(shelfId);
-      return;
     }
 
     // Detectar clic sobre un piso arrastrable (búsqueda recursiva en hijos)
@@ -413,14 +431,14 @@ function wireShelfDrag(
     if (dragging && activeProductSku && activeShelfId) {
       if (!raycaster.ray.intersectPlane(dragPlane, intersectPoint)) return;
 
-      const productMesh = runtime.productMeshBySku.get(activeProductSku);
+      const dragEntry = runtime.productEntryBySku.get(activeProductSku);
       const shelfMesh = shelfMeshes.get(activeShelfId);
       const localPosition = draggedProductLocalPosition;
       const shelf = config.shelves.find((s) => s.id === activeShelfId);
-      if (!productMesh || !shelfMesh || !localPosition || !shelf) return;
+      if (!dragEntry || !shelfMesh || !localPosition || !shelf) return;
 
       const nextLocalPosition = projectProductPositionInsideShelf(
-        productMesh,
+        dragEntry.item,
         shelfMesh,
         intersectPoint,
         runtime.productsByShelf.get(activeShelfId) ?? [],
@@ -430,7 +448,16 @@ function wireShelfDrag(
       if (!nextLocalPosition) return;
 
       draggedProductLocalPosition = nextLocalPosition;
-      productMesh.position.copy(localToWorld(nextLocalPosition, productMesh.userData as { width: number; height: number; depth: number }, shelfMesh));
+      const newWorldPos = localToWorld(nextLocalPosition, dragEntry.item, shelfMesh);
+      const dragIMesh = runtime.instancedMeshByGeo.get(dragEntry.geoKey);
+      if (dragIMesh) {
+        setInstanceWorldPosition(dragIMesh, dragEntry.instanceIndex, newWorldPos);
+        dragEntry.labelSprite.position.set(
+          newWorldPos.x,
+          newWorldPos.y + dragEntry.item.height / 2 + 0.12,
+          newWorldPos.z
+        );
+      }
       return;
     }
 
@@ -483,16 +510,24 @@ function wireShelfDrag(
         draggedMesh.position.z -= dz;
       } else {
         shelfSprites.get(activeShelfId)?.position.add(new THREE.Vector3(dx, 0, dz));
-        runtime.productMeshesByShelf.get(activeShelfId)?.forEach((pm) => {
-          pm.position.x += dx;
-          pm.position.z += dz;
-        });
+        for (const sku of runtime.productSkusByShelf.get(activeShelfId) ?? []) {
+          const entry = runtime.productEntryBySku.get(sku);
+          if (!entry) continue;
+          const iMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
+          if (!iMesh) continue;
+          const pos = getInstanceWorldPosition(iMesh, entry.instanceIndex);
+          pos.x += dx;
+          pos.z += dz;
+          setInstanceWorldPosition(iMesh, entry.instanceIndex, pos);
+          entry.labelSprite.position.x += dx;
+          entry.labelSprite.position.z += dz;
+        }
       }
       return;
     }
 
     // Cursor según estado
-    const productHover = raycaster.intersectObjects([...runtime.productMeshBySku.values()], false);
+    const productHover = raycaster.intersectObjects([...runtime.instancedMeshByGeo.values()], false);
     if (productHover.length > 0) {
       canvas.style.cursor = "move";
       return;
@@ -611,12 +646,22 @@ function wireShelfDrag(
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
 
-    runtime.productMeshesByShelf.get(selectedShelfId)?.forEach((pm) => {
-      const dx = pm.position.x - cx;
-      const dz = pm.position.z - cz;
-      pm.position.x = cx + dx * cos - dz * sin;
-      pm.position.z = cz + dx * sin + dz * cos;
-    });
+    for (const sku of runtime.productSkusByShelf.get(selectedShelfId) ?? []) {
+      const entry = runtime.productEntryBySku.get(sku);
+      if (!entry) continue;
+      const iMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
+      if (!iMesh) continue;
+      const pos = getInstanceWorldPosition(iMesh, entry.instanceIndex);
+      const dx = pos.x - cx;
+      const dz = pos.z - cz;
+      pos.x = cx + dx * cos - dz * sin;
+      pos.z = cz + dx * sin + dz * cos;
+      setInstanceWorldPosition(iMesh, entry.instanceIndex, pos);
+      const ldx = entry.labelSprite.position.x - cx;
+      const ldz = entry.labelSprite.position.z - cz;
+      entry.labelSprite.position.x = cx + ldx * cos - ldz * sin;
+      entry.labelSprite.position.z = cz + ldx * sin + ldz * cos;
+    }
   });
 
   return {
@@ -631,7 +676,7 @@ function wireShelfDrag(
 }
 
 function projectProductPositionInsideShelf(
-  productMesh: THREE.Mesh,
+  item: { sku: string; width: number; height: number; depth: number },
   shelfMesh: THREE.Mesh,
   worldPoint: THREE.Vector3,
   placedItems: PlacedItem[],
@@ -639,15 +684,18 @@ function projectProductPositionInsideShelf(
 ): { x: number; y: number; z: number } | null {
   const geometry = (shelfMesh.geometry as THREE.BoxGeometry).parameters as THREE.BoxGeometry["parameters"];
   const localPoint = shelfMesh.worldToLocal(worldPoint.clone());
-  const item = productMesh.userData as { sku: string; width: number; height: number; depth: number };
 
-  // Determinar el piso al que apunta el ratón y hacer snap al centro del piso
-  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
-  const sectionHeight = shelf.height / sections;
-  const canPlaceYRaw = localPoint.y + geometry.height / 2 - item.height / 2;
-  const sectionIndex = clamp(Math.floor((localPoint.y + geometry.height / 2) / sectionHeight), 0, sections - 1);
-  const sectionMinY = sectionIndex * sectionHeight;
-  const sectionMaxY = Math.max(sectionMinY, (sectionIndex + 1) * sectionHeight - item.height);
+  // Determinar el piso al que apunta el ratón usando las posiciones reales de los pisos
+  const boundaries = getSectionBoundaries(shelf);
+  const numSections = boundaries.length - 1;
+  const bottomRelY = localPoint.y + geometry.height / 2;
+  const canPlaceYRaw = bottomRelY - item.height / 2;
+  let sectionIndex = 0;
+  for (let i = numSections - 1; i >= 0; i--) {
+    if (bottomRelY >= boundaries[i]) { sectionIndex = i; break; }
+  }
+  const sectionMinY = boundaries[sectionIndex];
+  const sectionMaxY = Math.max(sectionMinY, boundaries[sectionIndex + 1] - item.height);
   const snappedY = clamp(canPlaceYRaw, sectionMinY, sectionMaxY);
 
   const nextLocalPosition = {

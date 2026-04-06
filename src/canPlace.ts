@@ -73,6 +73,19 @@ export function aabbIntersects(a: Box3D, b: Box3D): boolean {
 }
 
 /**
+ * Devuelve los límites Y de cada sección usando las posiciones reales de los pisos (boardOffsets).
+ * El resultado es un array de (numSections + 1) valores en coordenadas locales [0..shelf.height].
+ */
+export function getSectionBoundaries(shelf: Shelf): number[] {
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  if (shelf.boardOffsets && shelf.boardOffsets.length > 0) {
+    const sorted = [...shelf.boardOffsets].sort((a, b) => a - b);
+    return [0, ...sorted.map((f) => f * shelf.height), shelf.height];
+  }
+  return Array.from({ length: sections + 1 }, (_, i) => (i * shelf.height) / sections);
+}
+
+/**
  * Busca la primera posición libre en un estante para ubicar un nuevo producto.
  * Prueba las 6 permutaciones de (width, height, depth) antes de retornar null.
  */
@@ -83,23 +96,29 @@ export function canPlace(
   options?: { preferredSection?: number }
 ): PlacedItem | null {
   const itemPermutations = getItemPermutations(newItem);
-  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
-  const preferredSection = options?.preferredSection ? Math.min(Math.max(options.preferredSection, 1), sections) : null;
-  const sectionHeight = shelf.height / sections;
+  const boundaries = getSectionBoundaries(shelf);
+  const numSections = boundaries.length - 1;
+  const preferredSection = options?.preferredSection
+    ? Math.min(Math.max(options.preferredSection, 1), numSections)
+    : null;
 
   for (const itemVariant of itemPermutations) {
     if (!fitsInsideShelf(shelf, itemVariant)) {
       continue;
     }
 
+    const sectionHeight = preferredSection !== null
+      ? boundaries[preferredSection] - boundaries[preferredSection - 1]
+      : shelf.height;
+
     if (preferredSection !== null && itemVariant.height > sectionHeight) {
       continue;
     }
 
     for (let x = 0; x <= shelf.width - itemVariant.width; x += SEARCH_STEP) {
-      const minY = preferredSection !== null ? (preferredSection - 1) * sectionHeight : 0;
+      const minY = preferredSection !== null ? boundaries[preferredSection - 1] : 0;
       const maxY = preferredSection !== null
-        ? preferredSection * sectionHeight - itemVariant.height
+        ? boundaries[preferredSection] - itemVariant.height
         : shelf.height - itemVariant.height;
 
       for (let y = minY; y <= maxY; y += SEARCH_STEP) {
