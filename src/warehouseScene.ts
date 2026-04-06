@@ -405,6 +405,10 @@ function wireShelfDrag(
       activeShelfId = clickedId;
       pointerDownPos = { x: event.clientX, y: event.clientY };
 
+      // Elevar el plano de arrastre al centro del estante para que el rayo
+      // lo intersecte aunque la cámara esté en ángulo bajo.
+      groundPlane.constant = -(shelfMeshes.get(clickedId)?.position.y ?? 0);
+
       if (raycaster.ray.intersectPlane(groundPlane, intersectPoint)) {
         lastIntersect.copy(intersectPoint);
       }

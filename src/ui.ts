@@ -186,6 +186,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
       -p.height / 2 + placement.localPosition.y + placement.item.height / 2,
       -p.depth / 2 + placement.localPosition.z + placement.item.depth / 2
     );
+    shelfMesh.updateWorldMatrix(true, false);
     const worldPos = shelfMesh.localToWorld(localPoint);
 
     const boxGeo = new THREE.BoxGeometry(placement.item.width, placement.item.height, placement.item.depth);
@@ -384,6 +385,10 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     shelf.width = newWidth;
     shelf.height = newHeight;
     shelf.depth = newDepth;
+
+    // Mantener el fondo del estante en Y=0 (posición.y = altura/2).
+    shelf.position.y = newHeight / 2;
+    shelfMesh.position.y = newHeight / 2;
 
     const shelfColor = getShelfColor(shelfId);
 
