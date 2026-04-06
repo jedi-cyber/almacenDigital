@@ -1,5 +1,5 @@
-import { calcVolume } from "./volume";
-import type { PlacedItem, Shelf, ShelfStatus } from "./types";
+import { calcVolume } from "./volume.js";
+import type { PlacedItem, Shelf, ShelfStatus } from "./types.js";
 
 /**
  * Calcula el estado volumétrico actual de un estante.

@@ -8,8 +8,13 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "types": [
       "node",
+      "vite/client",
       "vitest/globals"
     ]
   },

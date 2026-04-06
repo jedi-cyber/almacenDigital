@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { calcShelfStatus } from "../src/shelfStatus";
-import type { Item, PlacedItem, Shelf } from "../src/types";
+import { calcShelfStatus } from "../src/shelfStatus.js";
+import type { Item, PlacedItem, Shelf } from "../src/types.js";
 
 const shelf: Shelf = {
   id: "S-01",
