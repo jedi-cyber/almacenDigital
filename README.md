@@ -193,3 +193,27 @@ Cada estante define:
 ## Entrega
 
 La guía breve de evidencias está en [ENTREGA.md](ENTREGA.md#L1).
+
+---
+
+## Calificación
+
+- **Nota:** 18/20 — proyecto sólido que cubre las funcionalidades solicitadas y cuenta con pruebas unitarias para la lógica central.
+
+## Puntos a mejorar
+
+- **Documentación de despliegue:** Incluir pasos detallados para XAMPP/Apache (ruta en `htdocs`), ejemplo de importación de migraciones y configuración de permisos.
+- **Manejo de configuración:** Mover credenciales y host de BD a variables de entorno en lugar de hardcodear en `api/database.php`.
+- **Manejo de errores y logs:** Registrar errores del backend en un log y ofrecer respuestas JSON más descriptivas para facilitar debugging en producción.
+- **Seguridad:** Restringir CORS en producción y evitar usar credenciales `root` sin contraseña; validar/sanitizar entradas API.
+- **Pruebas de integración/E2E:** Añadir tests que cubran la interacción frontend ↔︎ API y casos de persistencia en MySQL.
+- **Optimización del motor de colocación:** Evaluar heurísticas o espacio de búsqueda adaptativo para estantes grandes (evitar búsqueda exhaustiva por grid si el espacio es grande).
+- **Experiencia de usuario:** Añadir indicadores de carga/errores en UI y un `favicon.ico` para evitar 404 en peticiones estáticas.
+
+## Opinión crítica
+
+El proyecto muestra diseño modular y buen enfoque en la separación de responsabilidades: la lógica volumétrica está cubierta por pruebas unitarias y la integración con Three.js ofrece una visualización clara. Estos son puntos fuertes que facilitan mantenimiento y extensión.
+
+No obstante, la experiencia de despliegue está orientada a un entorno local (XAMPP, `htdocs`, credenciales root) lo que reduce la reproducibilidad en otros entornos o servidores CI. La capa de migraciones funciona, pero su manejo de errores y transacciones puede fortalecerse (por ejemplo con logs persistentes y control más explícito de transacciones). Para llevar el proyecto a un entorno real/producción es recomendable parametrizar la configuración, endurecer CORS y credenciales, y añadir pruebas de integración que validen la persistencia y las rutas de la API.
+
+---

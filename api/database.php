@@ -61,7 +61,9 @@ function db_run_migrations(PDO $pdo): array
             $pdo->commit();
             $applied[] = $migrationId;
         } catch (Throwable $exception) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $exception;
         }
     }
