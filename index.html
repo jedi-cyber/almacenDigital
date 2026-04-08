@@ -4,8 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Almacen Digital 3D</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>
+    <div id="loading-screen" role="status" aria-label="Iniciando almacen digital" aria-live="polite">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <p id="loading-status">Iniciando almacen digital...</p>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -2,9 +2,7 @@
 require_once __DIR__ . "/database.php";
 
 header("Content-Type: application/json; charset=utf-8");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+cors_headers("GET, POST, DELETE, OPTIONS");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     http_response_code(204);
@@ -15,17 +13,26 @@ try {
     $pdo = db_connect(true);
     db_run_migrations($pdo);
 } catch (PDOException $e) {
+    api_log_error($e, "db_connect");
     http_response_code(500);
-    echo json_encode(["error" => "Conexion fallida: " . $e->getMessage()]);
+    echo json_encode(["error" => "No se pudo conectar a la base de datos.", "code" => "DB_CONNECT_ERROR"]);
     exit;
 } catch (Throwable $e) {
+    api_log_error($e, "migrations");
     http_response_code(500);
-    echo json_encode(["error" => "Migracion fallida: " . $e->getMessage()]);
+    echo json_encode(["error" => "Error al inicializar la base de datos.", "code" => "MIGRATION_ERROR"]);
     exit;
 }
 
 if ($_SERVER["REQUEST_METHOD"] === "GET") {
-    $rows = $pdo->query("SELECT * FROM productos")->fetchAll(PDO::FETCH_ASSOC);
+    try {
+        $rows = $pdo->query("SELECT * FROM productos")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        api_log_error($e, "productos:GET");
+        http_response_code(500);
+        echo json_encode(["error" => "No se pudieron leer los productos.", "code" => "PRODUCT_READ_ERROR"]);
+        exit;
+    }
 
     $products = array_map(function ($row) {
         return [
@@ -50,9 +57,27 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
 } elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
     $body = json_decode(file_get_contents("php://input"), true);
 
-    if (!isset($body["sku"], $body["shelfId"])) {
-        http_response_code(400);
-        echo json_encode(["error" => "Faltan campos obligatorios"]);
+    $sku     = valid_string($body["sku"]     ?? null, 64);
+    $shelfId = valid_string($body["shelfId"] ?? null, 64);
+    $name    = valid_string($body["name"]    ?? ($body["sku"] ?? null), 255) ?? $sku;
+    $width   = valid_positive_float($body["width"]  ?? null);
+    $height  = valid_positive_float($body["height"] ?? null);
+    $depth   = valid_positive_float($body["depth"]  ?? null);
+    $lx      = isset($body["localPosition"]["x"]) && is_numeric($body["localPosition"]["x"]) ? (float)$body["localPosition"]["x"] : null;
+    $ly      = isset($body["localPosition"]["y"]) && is_numeric($body["localPosition"]["y"]) ? (float)$body["localPosition"]["y"] : null;
+    $lz      = isset($body["localPosition"]["z"]) && is_numeric($body["localPosition"]["z"]) ? (float)$body["localPosition"]["z"] : null;
+
+    $missing = array_keys(array_filter(
+        compact("sku", "shelfId", "width", "height", "depth"),
+        fn($v) => $v === null
+    ));
+    if ($lx === null) $missing[] = "localPosition.x";
+    if ($ly === null) $missing[] = "localPosition.y";
+    if ($lz === null) $missing[] = "localPosition.z";
+
+    if (!empty($missing)) {
+        http_response_code(422);
+        echo json_encode(["error" => "Campos invalidos o faltantes: " . implode(", ", $missing), "code" => "INVALID_FIELDS"]);
         exit;
     }
 
@@ -70,17 +95,24 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
             local_y  = VALUES(local_y),
             local_z  = VALUES(local_z)");
 
-    $stmt->execute([
-        ":sku"     => $body["sku"],
-        ":shelf_id"=> $body["shelfId"],
-        ":name"    => $body["name"] ?? $body["sku"],
-        ":width"   => $body["width"],
-        ":height"  => $body["height"],
-        ":depth"   => $body["depth"],
-        ":local_x" => $body["localPosition"]["x"],
-        ":local_y" => $body["localPosition"]["y"],
-        ":local_z" => $body["localPosition"]["z"]
-    ]);
+    try {
+        $stmt->execute([
+            ":sku"     => $sku,
+            ":shelf_id"=> $shelfId,
+            ":name"    => $name,
+            ":width"   => $width,
+            ":height"  => $height,
+            ":depth"   => $depth,
+            ":local_x" => $lx,
+            ":local_y" => $ly,
+            ":local_z" => $lz,
+        ]);
+    } catch (Throwable $e) {
+        api_log_error($e, "productos:POST:upsert sku={$sku}");
+        http_response_code(500);
+        echo json_encode(["error" => "No se pudo guardar el producto.", "code" => "PRODUCT_SAVE_ERROR"]);
+        exit;
+    }
 
     echo json_encode(["ok" => true]);
 
@@ -88,11 +120,19 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
     $sku = $_GET["sku"] ?? "";
     if ($sku === "") {
         http_response_code(400);
-        echo json_encode(["error" => "SKU requerido"]);
+        echo json_encode(["error" => "El parametro 'sku' es requerido.", "code" => "MISSING_SKU"]);
         exit;
     }
 
-    $stmt = $pdo->prepare("DELETE FROM productos WHERE sku = :sku");
-    $stmt->execute([":sku" => $sku]);
+    try {
+        $stmt = $pdo->prepare("DELETE FROM productos WHERE sku = :sku");
+        $stmt->execute([":sku" => $sku]);
+    } catch (Throwable $e) {
+        api_log_error($e, "productos:DELETE sku={$sku}");
+        http_response_code(500);
+        echo json_encode(["error" => "No se pudo eliminar el producto.", "code" => "PRODUCT_DELETE_ERROR"]);
+        exit;
+    }
+
     echo json_encode(["ok" => true]);
 }

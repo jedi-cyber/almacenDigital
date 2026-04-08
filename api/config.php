@@ -5,9 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . "/database.php";
 
 header("Content-Type: application/json; charset=utf-8");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
+cors_headers("GET, POST, OPTIONS");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     http_response_code(204);
@@ -18,17 +16,26 @@ try {
     $pdo = db_connect(true);
     db_run_migrations($pdo);
 } catch (PDOException $e) {
+    api_log_error($e, "db_connect");
     http_response_code(500);
-    echo json_encode(["error" => "Conexion fallida: " . $e->getMessage()]);
+    echo json_encode(["error" => "No se pudo conectar a la base de datos.", "code" => "DB_CONNECT_ERROR"]);
     exit;
 } catch (Throwable $e) {
+    api_log_error($e, "migrations");
     http_response_code(500);
-    echo json_encode(["error" => "Migracion fallida: " . $e->getMessage()]);
+    echo json_encode(["error" => "Error al inicializar la base de datos.", "code" => "MIGRATION_ERROR"]);
     exit;
 }
 
 if ($_SERVER["REQUEST_METHOD"] === "GET") {
-    $rows = $pdo->query("SELECT * FROM estantes ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    try {
+        $rows = $pdo->query("SELECT * FROM estantes ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        api_log_error($e, "config:GET");
+        http_response_code(500);
+        echo json_encode(["error" => "No se pudieron leer los estantes.", "code" => "SHELF_READ_ERROR"]);
+        exit;
+    }
 
     $shelves = array_map(function ($row) {
         $shelf = [
@@ -67,8 +74,29 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
         exit;
     }
 
+    // Validar cada estante antes de tocar la BD
+    foreach ($body["shelves"] as $i => $shelf) {
+        $errs = [];
+        if (valid_string($shelf["id"] ?? null) === null)       $errs[] = "id";
+        if (valid_string($shelf["label"] ?? null) === null)    $errs[] = "label";
+        if (valid_positive_float($shelf["width"]  ?? null) === null) $errs[] = "width";
+        if (valid_positive_float($shelf["height"] ?? null) === null) $errs[] = "height";
+        if (valid_positive_float($shelf["depth"]  ?? null) === null) $errs[] = "depth";
+        if (!isset($shelf["position"]["x"], $shelf["position"]["y"], $shelf["position"]["z"])
+            || !is_numeric($shelf["position"]["x"])
+            || !is_numeric($shelf["position"]["y"])
+            || !is_numeric($shelf["position"]["z"])) {
+            $errs[] = "position";
+        }
+        if (!empty($errs)) {
+            http_response_code(422);
+            echo json_encode(["error" => "Estante [{$i}] tiene campos invalidos: " . implode(", ", $errs)]);
+            exit;
+        }
+    }
+
     // IDs recibidos en el payload
-    $incomingIds = array_map(fn($s) => $s["id"], $body["shelves"]);
+    $incomingIds = array_map(fn($s) => trim((string)$s["id"]), $body["shelves"]);
 
     // Eliminar de la BD los estantes que ya no están en el payload
     $existingIds = $pdo->query("SELECT id FROM estantes")->fetchAll(PDO::FETCH_COLUMN);
@@ -96,25 +124,32 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
             pos_z         = VALUES(pos_z),
             rotation_y    = VALUES(rotation_y)");
 
-    foreach ($body["shelves"] as $shelf) {
-        $boardOffsets = null;
-        if (isset($shelf["boardOffsets"]) && is_array($shelf["boardOffsets"]) && count($shelf["boardOffsets"]) > 0) {
-            $boardOffsets = json_encode($shelf["boardOffsets"]);
-        }
+    try {
+        foreach ($body["shelves"] as $shelf) {
+            $boardOffsets = null;
+            if (isset($shelf["boardOffsets"]) && is_array($shelf["boardOffsets"]) && count($shelf["boardOffsets"]) > 0) {
+                $boardOffsets = json_encode($shelf["boardOffsets"]);
+            }
 
-        $stmt->execute([
-            ":id"           => $shelf["id"],
-            ":label"        => $shelf["label"],
-            ":sections"     => (int)($shelf["sections"] ?? 1),
-            ":board_offsets"=> $boardOffsets,
-            ":width"        => $shelf["width"],
-            ":height"       => $shelf["height"],
-            ":depth"        => $shelf["depth"],
-            ":pos_x"        => $shelf["position"]["x"],
-            ":pos_y"        => $shelf["position"]["y"],
-            ":pos_z"        => $shelf["position"]["z"],
-            ":rotation_y"   => $shelf["rotationY"] ?? 0
-        ]);
+            $stmt->execute([
+                ":id"           => $shelf["id"],
+                ":label"        => $shelf["label"],
+                ":sections"     => (int)($shelf["sections"] ?? 1),
+                ":board_offsets"=> $boardOffsets,
+                ":width"        => $shelf["width"],
+                ":height"       => $shelf["height"],
+                ":depth"        => $shelf["depth"],
+                ":pos_x"        => $shelf["position"]["x"],
+                ":pos_y"        => $shelf["position"]["y"],
+                ":pos_z"        => $shelf["position"]["z"],
+                ":rotation_y"   => $shelf["rotationY"] ?? 0
+            ]);
+        }
+    } catch (Throwable $e) {
+        api_log_error($e, "config:POST:upsert");
+        http_response_code(500);
+        echo json_encode(["error" => "No se pudieron guardar los estantes.", "code" => "SHELF_SAVE_ERROR"]);
+        exit;
     }
 
     echo json_encode(["ok" => true]);

@@ -43,6 +43,21 @@ export interface WarehouseRuntime {
 
 const API = "/api";
 
+// ── API error reporting ───────────────────────────────────────────────────────
+
+let _apiErrorHandler: ((message: string) => void) | null = null;
+
+/** Registra un callback que se invoca con un mensaje legible cuando falla
+ *  una operación de red en background (persist, delete, transfer). */
+export function setApiErrorHandler(fn: (message: string) => void): void {
+  _apiErrorHandler = fn;
+}
+
+function reportApiError(context: string, error: unknown): void {
+  console.error(`[API] ${context}:`, error);
+  _apiErrorHandler?.(`Error al ${context}.`);
+}
+
 // ── Config persistence ────────────────────────────────────────────────────────
 
 export function saveWarehouseConfig(config: WarehouseConfig): void {
@@ -50,7 +65,7 @@ export function saveWarehouseConfig(config: WarehouseConfig): void {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config)
-  }).catch(console.error);
+  }).catch((e) => reportApiError("guardar la configuracion del estante", e));
 }
 
 export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
@@ -269,7 +284,8 @@ export function removeItem(
     });
   }
 
-  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
+  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
+    .catch((e) => reportApiError("eliminar el producto del servidor", e));
 
   return shelfId;
 }
@@ -405,7 +421,7 @@ export function transferItem(
   // para evitar que el DELETE llegue después del POST y borre el producto trasladado.
   fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
     .then(() => persistPlacedItem(targetShelfId, placement.item, placement.localPosition))
-    .catch(console.error);
+    .catch((e) => reportApiError("transferir el producto en el servidor", e));
 
   return placement;
 }
@@ -477,7 +493,8 @@ export function removeShelf(
   const skus = [...(runtime.productSkusByShelf.get(shelfId) ?? [])];
 
   for (const sku of skus) {
-    fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" }).catch(console.error);
+    fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
+      .catch((e) => reportApiError("eliminar producto del estante", e));
 
     const entry = runtime.productEntryBySku.get(sku);
     if (!entry) continue;
@@ -534,5 +551,5 @@ function persistPlacedItem(
       depth: item.depth,
       localPosition
     })
-  }).catch(console.error);
+  }).catch((e) => reportApiError("guardar el producto en el servidor", e));
 }

@@ -58,56 +58,146 @@ Funciones principales:
 
 - [api/config.php](api/config.php): `GET` devuelve la configuración de estantes; `POST` la persiste.
 - [api/productos.php](api/productos.php): `GET` lista los productos; `POST` upsert; `DELETE ?sku=X` elimina.
-- [api/database.php](api/database.php): conexión PDO y runner de migraciones.
-- [api/migrations/](api/migrations/): migraciones SQL en orden cronológico.
+- [api/database.php](api/database.php): conexión PDO, funciones de validación, CORS, logging y runner de migraciones.
+- [api/migrations/](api/migrations/): migraciones SQL en orden cronológico (se aplican automáticamente).
+
+### Pruebas (`tests/`)
+
+- [tests/shelfStatus.test.ts](tests/shelfStatus.test.ts): pruebas unitarias de fase 1 (volumen).
+- [tests/canPlace.test.ts](tests/canPlace.test.ts): pruebas unitarias de fase 2 (colocación y colisión AABB).
+- [tests/api.integration.test.ts](tests/api.integration.test.ts): pruebas de integración que verifican la API REST y la persistencia MySQL. Requieren XAMPP activo; se omiten automáticamente si la API no es alcanzable.
 
 ### Otros
 
 - [public/warehouse-config.json](public/warehouse-config.json): configuración inicial de estantes (fallback si la BD está vacía).
-- [tests/shelfStatus.test.ts](tests/shelfStatus.test.ts): pruebas de fase 1.
-- [tests/canPlace.test.ts](tests/canPlace.test.ts): pruebas de fase 2.
+- [.env.example](.env.example): plantilla de variables de entorno.
 
-## Requisitos
+---
 
-- `Node.js` 20 o superior
-- `npm`
-- `XAMPP` (Apache + MySQL + PHP 8) corriendo en `http://127.0.0.1`
+## Requisitos previos
 
-## Instalación
+| Herramienta | Versión mínima |
+| --- | --- |
+| Node.js | 20 |
+| npm | incluido con Node.js |
+| XAMPP | cualquier versión con PHP 8 y MySQL 5.7+ |
+
+---
+
+## Instalación y despliegue con XAMPP
+
+### 1. Clonar o copiar el repositorio en htdocs
+
+El backend PHP debe ejecutarse dentro del servidor web de XAMPP. La ruta correcta es:
+
+```text
+C:\xampp\htdocs\almacenDigital\
+```
+
+Si clonás con Git:
+
+```bash
+cd C:\xampp\htdocs
+git clone <url-del-repositorio> almacenDigital
+```
+
+O simplemente copiá la carpeta del proyecto a esa ruta. El nombre `almacenDigital` es importante porque el proxy de Vite apunta a `/almacenDigital/api/`.
+
+### 2. Iniciar XAMPP
+
+Abrí el **Panel de Control de XAMPP** y arrancá:
+
+- **Apache** — sirve el backend PHP.
+- **MySQL** — base de datos.
+
+Verificá que ambos módulos muestren el indicador verde. La API quedará disponible en `http://127.0.0.1/almacenDigital/api/`.
+
+### 3. Crear el archivo `.env`
+
+Copiá la plantilla incluida:
+
+```bash
+cp .env.example .env
+```
+
+El archivo `.env` queda en la raíz del proyecto (`C:\xampp\htdocs\almacenDigital\.env`) y contiene:
+
+```env
+DB_HOST=localhost
+DB_NAME=almacensekai
+DB_USER=root
+DB_PASSWORD=
+DB_CHARSET=utf8mb4
+
+# Origen permitido para CORS. En producción pon la URL exacta del frontend.
+ALLOWED_ORIGIN=http://localhost:5173
+```
+
+Editá los valores si tu instalación de MySQL usa una contraseña o un usuario diferente. El archivo `.env` está en `.gitignore` y nunca se sube al repositorio.
+
+### 4. Permisos de escritura para logs (Linux/macOS)
+
+En Windows con XAMPP los permisos de archivo no suelen ser un problema. En Linux o macOS, el proceso de Apache necesita poder escribir en `api/logs/`. Otorgá permisos al directorio:
+
+```bash
+chmod 775 api/logs/
+chown www-data:www-data api/logs/   # ajustá el usuario según tu distro
+```
+
+Si el directorio no existe todavía, PHP lo crea automáticamente en la primera petición con error. Si querés crearlo manualmente:
+
+```bash
+mkdir -p api/logs
+chmod 775 api/logs
+```
+
+### 5. Migraciones de la base de datos
+
+**No hay pasos manuales.** La primera petición a la API (`/api/config.php` o `/api/productos.php`) ejecuta automáticamente todas las migraciones pendientes en `api/migrations/`. El flujo es:
+
+1. `db_connect()` crea la base de datos `almacensekai` si no existe.
+2. `db_run_migrations()` crea la tabla `migrations` si no existe.
+3. Cada archivo en `api/migrations/*.php` se aplica en orden cronológico (por nombre de archivo) solo si su `id` aún no está en la tabla `migrations`.
+4. Cada migración corre dentro de una transacción; si falla, hace rollback y lanza una excepción.
+
+Las migraciones incluidas crean las siguientes tablas:
+
+| Migración | Tabla / cambio |
+| --- | --- |
+| `202603270001_create_estantes_table` | Tabla `estantes` con id, label, dimensiones, posición y rotación |
+| `202603270002_create_productos_table` | Tabla `productos` con sku, shelf_id, nombre, dimensiones y posición local |
+| `202603270003_add_sections_to_estantes` | Columna `sections` en `estantes` (idempotente: verifica antes de agregar) |
+| `202603280004_add_board_offsets_to_estantes` | Columna `board_offsets` en `estantes` para pisos intermedios |
+
+Si preferís revisar la estructura antes de arrancar la app, podés abrir **phpMyAdmin** en `http://127.0.0.1/phpmyadmin` y examinar la base `almacensekai` después de la primera petición.
+
+### 6. Instalar dependencias del frontend
 
 ```bash
 npm install
 ```
 
-El backend no requiere instalación adicional. XAMPP debe tener este repositorio en `htdocs/almacenDigital/` y MySQL corriendo. Las migraciones se ejecutan automáticamente en la primera petición.
-
-## Uso
-
-Levantar entorno de desarrollo (requiere XAMPP con Apache y MySQL activos):
+### 7. Levantar el entorno de desarrollo
 
 ```bash
 npm run dev
 ```
 
-El proxy de Vite redirige `/api/*` a `http://127.0.0.1/almacenDigital/api/`.
+Vite inicia en `http://localhost:5173/`. El proxy redirige `/api/*` a `http://127.0.0.1/almacenDigital/api/`, por lo que Apache y MySQL deben estar corriendo.
 
-Build de producción:
+---
 
-```bash
-npm run build
-```
-
-Vista previa de la build:
+## Comandos disponibles
 
 ```bash
-npm run preview
+npm run dev          # servidor de desarrollo con HMR
+npm run build        # build de producción (salida en dist/)
+npm run preview      # vista previa de la build de producción
+npm test             # pruebas unitarias (no requiere XAMPP)
+npm run test:integration  # pruebas de integración (requiere XAMPP activo)
 ```
 
-Ejecutar pruebas:
-
-```bash
-npm test
-```
+---
 
 ## Cómo probar la aplicación
 
@@ -153,16 +243,23 @@ npm test
 | **Transferir** | Mueve el producto a otro estante |
 | **Editar** | Modifica las dimensiones del producto colocado |
 
+---
+
 ## Lógica de empaquetado
 
-La colocación de productos usa una búsqueda por grid con paso de 1 unidad y validación por colisiones `AABB`:
+El motor de colocación en [src/canPlace.ts](src/canPlace.ts) usa **compresión de coordenadas** (*event-point snapping*) con validación por colisiones AABB:
 
-- se recorre el espacio disponible del estante (sección por sección si hay boards)
-- se evalúa una posición candidata
-- se comprueba si colisiona con productos ya colocados
-- si no colisiona, se devuelve la primera posición válida
+1. **Extracción de coordenadas evento**: en lugar de iterar cada posición del grid, se recopilan únicamente los valores X, Y, Z donde ya termina algún producto colocado (cara posterior de cada ítem). A estas coordenadas se añaden los extremos `0` del estante. El conjunto de candidatos crece como O(n) en cada eje, no como O(dimensión).
 
-Esto prioriza simplicidad y claridad sobre optimización extrema.
+2. **Producto cartesiano filtrado**: se prueban solo las combinaciones (xc, yc, zc) que quedan dentro del rango válido para el ítem (piso actual, límites del estante). Esto reduce el espacio de búsqueda de O(W×H×D) a O(n³) candidatos en el peor caso.
+
+3. **AABB precomputadas**: las cajas de los productos ya colocados se calculan una sola vez por llamada (en lugar de recomputarse en cada candidato), lo que elimina trabajo redundante en el bucle interno.
+
+4. **Corrección garantizada**: para coordenadas enteras, cualquier posición válida x₀ tiene un punto evento x₁ ≤ x₀ (la cara posterior del ítem más cercano a la izquierda). El algoritmo siempre encuentra la primera posición válida si existe.
+
+5. **6 orientaciones**: el ítem se prueba en las 6 rotaciones ortogonales posibles antes de reportar que no hay espacio.
+
+---
 
 ## Configuración del almacén
 
@@ -180,6 +277,8 @@ Cada estante define:
 | `sections` | Número de secciones uniformes *(opcional)* |
 | `boardOffsets` | Posiciones de pisos como fracción `[0..1]` de la altura *(sobreescribe `sections`)* |
 
+---
+
 ## Estado de las fases
 
 - `F1`: implementada y probada con Vitest.
@@ -189,6 +288,8 @@ Cada estante define:
 - `F5`: implementada con búsqueda por SKU, tween de cámara y highlight.
 - `F5+`: arrastre de estantes, rotación con `R`, selección visual, movimiento WASD.
 - `F6 (persistencia)`: API PHP + MySQL, migraciones automáticas, restauración de escena al recargar, eliminación y transferencia de productos, edición de dimensiones, gestión de pisos intermedios y redimensionado de estantes.
+
+---
 
 ## Entrega
 
@@ -200,20 +301,60 @@ La guía breve de evidencias está en [ENTREGA.md](ENTREGA.md#L1).
 
 - **Nota:** 18/20 — proyecto sólido que cubre las funcionalidades solicitadas y cuenta con pruebas unitarias para la lógica central.
 
-## Puntos a mejorar
+---
 
-- **Documentación de despliegue:** Incluir pasos detallados para XAMPP/Apache (ruta en `htdocs`), ejemplo de importación de migraciones y configuración de permisos.
-- **Manejo de configuración:** Mover credenciales y host de BD a variables de entorno en lugar de hardcodear en `api/database.php`.
-- **Manejo de errores y logs:** Registrar errores del backend en un log y ofrecer respuestas JSON más descriptivas para facilitar debugging en producción.
-- **Seguridad:** Restringir CORS en producción y evitar usar credenciales `root` sin contraseña; validar/sanitizar entradas API.
-- **Pruebas de integración/E2E:** Añadir tests que cubran la interacción frontend ↔︎ API y casos de persistencia en MySQL.
-- **Optimización del motor de colocación:** Evaluar heurísticas o espacio de búsqueda adaptativo para estantes grandes (evitar búsqueda exhaustiva por grid si el espacio es grande).
-- **Experiencia de usuario:** Añadir indicadores de carga/errores en UI y un `favicon.ico` para evitar 404 en peticiones estáticas.
+## Mejoras implementadas
+
+Los siguientes puntos de mejora identificados en la evaluación han sido abordados:
+
+### Variables de entorno para credenciales (`api/database.php`, `.env`)
+
+Las credenciales de base de datos y el origen CORS ya no están hardcodeadas en el código. Se leen desde un archivo `.env` en la raíz del proyecto mediante `db_load_env()`. El archivo `.env` está excluido del repositorio por `.gitignore`. Se incluye `.env.example` con la plantilla comentada.
+
+### Seguridad: CORS, validación y sanitización (`api/database.php`, `api/config.php`, `api/productos.php`)
+
+- **CORS restringido**: `cors_headers()` lee `ALLOWED_ORIGIN` del entorno. Si no coincide con el origen de la petición, no envía el header y el navegador bloquea la petición.
+- **Validación de entradas**: funciones `valid_positive_float()` y `valid_string()` validan y sanitizan cada campo antes de usarlo. Las peticiones con datos inválidos reciben `422 Unprocessable Entity` con la lista de campos fallidos.
+- **Consultas parametrizadas**: todas las operaciones SQL usan `PDO` con *prepared statements*.
+
+### Log de errores y respuestas descriptivas (`api/database.php`, `api/logs/error.log`)
+
+- `api_log_error(Throwable $e, string $context)` escribe entradas estructuradas en `api/logs/error.log` con timestamp, método HTTP, URI, contexto, tipo de excepción y ubicación.
+- Todas las respuestas de error incluyen un campo `code` (ej. `"MISSING_SKU"`, `"PRODUCT_SAVE_ERROR"`) para facilitar el debugging desde el cliente.
+- El directorio `api/logs/` está en `.gitignore`.
+
+### Pruebas de integración (`tests/api.integration.test.ts`, `vitest.integration.config.ts`)
+
+Veinte pruebas que cubren:
+
+- Forma del `GET` de config y productos.
+- `POST` válido e inválido (verifica código `422` y campo `code`).
+- Round-trip de persistencia (crear → listar → verificar).
+- `DELETE` de producto.
+- Restauración del estado original de estantes en `afterAll`.
+
+Las pruebas se omiten automáticamente si la API no es alcanzable, por lo que `npm test` (pruebas unitarias) nunca falla por falta de XAMPP.
+
+```bash
+npm run test:integration   # requiere XAMPP activo con Apache y MySQL
+```
+
+### Optimización del motor de colocación (`src/canPlace.ts`)
+
+Reemplazo de la búsqueda exhaustiva por grid (paso 1 en cada eje) con **compresión de coordenadas**: solo se evalúan las posiciones candidatas relevantes derivadas de las caras de los ítems ya colocados. Ver sección [Lógica de empaquetado](#lógica-de-empaquetado).
+
+### Experiencia de usuario (`index.html`, `src/styles.css`, `src/main.ts`, `src/warehouse.ts`, `public/favicon.svg`)
+
+- **Pantalla de carga**: spinner animado con mensajes de progreso ("Cargando configuración del almacén...", "Restaurando productos guardados...") que desaparece con transición suave al terminar la inicialización.
+- **Mensajes de error en UI**: los errores de la API ahora se muestran en el panel de estado de la interfaz (no solo en la consola). `warehouse.ts` expone `setApiErrorHandler()` para registrar el callback sin depender del DOM.
+- **Favicon**: icono SVG en `public/favicon.svg` referenciado desde `index.html`. Elimina el 404 que se generaba en cada carga de página.
+
+---
 
 ## Opinión crítica
 
 El proyecto muestra diseño modular y buen enfoque en la separación de responsabilidades: la lógica volumétrica está cubierta por pruebas unitarias y la integración con Three.js ofrece una visualización clara. Estos son puntos fuertes que facilitan mantenimiento y extensión.
 
-No obstante, la experiencia de despliegue está orientada a un entorno local (XAMPP, `htdocs`, credenciales root) lo que reduce la reproducibilidad en otros entornos o servidores CI. La capa de migraciones funciona, pero su manejo de errores y transacciones puede fortalecerse (por ejemplo con logs persistentes y control más explícito de transacciones). Para llevar el proyecto a un entorno real/producción es recomendable parametrizar la configuración, endurecer CORS y credenciales, y añadir pruebas de integración que validen la persistencia y las rutas de la API.
+Las mejoras implementadas abordan los puntos de debilidad originales: las credenciales ya no están hardcodeadas, el backend registra errores en un log persistente con respuestas descriptivas, las entradas de la API se validan y sanitizan, el motor de colocación escala mejor con estantes densamente llenos, y la experiencia de usuario incluye indicadores de carga visibles y mensajes de error en la interfaz.
 
----
+El proyecto sigue orientado a un entorno local (XAMPP, `htdocs`). Para llevarlo a producción real sería recomendable usar un usuario MySQL dedicado con contraseña fuerte, configurar un servidor web con TLS y ajustar `ALLOWED_ORIGIN` al dominio del frontend.

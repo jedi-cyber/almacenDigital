@@ -129,6 +129,8 @@ export const UI_COPY = {
     movePisosHint: "Activa el entorno de edicion y luego arrastra los pisos directamente en la escena 3D.",
   },
   status: {
+    loadingConfig: "Cargando configuracion del almacen...",
+    loadingProducts: "Restaurando productos guardados...",
     initial:
       "Selecciona un estante, registra un producto y luego buscalo por nombre para ubicarlo en la escena.",
     legacyInitial: "Agrega un producto y luego buscalo por nombre para probar la fase 5.",

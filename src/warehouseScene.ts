@@ -12,6 +12,7 @@ import {
   loadWarehouseConfig,
   restoreItem,
   saveWarehouseConfig,
+  setApiErrorHandler,
   updateItemPlacement,
   type WarehouseRuntime
 } from "./warehouse.js";
@@ -22,8 +23,18 @@ import {
 export async function createWarehouseApp(container: HTMLElement): Promise<void> {
   const refs = buildHtml(container);
 
+  // Propagar errores de red en background al status message del HUD.
+  setApiErrorHandler((msg) => setStatus(refs.statusMessage, msg, true));
+
+  // Indicar progreso en la pantalla de carga mientras las llamadas async resuelven.
+  const loadingStatus = document.querySelector<HTMLParagraphElement>("#loading-status");
+  const setLoadingText = (text: string) => { if (loadingStatus) loadingStatus.textContent = text; };
+
+  setLoadingText(UI_COPY.status.loadingConfig);
+  refs.statusMessage.textContent = UI_COPY.status.loadingConfig;
+  refs.statusMessage.dataset.state = "loading";
+
   const config = await loadWarehouseConfig();
-  console.log("Warehouse config loaded:", config);
 
   const { scene, renderer, camera, controls } = buildScene(refs.canvas);
   const runtime = createRuntime(config);
@@ -49,6 +60,9 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 
   populateShelves(refs.legend, refs.shelfSelect, config.shelves);
 
+  setLoadingText(UI_COPY.status.loadingProducts);
+  refs.statusMessage.textContent = UI_COPY.status.loadingProducts;
+
   const savedProducts = await loadPlacedProducts();
   for (const { shelfId, item, localPosition } of savedProducts) {
     const shelfMesh = shelfMeshes.get(shelfId);
@@ -57,6 +71,8 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
     updateLegendCount(shelfId, count);
   }
+
+  setStatus(refs.statusMessage, UI_COPY.status.initial, false);
 
   const { refreshShelfSummary, handleRemoveBoard } = wireProductForm({
     config,
