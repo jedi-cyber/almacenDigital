@@ -56,7 +56,7 @@ export const UI_COPY = {
   search: {
     title: "Buscar producto",
     description: "Escribe el nombre para encontrarlo rapido, enfocarlo en la escena o eliminarlo.",
-    label: "Nombre del producto",
+    label: "Nombre o SKU del producto",
     buttonAriaLabel: "Buscar producto",
     transferTitle: "Trasladar a otro estante",
     transferShelfLabel: "Estante destino",

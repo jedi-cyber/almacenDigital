@@ -1,6 +1,5 @@
 /**
- * Medidas tridimensionales de una entidad volumétrica.
- */
+ * Medidas tridimensionales de una entidad volumétrica. */
 export interface Dimensions {
   width: number;
   height: number;
@@ -8,8 +7,7 @@ export interface Dimensions {
 }
 
 /**
- * Coordenada 3D genérica.
- */
+ * Coordenada 3D genérica. */
 export interface Vector3D {
   x: number;
   y: number;
@@ -17,8 +15,7 @@ export interface Vector3D {
 }
 
 /**
- * Definición de un estante dentro de la escena.
- */
+ * Definición de un estante dentro de la escena.*/
 export interface Shelf extends Dimensions {
   id: string;
   label: string;
@@ -31,15 +28,13 @@ export interface Shelf extends Dimensions {
 }
 
 /**
- * Configuración serializable del almacén.
- */
+ * Configuración serializable del almacén. */
 export interface WarehouseConfig {
   shelves: Shelf[];
 }
 
 /**
- * Definición de un producto almacenable.
- */
+ * Definición de un producto almacenable. */
 export interface Item extends Dimensions {
   sku: string;
   name: string;
@@ -47,16 +42,14 @@ export interface Item extends Dimensions {
 }
 
 /**
- * Producto con posición local relativa al estante.
- */
+ * Producto con posición local relativa al estante. */
 export interface PlacedItem {
   item: Item;
   localPosition: Vector3D;
 }
 
 /**
- * Resumen volumétrico de un estante.
- */
+ * Resumen volumétrico de un estante. */
 export interface ShelfStatus {
   total: number;
   occupied: number;

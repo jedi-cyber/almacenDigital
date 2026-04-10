@@ -1,7 +1,8 @@
+import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { SHELF_PALETTE, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfTransparency } from "./scene.js";
+import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
 import type { PlacedItem, Shelf, WarehouseConfig } from "./types.js";
@@ -42,6 +43,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   addLights(scene);
   addFloor(scene);
   addWalls(scene, config.shelves);
+  const door = addDoorS01S02(scene, config.shelves);
 
   const shelfMeshes = new Map<string, THREE.Mesh>();
   const shelfSprites = new Map<string, THREE.Sprite>();
@@ -157,6 +159,26 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     onProductSelected: selectProduct,
     onSelectionCleared: clearSelectedProduct
   });
+
+  // Abrir / cerrar la puerta al hacer clic sobre el panel
+  if (door) {
+    const doorRaycaster = new THREE.Raycaster();
+    const doorNdc = new THREE.Vector2();
+    let doorOpen = false;
+    refs.canvas.addEventListener("click", (e: MouseEvent) => {
+      if (dragController.isSuppressed()) return;
+      const rect = refs.canvas.getBoundingClientRect();
+      doorNdc.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      doorRaycaster.setFromCamera(doorNdc, camera);
+      if (doorRaycaster.intersectObject(door.panel).length > 0) {
+        doorOpen = !doorOpen;
+        gsap.to(door.pivot.rotation, { y: doorOpen ? -Math.PI / 2 : 0, duration: 0.5, ease: "power2.inOut" });
+      }
+    });
+  }
 
   // Wire the edit-panel's "Eliminar piso" button
   const removeBoardBtn = document.querySelector<HTMLButtonElement>("#remove-board-btn");

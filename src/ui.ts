@@ -670,13 +670,20 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   const handleSearchSubmit = (event: SubmitEvent) => {
     event.preventDefault();
 
-    const sku = String(new FormData(searchForm).get("searchSku") ?? "").trim();
+    const query = String(new FormData(searchForm).get("searchSku") ?? "").trim();
 
-    if (!sku) {
+    if (!query) {
       hideResult();
       setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
       return;
     }
+
+    // Exact SKU match first, then case-insensitive name match
+    const sku = runtime.productEntryBySku.has(query)
+      ? query
+      : ([...runtime.productEntryBySku.entries()].find(
+          ([, e]) => e.item.name?.toLowerCase() === query.toLowerCase()
+        )?.[0] ?? query);
 
     selectProduct(sku);
   };

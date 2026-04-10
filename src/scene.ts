@@ -204,6 +204,100 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
 }
 
 /**
+ * Agrega una pared con puerta que conecta la pared de S01 con la pared de S02
+ * por el lado derecho, 10 cm separada del extremo más ancho.
+ * Las posiciones se calculan dinámicamente desde los datos de los estantes.
+ */
+export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): { pivot: THREE.Object3D; panel: THREE.Mesh } | undefined {
+  const s01 = shelves.find(s => s.id === "S01");
+  const s02 = shelves.find(s => s.id === "S02");
+  if (!s01 || !s02) return;
+
+  const wallMat  = new THREE.MeshStandardMaterial({ color: "#c8bfa8", roughness: 0.88, metalness: 0.02 });
+  const doorMat  = new THREE.MeshStandardMaterial({ color: "#7a5230", roughness: 0.72, metalness: 0.06 });
+  const frameMat = new THREE.MeshStandardMaterial({ color: "#a07840", roughness: 0.80, metalness: 0.04 });
+
+  const wallT = 0.20;
+  const gap   = 0.10;
+
+  // Altura de cada pared (misma fórmula que addWalls)
+  const wallH1 = s01.position.y + s01.height / 2 + 0.6;
+  const wallH2 = s02.position.y + s02.height / 2 + 0.6;
+  const wallH  = Math.max(wallH1, wallH2);
+
+  // Z de cada pared: S01 tiene a S02 en z+, así que su pared va al z- (backSign=-1)
+  //                  S02 tiene a S01 en z-, así que su pared va al z+ (backSign=+1)
+  const zWall1 = s01.position.z - (s01.depth / 2 + gap + wallT / 2);
+  const zWall2 = s02.position.z + (s02.depth / 2 + gap + wallT / 2);
+
+  // Extremo derecho de cada pared
+  const xRight1 = s01.position.x + s01.width / 2;
+  const xRight2 = s02.position.x + s02.width / 2;
+  const xRightMax = Math.max(xRight1, xRight2);
+
+  // Centro de la pared puerta: 10 cm + medio grosor más allá del extremo derecho
+  const doorX = xRightMax + 0.10 + wallT / 2;
+
+  // Parámetros de la puerta
+  const doorW       = 1.00;
+  const doorH       = 2.10;
+  const doorCenterZ = (zWall1 + zWall2) / 2;
+  const doorZMin    = doorCenterZ - doorW / 2;
+  const doorZMax    = doorCenterZ + doorW / 2;
+
+  const addBox = (w: number, h: number, d: number, px: number, py: number, pz: number, mat: THREE.Material) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(px, py, pz);
+    mesh.receiveShadow = true;
+    mesh.castShadow = true;
+    scene.add(mesh);
+  };
+
+  // Conectores que unen la pared de cada estante con la pared-puerta
+  const xDoorLeft = doorX - wallT / 2;
+  if (xDoorLeft - xRight1 > 0.001) {
+    const len = xDoorLeft - xRight1;
+    addBox(len, wallH1, wallT, xRight1 + len / 2, wallH1 / 2, zWall1, wallMat.clone());
+  }
+  if (xDoorLeft - xRight2 > 0.001) {
+    const len = xDoorLeft - xRight2;
+    addBox(len, wallH2, wallT, xRight2 + len / 2, wallH2 / 2, zWall2, wallMat.clone());
+  }
+
+  // Tramo de pared izquierdo (zWall1 → doorZMin)
+  const leftLen = doorZMin - zWall1;
+  addBox(wallT, wallH, leftLen, doorX, wallH / 2, zWall1 + leftLen / 2, wallMat.clone());
+
+  // Tramo de pared derecho (doorZMax → zWall2)
+  const rightLen = zWall2 - doorZMax;
+  addBox(wallT, wallH, rightLen, doorX, wallH / 2, doorZMax + rightLen / 2, wallMat.clone());
+
+  // Travesaño superior sobre el hueco
+  const transomH = wallH - doorH;
+  addBox(wallT, transomH, doorW, doorX, doorH + transomH / 2, doorCenterZ, wallMat.clone());
+
+  // Jambas (montantes verticales del marco)
+  const jamb = 0.08;
+  addBox(wallT + 0.02, doorH, jamb, doorX, doorH / 2, doorZMin + jamb / 2, frameMat.clone());
+  addBox(wallT + 0.02, doorH, jamb, doorX, doorH / 2, doorZMax - jamb / 2, frameMat.clone());
+
+  // Panel de la puerta (ligeramente abierta ~20°)
+  const panelW = doorW - jamb * 2 - 0.02;
+  const pivot  = new THREE.Object3D();
+  pivot.position.set(doorX, 0, doorZMin + jamb);
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.04, doorH - 0.04, panelW), doorMat.clone());
+  panel.name = "__door_panel__";
+  panel.position.set(0, doorH / 2, panelW / 2);
+  panel.castShadow = true;
+  panel.receiveShadow = true;
+  pivot.add(panel);
+  pivot.rotation.y = 0;
+  scene.add(pivot);
+
+  return { pivot, panel };
+}
+
+/**
  * Crea la malla BoxGeometry y el sprite de etiqueta de un estante dado su color.
  * La malla raíz es un bounding box invisible usado para raycasting y cálculos de posición;
  * la geometría visual real (postes + tableros) se construye como hijos con nombre __shelf_visual__.
