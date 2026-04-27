@@ -29,7 +29,7 @@ export const UI_COPY = {
     hideLegend: "Ocultar leyenda",
     manageShelf: "Gestionar estante",
     edit: "Editar",
-    exitEdit: "Salir del entorno de edicion",
+    exitEdit: "Desactivar entorno de edicion",
     moveProduct: "Mover producto",
     moveShelf: "Activar entorno de edicion",
     moveShelves: "Mover pisos",
@@ -55,7 +55,7 @@ export const UI_COPY = {
   },
   search: {
     title: "Buscar producto",
-    description: "Escribe el nombre para encontrarlo rapido, enfocarlo en la escena o eliminarlo.",
+    description: "Escribe el nombre o SKU para encontrarlo rapido, enfocarlo en la escena o eliminarlo.",
     label: "Nombre o SKU del producto",
     buttonAriaLabel: "Buscar producto",
     transferTitle: "Trasladar a otro estante",
@@ -66,7 +66,7 @@ export const UI_COPY = {
     title: "Registrar producto",
     description: "Registra el producto despues de elegir el estante y revisar el espacio disponible.",
     steps: {
-      selectShelf: "1. Elige ubicacion",
+      selectShelf: "Ubicacion",
       productCode: "2. Ingresa el SKU y nombre",
       productName: "Nombre del producto",
       measures: "3. Define medidas"
@@ -75,18 +75,22 @@ export const UI_COPY = {
     sectionLabel: "Piso o nivel del estante",
     shelfManager: {
       title: "Gestionar estante",
-      description: "Primero elige el estante y ajusta sus pisos. Luego registra el producto debajo."
+      description: "",
+      nameLabel: "Nombre del estante",
+      updateNameBtn: "Guardar nombre",
+      floorNameLabel: "Nombre del piso",
+      updateFloorNameBtn: "Guardar piso"
     },
     shelfConfig: {
-      title: "Configurar pisos del estante",
-      description: "Define cuántos pisos quieres en total o agrega uno nuevo entre los niveles existentes.",
+      title: "Pisos",
+      description: "",
       totalSectionsLabel: "Total de pisos",
-      updateHelp: "Usa este valor para repartir el estante en pisos iguales.",
-      addBoardHelp: "Agrega un piso extra sin reemplazar los niveles actuales."
+      updateHelp: "",
+      addBoardHelp: ""
     },
     shelfSizeConfig: {
-      title: "Editar tamaño del estante",
-      updateHelp: "Modifica las dimensiones del estante. Los productos que queden fuera de los nuevos limites se veran expuestos.",
+      title: "Tamaño del estante",
+      updateHelp: "",
       updateBtn: "Aplicar tamaño"
     },
     shelfSummary: {
@@ -94,7 +98,7 @@ export const UI_COPY = {
       legacyTitle: "Referencia del estante"
     },
     selectedShelfLabel: "Estante de registro",
-    skuTip: "Usa un nombre claro para identificar el producto y buscarlo despues sin confundirte.",
+    skuTip: "El SKU identifica una unidad unica. El nombre sirve como alias de busqueda y puede repetirse.",
     dimensions: {
       hint: "Todos los valores se registran en metros.",
       groupAriaLabel: "Tamanos sugeridos",
@@ -131,13 +135,14 @@ export const UI_COPY = {
   status: {
     loadingConfig: "Cargando configuracion del almacen...",
     loadingProducts: "Restaurando productos guardados...",
-    initial:
-      "Selecciona un estante, registra un producto y luego buscalo por nombre para ubicarlo en la escena.",
-    legacyInitial: "Agrega un producto y luego buscalo por nombre para probar la fase 5.",
+    initial: "",
+    legacyInitial: "Agrega un producto y luego buscalo por nombre o SKU para probar la fase 5.",
     shelfNotFound: "No se encontro el estante seleccionado.",
-    emptySearchSku: "Ingresa un nombre para ejecutar la busqueda.",
+    emptySearchSku: "Ingresa un nombre o SKU para ejecutar la busqueda.",
     invalidProductForm: "Completa el nombre y las medidas con valores mayores a cero.",
     productTooLargeForShelf: "Las medidas no pueden superar los limites del estante y del piso actual.",
+    invalidShelfName: "Ingresa un nombre valido para el estante.",
+    invalidSectionName: "Ingresa un nombre valido para el piso.",
     legacyInvalidProductForm: "Ingresa un nombre y dimensiones validas mayores a cero.",
     editModeEnabled: "Modo edicion activado. Ahora puedes mover estantes y productos.",
     editModeDisabled: "Modo edicion desactivado. Los estantes y productos quedaron bloqueados."
@@ -149,15 +154,16 @@ export function getProductName(sku: string): string {
 }
 
 export function getSearchNotFoundMessage(sku: string): string {
-  return `No existe un producto registrado con nombre ${sku}.`;
+  return `No existe un producto registrado con nombre o SKU ${sku}.`;
 }
 
 export function getSearchShelfMissingMessage(sku: string): string {
-  return `No se encontro el estante asociado al nombre ${sku}.`;
+  return `No se encontro el estante asociado al producto ${sku}.`;
 }
 
-export function getSearchSuccessMessage(sku: string, shelfId: string): string {
-  return `Nombre ${sku} encontrado en ${shelfId}. Camara enfocada y producto resaltado.`;
+export function getSearchSuccessMessage(sku: string, shelfId: string, matchCount = 1): string {
+  const matchText = matchCount > 1 ? ` Se encontraron ${matchCount} productos con ese nombre; se muestra el primero.` : "";
+  return `Producto ${sku} encontrado en ${shelfId}. Camara enfocada y producto resaltado.${matchText}`;
 }
 
 export function getMoveReadyMessage(sku: string): string {
@@ -169,7 +175,7 @@ export function getDeleteSuccessMessage(sku: string, shelfId: string): string {
 }
 
 export function getDuplicateSkuMessage(sku: string): string {
-  return `Ya existe un producto con nombre "${sku}". Usa un identificador diferente.`;
+  return `Ya existe un producto con SKU "${sku}". Usa un identificador diferente.`;
 }
 
 export function getNoSpaceMessage(sku: string, shelfId: string, section?: number): string {
@@ -189,6 +195,14 @@ export function getPlacementSuccessMessage(
 
 export function getShelfSectionUpdatedMessage(shelfId: string, sections: number): string {
   return `${shelfId} ahora tiene ${sections} piso${sections === 1 ? "" : "s"}.`;
+}
+
+export function getShelfNameUpdatedMessage(shelfId: string, label: string): string {
+  return `${shelfId} ahora se llama "${label}".`;
+}
+
+export function getSectionNameUpdatedMessage(shelfId: string, section: number, label: string): string {
+  return `${shelfId} piso ${section} ahora se llama "${label}".`;
 }
 
 export function getTransferNoSpaceMessage(sku: string, shelfId: string, section: number): string {

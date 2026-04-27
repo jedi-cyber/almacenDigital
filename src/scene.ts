@@ -321,6 +321,18 @@ export function buildShelfMesh(
   return { mesh, sprite: createShelfLabelSprite(`${shelf.id} · ${shelf.label}`, shelf, color) };
 }
 
+export function updateShelfLabelSprite(sprite: THREE.Sprite, shelf: Shelf, color: string): void {
+  const material = sprite.material as THREE.SpriteMaterial;
+  material.map?.dispose();
+  const replacement = createShelfLabelSprite(`${shelf.id} · ${shelf.label}`, shelf, color);
+  const replacementMaterial = replacement.material as THREE.SpriteMaterial;
+  material.map = replacementMaterial.map;
+  material.needsUpdate = true;
+  replacementMaterial.dispose();
+  sprite.position.copy(replacement.position);
+  sprite.scale.copy(replacement.scale);
+}
+
 export function updateShelfSectionPreview(shelfMesh: THREE.Mesh, section: number): void {
   const sections = Math.max(1, Math.floor(Number(shelfMesh.userData.sections ?? 1)));
   const targetSection = Math.min(Math.max(section, 1), sections);

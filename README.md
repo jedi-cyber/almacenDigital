@@ -1,6 +1,6 @@
 # Almacén Digital 3D
 
-Proyecto académico en TypeScript para simular un almacén digital 3D. El sistema combina lógica de empaquetado espacial con visualización en navegador para validar si un producto cabe dentro de un estante, colocarlo sin colisiones y ubicarlo por SKU dentro de la escena. El estado del almacén (estantes y productos) persiste en una base de datos MySQL a través de una API PHP.
+Proyecto académico en TypeScript para simular un almacén digital 3D. El sistema combina lógica de empaquetado espacial con visualización en navegador para validar si un producto cabe dentro de un estante, colocarlo sin colisiones y ubicarlo por SKU o nombre dentro de la escena. El estado del almacén (estantes y productos) persiste en una base de datos MySQL a través de una API PHP.
 
 ## Qué hace este proyecto
 
@@ -12,7 +12,7 @@ Funciones principales:
 - Determina si un nuevo producto puede colocarse en un estante usando colisiones AABB con soporte para rotación de ítems en 6 orientaciones.
 - Renderiza estantes 3D desde un archivo JSON con luces, sombras y paredes.
 - Permite agregar productos en la escena sin superposición con animación de aparición.
-- Permite buscar un producto por SKU, enfocar la cámara con tween y resaltarlo visualmente.
+- Permite buscar un producto por SKU o nombre, enfocar la cámara con tween y resaltarlo visualmente. El SKU es el identificador unico de la unidad; el nombre puede repetirse como alias de busqueda.
 - Permite mover estantes arrastrándolos por el plano del suelo.
 - Permite rotar estantes 90° sobre el eje vertical.
 - Permite eliminar productos de la escena y la base de datos.
@@ -168,6 +168,54 @@ Las migraciones incluidas crean las siguientes tablas:
 | `202603270002_create_productos_table` | Tabla `productos` con sku, shelf_id, nombre, dimensiones y posición local |
 | `202603270003_add_sections_to_estantes` | Columna `sections` en `estantes` (idempotente: verifica antes de agregar) |
 | `202603280004_add_board_offsets_to_estantes` | Columna `board_offsets` en `estantes` para pisos intermedios |
+| `202604080005_widen_id_columns` | Amplia IDs de estantes/productos a `VARCHAR(100)` |
+| `202604270006_add_section_labels_to_estantes` | Columna `section_labels` para nombres personalizados de pisos |
+
+SQL equivalente para crear la base manualmente en phpMyAdmin:
+
+```sql
+CREATE DATABASE IF NOT EXISTS almacensekai
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE almacensekai;
+
+CREATE TABLE IF NOT EXISTS estantes (
+  id VARCHAR(100) NOT NULL,
+  label VARCHAR(100) NOT NULL,
+  sections INT NOT NULL DEFAULT 1,
+  board_offsets TEXT DEFAULT NULL,
+  section_labels TEXT DEFAULT NULL,
+  width FLOAT NOT NULL,
+  height FLOAT NOT NULL,
+  depth FLOAT NOT NULL,
+  pos_x FLOAT NOT NULL DEFAULT 0,
+  pos_y FLOAT NOT NULL DEFAULT 0,
+  pos_z FLOAT NOT NULL DEFAULT 0,
+  rotation_y FLOAT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS productos (
+  sku VARCHAR(100) NOT NULL,
+  shelf_id VARCHAR(100) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  width FLOAT NOT NULL,
+  height FLOAT NOT NULL,
+  depth FLOAT NOT NULL,
+  local_x FLOAT NOT NULL DEFAULT 0,
+  local_y FLOAT NOT NULL DEFAULT 0,
+  local_z FLOAT NOT NULL DEFAULT 0,
+  PRIMARY KEY (sku)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS migrations (
+  id VARCHAR(191) NOT NULL,
+  batch INT NOT NULL,
+  migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
 
 Si preferís revisar la estructura antes de arrancar la app, podés abrir **phpMyAdmin** en `http://127.0.0.1/phpmyadmin` y examinar la base `almacensekai` después de la primera petición.
 
@@ -236,7 +284,7 @@ npm run test:integration  # pruebas de integración (requiere XAMPP activo)
 | Seleccionar un estante en el panel | Muestra su resumen volumétrico |
 | Ingresar SKU, nombre, ancho, alto, profundidad | Rellena el formulario de producto |
 | **Agregar producto** | Coloca el producto con animación y lo persiste |
-| Buscar por SKU | Enfoca la cámara y resalta el producto en cian |
+| Buscar por SKU o nombre | Enfoca la cámara y resalta el producto en cian; si varios SKU comparten nombre, muestra la primera coincidencia e informa cuantas existen |
 | Click sobre un producto en escena | Abre el panel de información del producto |
 | **Eliminar** (panel de búsqueda/click) | Elimina el producto de la escena y la BD |
 | **Mover** | Arma el producto en el cursor para recolocarlo |
@@ -285,7 +333,7 @@ Cada estante define:
 - `F2`: implementada con pruebas unitarias de colocación y colisión. Soporta rotación del ítem en 6 orientaciones y productos que superan la altura del estante.
 - `F3`: implementada en escena Three.js con JSON, luces, paredes y controles.
 - `F4`: implementada con formulario, creación de mallas instanciadas y animación de aparición.
-- `F5`: implementada con búsqueda por SKU, tween de cámara y highlight.
+- `F5`: implementada con búsqueda por SKU o nombre, tween de cámara y highlight.
 - `F5+`: arrastre de estantes, rotación con `R`, selección visual, movimiento WASD.
 - `F6 (persistencia)`: API PHP + MySQL, migraciones automáticas, restauración de escena al recargar, eliminación y transferencia de productos, edición de dimensiones, gestión de pisos intermedios y redimensionado de estantes.
 
@@ -348,13 +396,3 @@ Reemplazo de la búsqueda exhaustiva por grid (paso 1 en cada eje) con **compres
 - **Pantalla de carga**: spinner animado con mensajes de progreso ("Cargando configuración del almacén...", "Restaurando productos guardados...") que desaparece con transición suave al terminar la inicialización.
 - **Mensajes de error en UI**: los errores de la API ahora se muestran en el panel de estado de la interfaz (no solo en la consola). `warehouse.ts` expone `setApiErrorHandler()` para registrar el callback sin depender del DOM.
 - **Favicon**: icono SVG en `public/favicon.svg` referenciado desde `index.html`. Elimina el 404 que se generaba en cada carga de página.
-
----
-
-## Opinión crítica
-
-El proyecto muestra diseño modular y buen enfoque en la separación de responsabilidades: la lógica volumétrica está cubierta por pruebas unitarias y la integración con Three.js ofrece una visualización clara. Estos son puntos fuertes que facilitan mantenimiento y extensión.
-
-Las mejoras implementadas abordan los puntos de debilidad originales: las credenciales ya no están hardcodeadas, el backend registra errores en un log persistente con respuestas descriptivas, las entradas de la API se validan y sanitizan, el motor de colocación escala mejor con estantes densamente llenos, y la experiencia de usuario incluye indicadores de carga visibles y mensajes de error en la interfaz.
-
-El proyecto sigue orientado a un entorno local (XAMPP, `htdocs`). Para llevarlo a producción real sería recomendable usar un usuario MySQL dedicado con contraseña fuerte, configurar un servidor web con TLS y ajustar `ALLOWED_ORIGIN` al dominio del frontend.

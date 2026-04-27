@@ -28,6 +28,8 @@ import {
   getSearchNotFoundMessage,
   getSearchShelfMissingMessage,
   getSearchSuccessMessage,
+  getSectionNameUpdatedMessage,
+  getShelfNameUpdatedMessage,
   getShelfSectionUpdatedMessage,
   getTransferNoSpaceMessage,
   getTransferSuccessMessage,
@@ -35,6 +37,7 @@ import {
 } from "./ui-copy.js";
 import { populateShelves, setStatus, updateLegendCount } from "./ui-handlers.js";
 import { type WarehouseRuntime, clearHighlight, highlightProduct, placeItem, removeItem, transferItem, updateItemDimensions } from "./warehouse.js";
+import type { ProductEntry } from "./warehouse.js";
 import { canPlace } from "./canPlace.js";
 
 export { buildHtml, populateShelves, setStatus, updateLegendCount };
@@ -52,6 +55,7 @@ export interface ProductFormDeps {
   shelfTotal: HTMLSpanElement;
   shelfOccupied: HTMLSpanElement;
   shelfFree: HTMLSpanElement;
+  onShelfLabelUpdated?: (shelfId: string, shelf: Shelf) => void;
   onShelfUpdated?: () => void;
   onShelfResized?: (shelfId: string, shelf: Shelf) => void;
 }
@@ -115,6 +119,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     shelfTotal,
     shelfOccupied,
     shelfFree,
+    onShelfLabelUpdated,
     onShelfUpdated,
     onShelfResized
   } = params;
@@ -139,6 +144,10 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   const shelfHeightInput = document.querySelector<HTMLInputElement>("#shelf-height-input");
   const shelfDepthInput = document.querySelector<HTMLInputElement>("#shelf-depth-input");
   const updateShelfSizeBtn = document.querySelector<HTMLButtonElement>("#update-shelf-size-btn");
+  const shelfLabelInput = document.querySelector<HTMLInputElement>("#shelf-label-input");
+  const updateShelfLabelBtn = document.querySelector<HTMLButtonElement>("#update-shelf-label-btn");
+  const sectionLabelInput = document.querySelector<HTMLInputElement>("#section-label-input");
+  const updateSectionLabelBtn = document.querySelector<HTMLButtonElement>("#update-section-label-btn");
   const dimensionHint = form.querySelector<HTMLDivElement>("#dimension-hint");
 
   attachMaxClamp(widthField);
@@ -213,6 +222,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     const shelf = config.shelves.find((s) => s.id === shelfId);
     if (!shelf) return;
     const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+    ensureSectionLabels(shelf);
     const sectionHeight = shelf.height / sections;
     const shelfMesh = shelfMeshes.get(shelfId);
     const shelfLabel = shelf.label ?? shelf.id;
@@ -234,6 +244,11 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     if (shelfWidthInput) shelfWidthInput.value = String(shelf.width);
     if (shelfHeightInput) shelfHeightInput.value = String(shelf.height);
     if (shelfDepthInput) shelfDepthInput.value = String(shelf.depth);
+    if (shelfLabelInput) shelfLabelInput.value = shelfLabel;
+    if (sectionLabelInput) {
+      const activeSection = sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1;
+      sectionLabelInput.value = getSectionLabel(shelf, activeSection);
+    }
 
     widthField.placeholder = `Max ${formatInputValue(shelf.width)}`;
     heightField.placeholder = `Max ${formatInputValue(sectionHeight)}`;
@@ -254,7 +269,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
         for (let section = 1; section <= sections; section += 1) {
           const option = document.createElement("option");
           option.value = String(section);
-          option.textContent = `Piso ${section}`;
+          option.textContent = getSectionLabel(shelf, section);
           select.append(option);
         }
         select.value = clampedValue;
@@ -276,7 +291,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     if (dimensionHint) {
       const activeSection = sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1;
       dimensionHint.textContent =
-        `Piso ${activeSection} seleccionado. Maximo para este nivel: ${formatInputValue(shelf.width)} m de ancho, ${formatInputValue(sectionHeight)} m de alto y ${formatInputValue(shelf.depth)} m de profundidad.`;
+        `${getSectionLabel(shelf, activeSection)} seleccionado. Maximo: ${formatInputValue(shelf.width)} x ${formatInputValue(sectionHeight)} x ${formatInputValue(shelf.depth)} m.`;
     }
 
     if (shelfMesh) {
@@ -331,6 +346,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 
     const nextSections = Math.max(1, Math.floor(Number(sectionsField.value)));
     shelf.sections = nextSections;
+    ensureSectionLabels(shelf);
     const shelfColor = getShelfColor(shelfId);
 
     // Al fijar secciones manualmente, descartar posiciones personalizadas
@@ -364,6 +380,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 
     addShelfBoard(shelfMesh, shelf, color, bestFraction);
     shelf.sections = (shelf.sections ?? 1) + 1;
+    ensureSectionLabels(shelf);
     shelf.boardOffsets = collectBoardOffsets(shelfMesh, shelf.height);
     refreshShelfSummary(shelfId);
     onShelfUpdated?.();
@@ -398,6 +415,52 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     onShelfUpdated?.();
   };
 
+  const refreshShelfOptionLabels = () => {
+    const selects = [shelfField, productShelfField].filter((select): select is HTMLSelectElement => select instanceof HTMLSelectElement);
+    for (const select of selects) {
+      for (const option of Array.from(select.options)) {
+        const shelf = config.shelves.find((entry) => entry.id === option.value);
+        if (shelf) option.textContent = `${shelf.id} · ${shelf.label}`;
+      }
+    }
+  };
+
+  const handleUpdateShelfLabel = () => {
+    const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
+    const nextLabel = shelfLabelInput?.value.trim() ?? "";
+
+    if (!shelf || nextLabel === "") {
+      setStatus(statusMessage, UI_COPY.status.invalidShelfName, true);
+      return;
+    }
+
+    shelf.label = nextLabel;
+    refreshShelfOptionLabels();
+    refreshShelfSummary(shelfId);
+    onShelfLabelUpdated?.(shelfId, shelf);
+    onShelfUpdated?.();
+    setStatus(statusMessage, getShelfNameUpdatedMessage(shelf.id, shelf.label), false);
+  };
+
+  const handleUpdateSectionLabel = () => {
+    const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
+    const shelf = config.shelves.find((entry) => entry.id === shelfId);
+    const section = sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1;
+    const nextLabel = sectionLabelInput?.value.trim() ?? "";
+
+    if (!shelf || nextLabel === "") {
+      setStatus(statusMessage, UI_COPY.status.invalidSectionName, true);
+      return;
+    }
+
+    ensureSectionLabels(shelf);
+    shelf.sectionLabels![section - 1] = nextLabel;
+    refreshShelfSummary(shelfId);
+    onShelfUpdated?.();
+    setStatus(statusMessage, getSectionNameUpdatedMessage(shelf.id, section, nextLabel), false);
+  };
+
   const handleRemoveBoard = () => {
     const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
     const shelf = config.shelves.find((entry) => entry.id === shelfId);
@@ -409,6 +472,10 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 
     if (removed) {
       shelf.sections = Math.max(1, (shelf.sections ?? 1) - 1);
+      if (Array.isArray(shelf.sectionLabels)) {
+        shelf.sectionLabels.splice(Math.max(0, selectedSection - 1), 1);
+      }
+      ensureSectionLabels(shelf);
       shelf.boardOffsets = collectBoardOffsets(shelfMesh, shelf.height);
       if (shelf.boardOffsets.length === 0) shelf.boardOffsets = undefined;
       refreshShelfSummary(shelfId);
@@ -494,6 +561,8 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   updateShelfSectionsBtn?.addEventListener("click", handleUpdateShelfSections);
   addBoardBtn?.addEventListener("click", handleAddBoard);
   updateShelfSizeBtn?.addEventListener("click", handleUpdateShelfSize);
+  updateShelfLabelBtn?.addEventListener("click", handleUpdateShelfLabel);
+  updateSectionLabelBtn?.addEventListener("click", handleUpdateSectionLabel);
 
   form.addEventListener("submit", handleProductFormSubmit);
 
@@ -533,6 +602,10 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   } = params;
 
   const clearSearchBtn = searchForm.querySelector<HTMLButtonElement>("#clear-search-btn");
+  const reportList = searchResult.querySelector<HTMLElement>("#search-report-list");
+  const reportMinimizeBtn = searchResult.querySelector<HTMLButtonElement>("#minimize-search-report-btn");
+  const reportRestoreBtn = searchResult.querySelector<HTMLButtonElement>("#restore-search-report-btn");
+  const reportMinimizedSummary = searchResult.querySelector<HTMLElement>("#search-result-minimized-summary");
 
   attachMaxClamp(editorWidth);
   attachMaxClamp(editorHeight);
@@ -554,11 +627,12 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   const populateTransferSections = (shelfId: string) => {
     const shelf = config.shelves.find((s) => s.id === shelfId);
     const sections = Math.max(1, Math.floor(shelf?.sections ?? 1));
+    if (shelf) ensureSectionLabels(shelf);
     transferSectionSelect.replaceChildren();
     for (let i = 1; i <= sections; i++) {
       const option = document.createElement("option");
       option.value = String(i);
-      option.textContent = `Piso ${i}`;
+      option.textContent = shelf ? getSectionLabel(shelf, i) : `Piso ${i}`;
       transferSectionSelect.append(option);
     }
   };
@@ -610,6 +684,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
 
   const hideResult = () => {
     searchResult.hidden = true;
+    searchResult.dataset.minimized = "false";
     if (productActions) productActions.hidden = true;
     productEditor.hidden = true;
     hideTransferPanel();
@@ -618,8 +693,18 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     if (clearSearchBtn) clearSearchBtn.hidden = true;
   };
 
-  const selectProduct = (sku: string) => {
+  const setReportMinimized = (isMinimized: boolean) => {
+    if (searchResult.hidden) return;
+    searchResult.dataset.minimized = isMinimized ? "true" : "false";
+    reportMinimizeBtn?.setAttribute("aria-expanded", isMinimized ? "false" : "true");
+  };
+
+  const selectProduct = (sku: string, matches?: SearchMatch[]) => {
     const productEntry = runtime.productEntryBySku.get(sku);
+    const reportMatches = matches && matches.length > 0
+      ? matches
+      : productEntry ? [{ sku, entry: productEntry }] : [];
+
     if (!productEntry) {
       clearHighlight(runtime);
       hideResult();
@@ -639,14 +724,16 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     const shelfLabel = config.shelves.find((s) => s.id === shelfId)?.label ?? shelfId;
     const shelf = config.shelves.find((s) => s.id === shelfId);
     activeSku = sku;
-    searchResultSku.textContent = sku;
-    searchResultShelf.textContent = `${shelfId} · ${shelfLabel}`;
+    searchResultSku.textContent = item.name ? `${item.name} (${sku})` : sku;
+    searchResultShelf.textContent = getReportSummary(reportMatches, shelfId, shelfLabel);
+    renderSearchReport(reportMatches, sku);
     searchResult.hidden = false;
+    setReportMinimized(false);
     if (productActions) productActions.hidden = false;
     if (clearSearchBtn) clearSearchBtn.hidden = false;
 
     const input = searchForm.elements.namedItem("searchSku");
-    if (input instanceof HTMLInputElement) input.value = sku;
+    if (input instanceof HTMLInputElement) input.value = item.name || sku;
 
     editorSkuDisplay.textContent = `SKU: ${sku}`;
     editorName.value = item.name ?? "";
@@ -664,7 +751,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
       focusOnProductFromAisle(worldPos, shelfMesh, camera, controls);
     }
     highlightProduct(runtime, sku);
-    setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId), false);
+    setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId, reportMatches.length), false);
   };
 
   const handleSearchSubmit = (event: SubmitEvent) => {
@@ -678,14 +765,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
       return;
     }
 
-    // Exact SKU match first, then case-insensitive name match
-    const sku = runtime.productEntryBySku.has(query)
-      ? query
-      : ([...runtime.productEntryBySku.entries()].find(
-          ([, e]) => e.item.name?.toLowerCase() === query.toLowerCase()
-        )?.[0] ?? query);
-
-    selectProduct(sku);
+    const matches = resolveProductSearchMatches(runtime.productEntryBySku, query);
+    selectProduct(matches[0]?.sku ?? query, matches);
   };
 
   const handleMoveProductClick = () => {
@@ -820,6 +901,45 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     setStatus(statusMessage, UI_COPY.status.initial, false);
   };
 
+  const renderSearchReport = (matches: SearchMatch[], selectedSku: string) => {
+    if (!reportList) return;
+
+    reportList.replaceChildren();
+    for (const match of matches) {
+      const { sku: matchSku, entry } = match;
+      const shelfLabel = config.shelves.find((s) => s.id === entry.shelfId)?.label ?? entry.shelfId;
+      const shelf = config.shelves.find((s) => s.id === entry.shelfId);
+      const item = entry.item;
+      const section = getSectionNumberForPosition(shelf, entry.localPosition.y);
+      const locationText = `${entry.shelfId} · ${shelfLabel} · ${getSectionLabel(shelf, section)}`;
+      const dimensionsText = `${formatMetric(item.width)} x ${formatMetric(item.height)} x ${formatMetric(item.depth)} m`;
+      const metaText = `Posicion local (${formatMetric(entry.localPosition.x)}, ${formatMetric(entry.localPosition.y)}, ${formatMetric(entry.localPosition.z)})`;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "search-report-item";
+      row.dataset.selected = matchSku === selectedSku ? "true" : "false";
+      row.dataset.sku = matchSku;
+      row.innerHTML = `
+        <span class="search-report-item-title">${escapeHtml(item.name || "Sin nombre registrado")}</span>
+        <span>SKU: ${escapeHtml(matchSku)}</span>
+        <span>${escapeHtml(locationText)}</span>
+        <span>${escapeHtml(dimensionsText)}</span>
+        <span>${escapeHtml(metaText)}</span>
+      `;
+      row.addEventListener("click", () => {
+        selectProduct(matchSku, matches);
+      });
+      reportList.append(row);
+    }
+
+    if (reportMinimizedSummary) {
+      reportMinimizedSummary.textContent = `${matches.length} producto${matches.length === 1 ? "" : "s"} encontrado${matches.length === 1 ? "" : "s"}`;
+    }
+  };
+
+  reportMinimizeBtn?.addEventListener("click", () => setReportMinimized(true));
+  reportRestoreBtn?.addEventListener("click", () => setReportMinimized(false));
+
   searchForm.addEventListener("submit", handleSearchSubmit);
   editorForm.addEventListener("submit", handleEditorSave);
   clearSearchBtn?.addEventListener("click", handleClearSearch);
@@ -830,6 +950,80 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   transferCancelBtn.addEventListener("click", handleTransferCancel);
 
   return selectProduct;
+}
+
+export function resolveProductSearchQuery(
+  productsBySku: Map<string, ProductEntry>,
+  rawQuery: string
+): { sku: string; matchCount: number } | null {
+  const matches = resolveProductSearchMatches(productsBySku, rawQuery);
+  if (matches.length === 0) return null;
+  return { sku: matches[0].sku, matchCount: matches.length };
+}
+
+interface SearchMatch {
+  sku: string;
+  entry: ProductEntry;
+}
+
+export function resolveProductSearchMatches(
+  productsBySku: Map<string, ProductEntry>,
+  rawQuery: string
+): SearchMatch[] {
+  const query = normalizeSearchText(rawQuery);
+  if (!query) return [];
+
+  const exactSku = [...productsBySku.keys()].find((sku) => normalizeSearchText(sku) === query);
+  if (exactSku) {
+    const entry = productsBySku.get(exactSku);
+    return entry ? [{ sku: exactSku, entry }] : [];
+  }
+
+  const entries = [...productsBySku.entries()];
+  const exactNameMatches = entries.filter(([, entry]) => normalizeSearchText(entry.item.name) === query);
+  if (exactNameMatches.length > 0) {
+    return exactNameMatches.map(([sku, entry]) => ({ sku, entry }));
+  }
+
+  const partialMatches = entries.filter(([sku, entry]) => {
+    const normalizedSku = normalizeSearchText(sku);
+    const normalizedName = normalizeSearchText(entry.item.name);
+    return normalizedSku.includes(query) || normalizedName.includes(query);
+  });
+
+  if (partialMatches.length === 0) return [];
+
+  partialMatches.sort(([skuA, entryA], [skuB, entryB]) => {
+    const nameA = normalizeSearchText(entryA.item.name);
+    const nameB = normalizeSearchText(entryB.item.name);
+    const startsA = nameA.startsWith(query) ? 0 : 1;
+    const startsB = nameB.startsWith(query) ? 0 : 1;
+    if (startsA !== startsB) return startsA - startsB;
+    return skuA.localeCompare(skuB);
+  });
+
+  return partialMatches.map(([sku, entry]) => ({ sku, entry }));
+}
+
+function normalizeSearchText(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function getReportSummary(matches: SearchMatch[], shelfId: string, shelfLabel: string): string {
+  if (matches.length <= 1) return `${shelfId} · ${shelfLabel}`;
+  return `${matches.length} productos encontrados con ese nombre. Selecciona uno para enfocarlo.`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 export function wireSceneClick(params: SceneClickDeps): void {
@@ -916,6 +1110,43 @@ function getSectionHeightForPosition(shelf: Shelf, localPositionY: number): numb
   }
 
   return shelf.height / sections;
+}
+
+function getSectionNumberForPosition(shelf: Shelf | undefined, localPositionY: number): number {
+  if (!shelf) return 1;
+
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const offsets = shelf.boardOffsets && shelf.boardOffsets.length > 0
+    ? shelf.boardOffsets.map((fraction) => fraction * shelf.height)
+    : Array.from({ length: sections - 1 }, (_, index) => ((index + 1) * shelf.height) / sections);
+  const bounds = [0, ...offsets, shelf.height].sort((a, b) => a - b);
+  const safePositionY = clamp(localPositionY, 0, shelf.height);
+
+  for (let index = 0; index < bounds.length - 1; index += 1) {
+    const lowerBound = bounds[index];
+    const upperBound = bounds[index + 1];
+    const isInsideSection = safePositionY >= lowerBound && (safePositionY < upperBound || index === bounds.length - 2);
+    if (isInsideSection) {
+      return index + 1;
+    }
+  }
+
+  return 1;
+}
+
+function ensureSectionLabels(shelf: Shelf): void {
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const current = Array.isArray(shelf.sectionLabels) ? shelf.sectionLabels : [];
+  shelf.sectionLabels = Array.from({ length: sections }, (_, index) => {
+    const label = current[index]?.trim();
+    return label || `Piso ${index + 1}`;
+  });
+}
+
+function getSectionLabel(shelf: Shelf | undefined, section: number): string {
+  if (!shelf) return `Piso ${section}`;
+  ensureSectionLabels(shelf);
+  return shelf.sectionLabels?.[section - 1] || `Piso ${section}`;
 }
 
 function clampInputValue(currentValue: string, maxValue: number): string {

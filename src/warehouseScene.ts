@@ -2,7 +2,7 @@ import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfTransparency } from "./scene.js";
+import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
 import type { PlacedItem, Shelf, WarehouseConfig } from "./types.js";
@@ -88,6 +88,13 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     shelfTotal: refs.shelfTotal,
     shelfOccupied: refs.shelfOccupied,
     shelfFree: refs.shelfFree,
+    onShelfLabelUpdated: (shelfId, shelf) => {
+      const sprite = shelfSprites.get(shelfId);
+      if (!sprite) return;
+      const idx = config.shelves.findIndex((entry) => entry.id === shelfId);
+      const color = SHELF_PALETTE[(idx >= 0 ? idx : 0) % SHELF_PALETTE.length];
+      updateShelfLabelSprite(sprite, shelf, color);
+    },
     onShelfUpdated: () => saveWarehouseConfig(config),
     onShelfResized: (shelfId, shelf) => {
       const sprite = shelfSprites.get(shelfId);

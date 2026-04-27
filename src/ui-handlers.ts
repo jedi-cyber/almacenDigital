@@ -178,7 +178,13 @@ export function setStatus(
   message: string,
   isError: boolean
 ): void {
-  element.textContent = message;
+  const text = message.trim();
+  element.textContent = text;
+  element.hidden = text.length === 0;
+  if (!text) {
+    delete element.dataset.state;
+    return;
+  }
   element.dataset.state = isError ? "error" : "success";
 }
 

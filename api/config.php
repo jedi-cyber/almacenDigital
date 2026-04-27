@@ -60,6 +60,16 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
             }
         }
 
+        if (!empty($row["section_labels"])) {
+            $decoded = json_decode($row["section_labels"], true);
+            if (is_array($decoded) && count($decoded) > 0) {
+                $shelf["sectionLabels"] = array_values(array_filter(
+                    array_map(fn($label) => trim((string)$label), $decoded),
+                    fn($label) => $label !== ""
+                ));
+            }
+        }
+
         return $shelf;
     }, $rows);
 
@@ -109,13 +119,14 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
 
     // Upsert de los estantes recibidos
     $stmt = $pdo->prepare("INSERT INTO estantes
-            (id, label, sections, board_offsets, width, height, depth, pos_x, pos_y, pos_z, rotation_y)
+            (id, label, sections, board_offsets, section_labels, width, height, depth, pos_x, pos_y, pos_z, rotation_y)
         VALUES
-            (:id, :label, :sections, :board_offsets, :width, :height, :depth, :pos_x, :pos_y, :pos_z, :rotation_y)
+            (:id, :label, :sections, :board_offsets, :section_labels, :width, :height, :depth, :pos_x, :pos_y, :pos_z, :rotation_y)
         ON DUPLICATE KEY UPDATE
             label         = VALUES(label),
             sections      = VALUES(sections),
             board_offsets = VALUES(board_offsets),
+            section_labels = VALUES(section_labels),
             width         = VALUES(width),
             height        = VALUES(height),
             depth         = VALUES(depth),
@@ -130,12 +141,20 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
             if (isset($shelf["boardOffsets"]) && is_array($shelf["boardOffsets"]) && count($shelf["boardOffsets"]) > 0) {
                 $boardOffsets = json_encode($shelf["boardOffsets"]);
             }
+            $sectionLabels = null;
+            if (isset($shelf["sectionLabels"]) && is_array($shelf["sectionLabels"]) && count($shelf["sectionLabels"]) > 0) {
+                $sectionLabels = json_encode(array_values(array_map(
+                    fn($label) => trim((string)$label),
+                    $shelf["sectionLabels"]
+                )), JSON_UNESCAPED_UNICODE);
+            }
 
             $stmt->execute([
                 ":id"           => $shelf["id"],
                 ":label"        => $shelf["label"],
                 ":sections"     => (int)($shelf["sections"] ?? 1),
                 ":board_offsets"=> $boardOffsets,
+                ":section_labels"=> $sectionLabels,
                 ":width"        => $shelf["width"],
                 ":height"       => $shelf["height"],
                 ":depth"        => $shelf["depth"],

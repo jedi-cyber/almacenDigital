@@ -1,38 +1,4 @@
-PS C:\xampp\htdocs\almacenDigital> npm test
+Para comprobar los resultados:
 
-> almacen-digital-phase-1@1.0.0 test
-> vitest run
-
-
- RUN  v3.2.4 C:/xampp/htdocs/almacenDigital
-
- ✓ tests/canPlace.test.ts (12 tests) 26ms
- ✓ tests/shelfStatus.test.ts (3 tests) 15ms
-
- Test Files  2 passed (2)
-      Tests  15 passed (15)
-   Start at  10:52:57
-   Duration  1.77s (transform 374ms, setup 0ms, collect 454ms, tests 41ms, environment 1ms, prepare 857ms)
-
-PS C:\xampp\htdocs\almacenDigital> npm run demo:f2
-
-> almacen-digital-phase-1@1.0.0 demo:f2
-> tsx scripts/demoPhase2.ts
-
-Demo F2: 10 cajas colocadas en el estante sin interseccion
-Estante: S-DEMO (5x2x4)
-┌─────────┬──────────┬───┬───┬───┐
-│ (index) │ sku      │ x │ y │ z │
-├─────────┼──────────┼───┼───┼───┤
-│ 0       │ 'BOX-01' │ 0 │ 0 │ 0 │
-│ 1       │ 'BOX-02' │ 0 │ 0 │ 1 │
-│ 2       │ 'BOX-03' │ 0 │ 0 │ 2 │
-│ 3       │ 'BOX-04' │ 0 │ 0 │ 3 │
-│ 4       │ 'BOX-05' │ 0 │ 1 │ 0 │
-│ 5       │ 'BOX-06' │ 0 │ 1 │ 1 │
-│ 6       │ 'BOX-07' │ 0 │ 1 │ 2 │
-│ 7       │ 'BOX-08' │ 0 │ 1 │ 3 │
-│ 8       │ 'BOX-09' │ 1 │ 0 │ 0 │
-│ 9       │ 'BOX-10' │ 1 │ 0 │ 1 │
-└─────────┴──────────┴───┴───┴───┘
-Validacion AABB: sin colisiones detectadas.
+C:\xampp\htdocs\almacenDigital> npm test
+C:\xampp\htdocs\almacenDigital> npm run demo:f2

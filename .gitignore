@@ -1,19 +1,48 @@
+# Environment
 .env
+.env.*
+!.env.example
+
+# Dependencies
 node_modules/
-coverage/
+
+# Build and cache
 dist/
 .vite/
+coverage/
+.cache/
+test-results/
+playwright-report/
 
-.vscode/
-.idea/
-
-Thumbs.db
-.DS_Store
-
+# Logs and temporary files
 api/logs/
+logs/
 *.log
 *.tmp
+*.temp
 tmp_*
+~$*
 
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local documents and raw imports
 *.doc
 *.docx
+datasets/
+*.csv
+*.xls
+*.xlsx
+
+# Local database dumps and backups
+*.sql
+*.bak
+*.backup

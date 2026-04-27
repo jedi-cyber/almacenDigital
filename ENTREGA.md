@@ -26,7 +26,7 @@ Resultado esperado: las cajas aparecen en escena sin superponerse, con animació
 
 ## F5
 
-Buscar un SKU existente con el buscador. La cámara hace tween hacia el producto y éste se resalta en cian. Buscar un SKU inexistente muestra un mensaje de error.
+Buscar un SKU o nombre existente con el buscador. La cámara hace tween hacia el producto y éste se resalta en cian. Si varios SKU comparten el mismo nombre, se muestra la primera coincidencia y se informa cuántas existen. Buscar un SKU o nombre inexistente muestra un mensaje de error.
 
 Video: `https://youtu.be/Vzc7hMxE7jk`
 

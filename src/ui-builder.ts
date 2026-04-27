@@ -93,30 +93,17 @@ function buildHudTemplate(): string {
           ${UI_COPY.page.description}
         </p>
 
-        <p class="status-message" id="status-message" role="status" aria-live="polite" aria-atomic="true" data-testid="status-message">
+        <p class="status-message" id="status-message" role="status" aria-live="polite" aria-atomic="true" data-testid="status-message" hidden>
           ${UI_COPY.status.initial}
         </p>
 
-        <section class="form-card form-card--search" id="search-card" data-card data-collapsed="false" aria-labelledby="search-card-title" data-testid="search-card">
-          <div class="form-card-head form-card-head--split">
+        <section class="form-card form-card--search" id="search-card" aria-labelledby="search-card-title" data-testid="search-card">
+          <div class="form-card-head">
             <div class="form-card-head-copy">
               <strong id="search-card-title">${UI_COPY.search.title}</strong>
             </div>
-            <button
-              type="button"
-              class="card-toggle-btn"
-              data-card-toggle
-              data-card-id="search-card"
-              data-section-label="${UI_COPY.search.title}"
-              aria-expanded="true"
-              aria-controls="search-card-body"
-              title="${UI_COPY.toggles.close} ${UI_COPY.search.title}"
-            >
-              ${renderIcon(ICON_PATHS.chevron)}
-              <span class="visually-hidden">${UI_COPY.toggles.close} ${UI_COPY.search.title}</span>
-            </button>
           </div>
-          <div class="form-card-body" id="search-card-body" data-card-body>
+          <div class="form-card-body" id="search-card-body">
           <form class="search-form" id="search-form" aria-label="${UI_COPY.search.title}" data-testid="search-form">
             <label class="search-label">
               <span>${UI_COPY.search.label}</span>
@@ -135,12 +122,6 @@ function buildHudTemplate(): string {
                 </button>
               </div>
             </label>
-          <div class="search-result" id="search-result" aria-live="polite" data-testid="search-result" hidden>
-            <div class="search-result-meta">
-              <strong id="search-result-sku"></strong>
-              <span id="search-result-shelf"></span>
-            </div>
-          </div>
         </form>
         </div>
         </section>
@@ -166,7 +147,7 @@ function buildHudTemplate(): string {
           <div class="floating-panel-head">
             <div class="floating-panel-copy">
               <strong>${UI_COPY.productForm.shelfManager.title}</strong>
-              <p>${UI_COPY.productForm.shelfManager.description}</p>
+              ${UI_COPY.productForm.shelfManager.description ? `<p>${UI_COPY.productForm.shelfManager.description}</p>` : ""}
             </div>
             ${renderIconButton({
               id: "close-shelf-manager-btn",
@@ -201,8 +182,42 @@ function buildHudTemplate(): string {
 
           <section class="shelf-config">
             <div class="shelf-config-head">
+              <strong>${UI_COPY.productForm.shelfManager.nameLabel}</strong>
+            </div>
+            <div class="shelf-config-row">
+              <label>
+                <span>${UI_COPY.productForm.shelfManager.nameLabel}</span>
+                <input id="shelf-label-input" type="text" maxlength="100" />
+              </label>
+            </div>
+            <div class="shelf-config-actions">
+              <button type="button" id="update-shelf-label-btn" class="shelf-config-action-btn">
+                ${UI_COPY.productForm.shelfManager.updateNameBtn}
+              </button>
+            </div>
+          </section>
+
+          <section class="shelf-config">
+            <div class="shelf-config-head">
+              <strong>${UI_COPY.productForm.shelfManager.floorNameLabel}</strong>
+            </div>
+            <div class="shelf-config-row">
+              <label>
+                <span>${UI_COPY.productForm.shelfManager.floorNameLabel}</span>
+                <input id="section-label-input" type="text" maxlength="100" />
+              </label>
+            </div>
+            <div class="shelf-config-actions">
+              <button type="button" id="update-section-label-btn" class="shelf-config-action-btn">
+                ${UI_COPY.productForm.shelfManager.updateFloorNameBtn}
+              </button>
+            </div>
+          </section>
+
+          <section class="shelf-config">
+            <div class="shelf-config-head">
               <strong>${UI_COPY.productForm.shelfConfig.title}</strong>
-              <span>${UI_COPY.productForm.shelfConfig.description}</span>
+              ${UI_COPY.productForm.shelfConfig.description ? `<span>${UI_COPY.productForm.shelfConfig.description}</span>` : ""}
             </div>
             <div class="shelf-config-row">
               <label>
@@ -210,7 +225,7 @@ function buildHudTemplate(): string {
                 <input name="shelfSections" form="product-form" type="number" min="1" step="1" value="1" />
               </label>
             </div>
-            <p class="shelf-config-help">${UI_COPY.productForm.shelfConfig.updateHelp}</p>
+            ${UI_COPY.productForm.shelfConfig.updateHelp ? `<p class="shelf-config-help">${UI_COPY.productForm.shelfConfig.updateHelp}</p>` : ""}
             <div class="shelf-config-actions">
               <button type="button" id="update-shelf-sections-btn" class="shelf-config-action-btn">
                 ${UI_COPY.buttons.updateSections}
@@ -221,13 +236,13 @@ function buildHudTemplate(): string {
                 ${UI_COPY.buttons.addBoard}
               </button>
             </div>
-            <p class="shelf-config-help">${UI_COPY.productForm.shelfConfig.addBoardHelp}</p>
+            ${UI_COPY.productForm.shelfConfig.addBoardHelp ? `<p class="shelf-config-help">${UI_COPY.productForm.shelfConfig.addBoardHelp}</p>` : ""}
           </section>
 
           <section class="shelf-config">
             <div class="shelf-config-head">
               <strong>${UI_COPY.productForm.shelfSizeConfig.title}</strong>
-              <span>${UI_COPY.productForm.shelfSizeConfig.updateHelp}</span>
+              ${UI_COPY.productForm.shelfSizeConfig.updateHelp ? `<span>${UI_COPY.productForm.shelfSizeConfig.updateHelp}</span>` : ""}
             </div>
             <div class="shelf-config-row">
               <label>
@@ -442,8 +457,26 @@ function buildHudTemplate(): string {
           </ul>
         </section>
 
-      </aside>
-      <main class="viewport" data-testid="viewport">
+	      </aside>
+	      <div class="search-result search-result--modal" id="search-result" aria-live="polite" data-testid="search-result" data-minimized="false" hidden>
+	        <section class="search-result-panel" aria-label="Reporte de productos encontrados">
+	          <div class="search-result-head">
+	            <div class="search-result-meta">
+	              <strong id="search-result-sku"></strong>
+	              <span id="search-result-shelf"></span>
+	            </div>
+	            <button type="button" id="minimize-search-report-btn" class="icon-button icon-button--ghost" aria-label="Minimizar reporte" title="Minimizar reporte">
+	              ${renderIcon(ICON_PATHS.chevron)}
+	            </button>
+	          </div>
+	          <div class="search-report-list" id="search-report-list" aria-label="Productos encontrados"></div>
+	        </section>
+	        <button type="button" id="restore-search-report-btn" class="search-result-minimized" aria-label="Abrir reporte de productos" title="Abrir reporte de productos">
+	          <strong>Reporte de productos</strong>
+	          <span id="search-result-minimized-summary"></span>
+	        </button>
+	      </div>
+	      <main class="viewport" data-testid="viewport">
         <canvas class="scene-canvas" aria-label="Vista 3D del almacen" data-testid="scene-canvas"></canvas>
         <button
           type="button"
