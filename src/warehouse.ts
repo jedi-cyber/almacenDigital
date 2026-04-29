@@ -47,7 +47,10 @@ function resolveApiBaseUrl(): string {
     return configuredApiUrl;
   }
 
-  if (window.location.hostname === "appassets.androidplatform.net") {
+  if (
+    typeof window !== "undefined" &&
+    window.location.hostname === "appassets.androidplatform.net"
+  ) {
     return "http://192.168.18.189/almacenDigital/api";
   }
 

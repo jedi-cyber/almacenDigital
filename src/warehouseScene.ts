@@ -172,6 +172,8 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
         entrancePosition,
         worldPos,
         shelfMesh,
+        shelfMeshes,
+        wallColliders,
         guidedRoute,
         routeControls,
         ensureDoorOpen
@@ -305,7 +307,7 @@ function createRouteStepControls(viewport: HTMLElement | null): RouteStepControl
       nextButton.textContent = current >= total ? `Finalizar ${current}/${total}` : `Avanzar ${current}/${total}`;
       backButton.disabled = current <= 1;
       nextButton.disabled = false;
-      finishButton.disabled = current >= total;
+      finishButton.disabled = current <= 1 || current >= total;
     },
     setBusy: (isBusy: boolean) => {
       backButton.disabled = isBusy || backButton.disabled;
@@ -342,19 +344,19 @@ function drawGuidedRoute(
   entrancePosition: THREE.Vector3,
   productWorldPos: THREE.Vector3,
   shelfMesh: THREE.Mesh,
+  shelfMeshes: Map<string, THREE.Mesh>,
+  wallColliders: THREE.Mesh[],
   currentRoute: GuidedRoute | null,
   controls: RouteStepControls,
   ensureDoorOpen: () => boolean
 ): GuidedRoute {
   clearGuidedRoute(scene, currentRoute);
 
-  const aisleNormal = getShelfAisleNormal(shelfMesh, entrancePosition);
   const start = entrancePosition.clone().setY(0.055);
-  const end = productWorldPos.clone().addScaledVector(aisleNormal, 0.8).setY(0.055);
-  const corner = new THREE.Vector3(start.x, 0.055, end.z);
-  const points = start.distanceTo(corner) < 0.15 || corner.distanceTo(end) < 0.15
-    ? [start, end]
-    : [start, corner, end];
+  const end = getShelfApproachPoint(productWorldPos, shelfMesh, entrancePosition);
+  const obstacleMeshes = [...shelfMeshes.values(), ...wallColliders];
+  const manualPoints = buildBackShelfRoutePoints(start, end, shelfMesh, shelfMeshes, entrancePosition);
+  const points = manualPoints ?? buildAisleRoutePoints(start, end, obstacleMeshes) ?? buildFallbackRoutePoints(start, end);
 
   const route: GuidedRoute = {
     points,
@@ -374,6 +376,237 @@ function drawGuidedRoute(
   renderGuidedRouteStep(scene, route);
   moveCameraWithRoute(route, 0);
   return route;
+}
+
+function buildFallbackRoutePoints(start: THREE.Vector3, end: THREE.Vector3): THREE.Vector3[] {
+  const corner = new THREE.Vector3(start.x, 0.055, end.z);
+  return start.distanceTo(corner) < 0.15 || corner.distanceTo(end) < 0.15
+    ? [start, end]
+    : [start, corner, end];
+}
+
+function buildBackShelfRoutePoints(
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  shelfMesh: THREE.Mesh,
+  shelfMeshes: Map<string, THREE.Mesh>,
+  entrancePosition: THREE.Vector3
+): THREE.Vector3[] | null {
+  const shelfId = String(shelfMesh.userData.shelfId ?? "");
+  if (!["S03", "S04", "S05"].includes(shelfId)) return null;
+
+  const guideShelf = shelfMeshes.get("S03") ?? shelfMesh;
+  const guideGeometry = (guideShelf.geometry as THREE.BoxGeometry).parameters as THREE.BoxGeometry["parameters"];
+  const guideNormal = getShelfAisleNormal(guideShelf, entrancePosition);
+  const guideForward = new THREE.Vector3(0, 0, 1).applyQuaternion(guideShelf.quaternion).setY(0).normalize();
+  const sideSign = guideForward.dot(guideNormal) >= 0 ? 1 : -1;
+  const guideAislePoint = guideShelf.localToWorld(
+    new THREE.Vector3(0, 0, sideSign * (guideGeometry.depth / 2 + 1.55))
+  );
+
+  const firstTurn = new THREE.Vector3(guideAislePoint.x, 0.055, start.z);
+  const secondTurn = new THREE.Vector3(guideAislePoint.x, 0.055, end.z);
+
+  return compactRoutePoints([start, firstTurn, secondTurn, end]);
+}
+
+function compactRoutePoints(points: THREE.Vector3[]): THREE.Vector3[] {
+  return points.filter((point, index, list) => index === 0 || point.distanceTo(list[index - 1]) > 0.12);
+}
+
+function getShelfApproachPoint(
+  productWorldPos: THREE.Vector3,
+  shelfMesh: THREE.Mesh,
+  entrancePosition: THREE.Vector3
+): THREE.Vector3 {
+  const geometry = (shelfMesh.geometry as THREE.BoxGeometry).parameters as THREE.BoxGeometry["parameters"];
+  const aisleNormal = getShelfAisleNormal(shelfMesh, entrancePosition);
+  const shelfForward = new THREE.Vector3(0, 0, 1).applyQuaternion(shelfMesh.quaternion).setY(0).normalize();
+  const sideSign = shelfForward.dot(aisleNormal) >= 0 ? 1 : -1;
+  const localProductPos = shelfMesh.worldToLocal(productWorldPos.clone());
+  const sideMargin = 0.18;
+  const localX = THREE.MathUtils.clamp(
+    localProductPos.x,
+    -geometry.width / 2 + sideMargin,
+    geometry.width / 2 - sideMargin
+  );
+  const localZ = sideSign * (geometry.depth / 2 + 0.95);
+  const approach = shelfMesh.localToWorld(new THREE.Vector3(localX, 0, localZ));
+
+  return approach.setY(0.055);
+}
+
+function buildAisleRoutePoints(
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  obstacleMeshes: THREE.Mesh[]
+): THREE.Vector3[] | null {
+  const cellSize = 0.35;
+  const obstacleMargin = 0.26;
+  const routeHeight = 0.08;
+  const floorMinX = -13.5;
+  const floorMaxX = 13.5;
+  const floorMinZ = -9.5;
+  const floorMaxZ = 9.5;
+  const obstacleBoxes = obstacleMeshes
+    .map((mesh) => new THREE.Box3().setFromObject(mesh).expandByScalar(obstacleMargin))
+    .filter((box) => box.min.y <= routeHeight && box.max.y >= 0);
+  const obstacles = obstacleBoxes.map((box) => ({
+    minX: box.min.x,
+    maxX: box.max.x,
+    minZ: box.min.z,
+    maxZ: box.max.z
+  }));
+  const bounds = obstacleBoxes.reduce(
+    (acc, box) => {
+      acc.minX = Math.min(acc.minX, box.min.x);
+      acc.maxX = Math.max(acc.maxX, box.max.x);
+      acc.minZ = Math.min(acc.minZ, box.min.z);
+      acc.maxZ = Math.max(acc.maxZ, box.max.z);
+      return acc;
+    },
+    {
+      minX: Math.min(start.x, end.x),
+      maxX: Math.max(start.x, end.x),
+      minZ: Math.min(start.z, end.z),
+      maxZ: Math.max(start.z, end.z)
+    }
+  );
+
+  const minX = Math.max(floorMinX, Math.floor((bounds.minX - 1.2) / cellSize) * cellSize);
+  const maxX = Math.min(floorMaxX, Math.ceil((bounds.maxX + 1.2) / cellSize) * cellSize);
+  const minZ = Math.max(floorMinZ, Math.floor((bounds.minZ - 1.2) / cellSize) * cellSize);
+  const maxZ = Math.min(floorMaxZ, Math.ceil((bounds.maxZ + 1.2) / cellSize) * cellSize);
+  const cols = Math.floor((maxX - minX) / cellSize) + 1;
+  const rows = Math.floor((maxZ - minZ) / cellSize) + 1;
+  if (cols < 2 || rows < 2 || cols * rows > 12000) return null;
+
+  const toCell = (point: THREE.Vector3) => ({
+    x: Math.min(cols - 1, Math.max(0, Math.round((point.x - minX) / cellSize))),
+    z: Math.min(rows - 1, Math.max(0, Math.round((point.z - minZ) / cellSize)))
+  });
+  const toWorld = (cell: { x: number; z: number }) =>
+    new THREE.Vector3(minX + cell.x * cellSize, 0.055, minZ + cell.z * cellSize);
+  const keyOf = (cell: { x: number; z: number }) => `${cell.x},${cell.z}`;
+  const isBlocked = (cell: { x: number; z: number }) => {
+    const x = minX + cell.x * cellSize;
+    const z = minZ + cell.z * cellSize;
+    return obstacles.some((box) => x >= box.minX && x <= box.maxX && z >= box.minZ && z <= box.maxZ);
+  };
+  const findNearestOpenCell = (seed: { x: number; z: number }) => {
+    if (!isBlocked(seed)) return seed;
+    for (let radius = 1; radius <= 8; radius += 1) {
+      let best: { x: number; z: number } | null = null;
+      let bestDistance = Infinity;
+      for (let dz = -radius; dz <= radius; dz += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (Math.abs(dx) !== radius && Math.abs(dz) !== radius) continue;
+          const candidate = { x: seed.x + dx, z: seed.z + dz };
+          if (candidate.x < 0 || candidate.x >= cols || candidate.z < 0 || candidate.z >= rows) continue;
+          if (isBlocked(candidate)) continue;
+          const dist = Math.abs(dx) + Math.abs(dz);
+          if (dist < bestDistance) {
+            best = candidate;
+            bestDistance = dist;
+          }
+        }
+      }
+      if (best) return best;
+    }
+    return null;
+  };
+
+  const startCell = findNearestOpenCell(toCell(start));
+  const endCell = findNearestOpenCell(toCell(end));
+  if (!startCell || !endCell) return null;
+
+  const open = new Set<string>([keyOf(startCell)]);
+  const cameFrom = new Map<string, string>();
+  const gScore = new Map<string, number>([[keyOf(startCell), 0]]);
+  const fScore = new Map<string, number>([
+    [keyOf(startCell), Math.abs(startCell.x - endCell.x) + Math.abs(startCell.z - endCell.z)]
+  ]);
+  const directions = [
+    { x: 1, z: 0 },
+    { x: -1, z: 0 },
+    { x: 0, z: 1 },
+    { x: 0, z: -1 }
+  ];
+
+  while (open.size > 0) {
+    let currentKey = "";
+    let currentF = Infinity;
+    for (const key of open) {
+      const value = fScore.get(key) ?? Infinity;
+      if (value < currentF) {
+        currentF = value;
+        currentKey = key;
+      }
+    }
+
+    const [currentX, currentZ] = currentKey.split(",").map(Number);
+    if (currentX === endCell.x && currentZ === endCell.z) {
+      return simplifyRouteCells(reconstructRouteCells(cameFrom, currentKey), toWorld, start, end);
+    }
+
+    open.delete(currentKey);
+    const currentG = gScore.get(currentKey) ?? Infinity;
+    for (const direction of directions) {
+      const neighbor = { x: currentX + direction.x, z: currentZ + direction.z };
+      if (neighbor.x < 0 || neighbor.x >= cols || neighbor.z < 0 || neighbor.z >= rows) continue;
+      if (isBlocked(neighbor)) continue;
+
+      const neighborKey = keyOf(neighbor);
+      const tentativeG = currentG + 1;
+      if (tentativeG >= (gScore.get(neighborKey) ?? Infinity)) continue;
+
+      cameFrom.set(neighborKey, currentKey);
+      gScore.set(neighborKey, tentativeG);
+      fScore.set(
+        neighborKey,
+        tentativeG + Math.abs(neighbor.x - endCell.x) + Math.abs(neighbor.z - endCell.z)
+      );
+      open.add(neighborKey);
+    }
+  }
+
+  return null;
+}
+
+function reconstructRouteCells(cameFrom: Map<string, string>, endKey: string): string[] {
+  const route = [endKey];
+  let current = endKey;
+  while (cameFrom.has(current)) {
+    current = cameFrom.get(current)!;
+    route.push(current);
+  }
+  return route.reverse();
+}
+
+function simplifyRouteCells(
+  routeKeys: string[],
+  toWorld: (cell: { x: number; z: number }) => THREE.Vector3,
+  start: THREE.Vector3,
+  end: THREE.Vector3
+): THREE.Vector3[] {
+  const points = [start.clone()];
+  let lastDirection = "";
+  for (let i = 1; i < routeKeys.length - 1; i += 1) {
+    const [prevX, prevZ] = routeKeys[i - 1].split(",").map(Number);
+    const [cellX, cellZ] = routeKeys[i].split(",").map(Number);
+    const [nextX, nextZ] = routeKeys[i + 1].split(",").map(Number);
+    const direction = `${Math.sign(nextX - cellX)},${Math.sign(nextZ - cellZ)}`;
+    const previousDirection = `${Math.sign(cellX - prevX)},${Math.sign(cellZ - prevZ)}`;
+    if (i === 1) {
+      lastDirection = previousDirection;
+    }
+    if (direction !== lastDirection) {
+      points.push(toWorld({ x: cellX, z: cellZ }));
+      lastDirection = direction;
+    }
+  }
+  points.push(end.clone());
+  return points.filter((point, index, list) => index === 0 || point.distanceTo(list[index - 1]) > 0.12);
 }
 
 function advanceGuidedRoute(scene: THREE.Scene, route: GuidedRoute): void {
@@ -406,7 +639,7 @@ function showRouteArrival(scene: THREE.Scene, route: GuidedRoute): void {
   route.activeSegment = createRouteArrivalMarker(route.points[route.points.length - 1]);
   scene.add(route.activeSegment);
   route.controls.setStep(route.points.length - 1, route.points.length - 1);
-  moveCameraWithRoute(route, route.currentStep, true);
+  moveCameraToRouteEnd(route);
   window.setTimeout(() => {
     route.controls.hide();
     disposeRouteSegment(scene, route.activeSegment);
@@ -495,6 +728,53 @@ function moveCameraWithRoute(route: GuidedRoute, stepIndex: number, isArrival = 
         Math.min(route.currentStep + 1, route.points.length - 1),
         route.points.length - 1
       );
+    }
+  });
+}
+
+function moveCameraToRouteEnd(route: GuidedRoute): void {
+  const endIndex = route.points.length - 1;
+  const point = route.points[endIndex];
+  const previousPoint = route.points[Math.max(0, endIndex - 1)];
+  const travelDirection = point.clone().sub(previousPoint).setY(0);
+  if (travelDirection.lengthSq() < 0.001) {
+    travelDirection.set(1, 0, 0);
+  } else {
+    travelDirection.normalize();
+  }
+
+  const cameraTarget = point.clone().addScaledVector(travelDirection, -0.75);
+  cameraTarget.y = 1.45;
+  const controlsTarget = point.clone();
+  controlsTarget.y = 0.55;
+
+  gsap.killTweensOf(route.camera.position);
+  gsap.killTweensOf(route.orbitControls.target);
+  route.controls.setBusy(true);
+  const startDelay = route.ensureDoorOpen() ? 0.52 : 0;
+
+  gsap.to(route.camera.position, {
+    x: cameraTarget.x,
+    y: cameraTarget.y,
+    z: cameraTarget.z,
+    duration: 0.85,
+    delay: startDelay,
+    ease: "power2.inOut"
+  });
+
+  gsap.to(route.orbitControls.target, {
+    x: controlsTarget.x,
+    y: controlsTarget.y,
+    z: controlsTarget.z,
+    duration: 0.85,
+    delay: startDelay,
+    ease: "power2.inOut",
+    onUpdate: () => {
+      route.camera.lookAt(route.orbitControls.target);
+      route.orbitControls.update();
+    },
+    onComplete: () => {
+      route.controls.setStep(endIndex, endIndex);
     }
   });
 }
@@ -599,6 +879,7 @@ function createWallCollisionBlocker(
   wallMeshes: THREE.Mesh[]
 ): () => void {
   const cameraRadius = 0.18;
+  const minCameraY = cameraRadius;
   const wallBoxes = wallMeshes.map((mesh) =>
     new THREE.Box3().setFromObject(mesh).expandByScalar(cameraRadius)
   );
@@ -606,7 +887,8 @@ function createWallCollisionBlocker(
   const previousTarget = controls.target.clone();
 
   return () => {
-    const isBlocked = wallBoxes.some((box) => box.containsPoint(camera.position));
+    const isBelowFloor = camera.position.y < minCameraY;
+    const isBlocked = isBelowFloor || wallBoxes.some((box) => box.containsPoint(camera.position));
     if (isBlocked) {
       camera.position.copy(previousCameraPosition);
       controls.target.copy(previousTarget);

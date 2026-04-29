@@ -18,6 +18,8 @@ export interface DoorObjects {
   wallMeshes: THREE.Mesh[];
 }
 
+const WALL_EXTRA_HEIGHT = 1.6;
+
 /** Paleta de colores asignada a los estantes en orden de aparición. */
 export const SHELF_PALETTE = ["#8b5e34", "#a56f3a", "#6d8a4f", "#46646f", "#ad8446", "#7a5c58"];
 
@@ -121,7 +123,7 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): THREE.Mesh[] {
   for (const shelf of shelves) {
     const rotY = shelf.rotationY ?? 0;
     const isRotated = Math.abs(Math.sin(rotY)) > 0.7;
-    const wallH = shelf.position.y + shelf.height / 2 + 0.6;
+    const wallH = shelf.position.y + shelf.height / 2 + WALL_EXTRA_HEIGHT;
     const wallY = wallH / 2;
 
     if (isRotated) {
@@ -245,8 +247,8 @@ export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): DoorObjects
   const gap   = 0.10;
 
   // Altura de cada pared (misma fórmula que addWalls)
-  const wallH1 = s01.position.y + s01.height / 2 + 0.6;
-  const wallH2 = s02.position.y + s02.height / 2 + 0.6;
+  const wallH1 = s01.position.y + s01.height / 2 + WALL_EXTRA_HEIGHT;
+  const wallH2 = s02.position.y + s02.height / 2 + WALL_EXTRA_HEIGHT;
   const wallH  = Math.max(wallH1, wallH2);
 
   // Z de cada pared: S01 tiene a S02 en z+, así que su pared va al z- (backSign=-1)

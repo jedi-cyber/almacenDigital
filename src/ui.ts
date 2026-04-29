@@ -610,6 +610,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   const reportMinimizeBtn = searchResult.querySelector<HTMLButtonElement>("#minimize-search-report-btn");
   const reportRestoreBtn = searchResult.querySelector<HTMLButtonElement>("#restore-search-report-btn");
   const reportMinimizedSummary = searchResult.querySelector<HTMLElement>("#search-result-minimized-summary");
+  const reportCloseBtn = searchResult.querySelector<HTMLButtonElement>("#close-search-report-btn");
+  const reportHead = searchResult.querySelector<HTMLElement>(".search-result-head");
 
   attachMaxClamp(editorWidth);
   attachMaxClamp(editorHeight);
@@ -908,6 +910,11 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     setStatus(statusMessage, UI_COPY.status.initial, false);
   };
 
+  const handleCloseReport = () => {
+    searchResult.hidden = true;
+    searchResult.dataset.minimized = "false";
+  };
+
   const renderSearchReport = (matches: SearchMatch[], selectedSku: string) => {
     if (!reportList) return;
 
@@ -946,6 +953,46 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
 
   reportMinimizeBtn?.addEventListener("click", () => setReportMinimized(true));
   reportRestoreBtn?.addEventListener("click", () => setReportMinimized(false));
+  reportCloseBtn?.addEventListener("click", handleCloseReport);
+
+  reportHead?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+
+    const rect = searchResult.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startLeft = rect.left;
+    const startTop = rect.top;
+    const pointerId = event.pointerId;
+
+    searchResult.dataset.dragging = "true";
+    searchResult.style.left = `${startLeft}px`;
+    searchResult.style.top = `${startTop}px`;
+    searchResult.style.right = "auto";
+    searchResult.style.bottom = "auto";
+    reportHead.setPointerCapture(pointerId);
+
+    const moveReport = (moveEvent: PointerEvent) => {
+      const nextLeft = startLeft + moveEvent.clientX - startX;
+      const nextTop = startTop + moveEvent.clientY - startY;
+      const maxLeft = Math.max(12, window.innerWidth - rect.width - 12);
+      const maxTop = Math.max(12, window.innerHeight - rect.height - 12);
+      searchResult.style.left = `${Math.min(Math.max(12, nextLeft), maxLeft)}px`;
+      searchResult.style.top = `${Math.min(Math.max(12, nextTop), maxTop)}px`;
+    };
+
+    const stopDrag = () => {
+      searchResult.dataset.dragging = "false";
+      reportHead.releasePointerCapture(pointerId);
+      reportHead.removeEventListener("pointermove", moveReport);
+      reportHead.removeEventListener("pointerup", stopDrag);
+      reportHead.removeEventListener("pointercancel", stopDrag);
+    };
+
+    reportHead.addEventListener("pointermove", moveReport);
+    reportHead.addEventListener("pointerup", stopDrag);
+    reportHead.addEventListener("pointercancel", stopDrag);
+  });
 
   searchForm.addEventListener("submit", handleSearchSubmit);
   editorForm.addEventListener("submit", handleEditorSave);

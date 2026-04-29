@@ -460,15 +460,21 @@ function buildHudTemplate(): string {
 	      </aside>
 	      <div class="search-result search-result--modal" id="search-result" aria-live="polite" data-testid="search-result" data-minimized="false" hidden>
 	        <section class="search-result-panel" aria-label="Reporte de productos encontrados">
-	          <div class="search-result-head">
-	            <div class="search-result-meta">
-	              <strong id="search-result-sku"></strong>
-	              <span id="search-result-shelf"></span>
-	            </div>
-	            <button type="button" id="minimize-search-report-btn" class="icon-button icon-button--ghost" aria-label="Minimizar reporte" title="Minimizar reporte">
-	              ${renderIcon(ICON_PATHS.chevron)}
-	            </button>
-	          </div>
+		          <div class="search-result-head">
+		            <div class="search-result-meta">
+		              <strong id="search-result-sku"></strong>
+		              <span id="search-result-shelf"></span>
+		            </div>
+		            <div class="search-result-head-actions">
+		              <button type="button" id="close-search-report-btn" class="icon-button icon-button--ghost" aria-label="${UI_COPY.buttons.clearSearch}" title="${UI_COPY.buttons.clearSearch}">
+		                ${renderIcon(ICON_PATHS.close)}
+		                <span class="visually-hidden">${UI_COPY.buttons.clearSearch}</span>
+		              </button>
+		              <button type="button" id="minimize-search-report-btn" class="icon-button icon-button--ghost" aria-label="Minimizar reporte" title="Minimizar reporte">
+		                ${renderIcon(ICON_PATHS.chevron)}
+		              </button>
+		            </div>
+		          </div>
 	          <div class="search-report-list" id="search-report-list" aria-label="Productos encontrados"></div>
 	        </section>
 	        <button type="button" id="restore-search-report-btn" class="search-result-minimized" aria-label="Abrir reporte de productos" title="Abrir reporte de productos">

@@ -375,6 +375,7 @@ code {
   bottom: 96px;
   z-index: 35;
   width: min(440px, calc(100vw - 48px));
+  touch-action: none;
 }
 
 .search-result-panel {
@@ -391,9 +392,21 @@ code {
 
 .search-result-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
+  cursor: grab;
+  user-select: none;
+}
+
+.search-result--modal[data-dragging="true"] .search-result-head {
+  cursor: grabbing;
+}
+
+.search-result-head-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .search-result-meta {
