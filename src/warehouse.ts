@@ -41,7 +41,20 @@ export interface WarehouseRuntime {
   } | null;
 }
 
-const API = "/api";
+function resolveApiBaseUrl(): string {
+  const configuredApiUrl = import.meta.env.VITE_API_URL;
+  if (configuredApiUrl) {
+    return configuredApiUrl;
+  }
+
+  if (window.location.hostname === "appassets.androidplatform.net") {
+    return "http://192.168.18.189/almacenDigital/api";
+  }
+
+  return "/api";
+}
+
+const API = resolveApiBaseUrl();
 
 // ── API error reporting ───────────────────────────────────────────────────────
 
@@ -69,18 +82,22 @@ export function saveWarehouseConfig(config: WarehouseConfig): void {
 }
 
 export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
-  const response = await fetch(`${API}/config.php`);
-  if (!response.ok) {
-    throw new Error(`No se pudo cargar la configuracion: ${response.status}`);
+  try {
+    const response = await fetch(`${API}/config.php`);
+    if (!response.ok) {
+      throw new Error(`No se pudo cargar la configuracion: ${response.status}`);
+    }
+
+    const config = (await response.json()) as WarehouseConfig;
+
+    if (Array.isArray(config.shelves) && config.shelves.length >= 5) {
+      return config;
+    }
+  } catch (error) {
+    reportApiError("cargar la configuracion desde la API", error);
   }
 
-  const config = (await response.json()) as WarehouseConfig;
-
-  if (Array.isArray(config.shelves) && config.shelves.length >= 5) {
-    return config;
-  }
-
-  const fallback = await fetch("/warehouse-config.json");
+  const fallback = await fetch(`${import.meta.env.BASE_URL}warehouse-config.json`);
   if (!fallback.ok) {
     throw new Error("No se pudo cargar la configuracion del archivo.");
   }

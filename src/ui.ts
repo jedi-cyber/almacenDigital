@@ -89,6 +89,8 @@ export interface SearchFormDeps {
   editorDepth: HTMLInputElement;
   onMoveRequested: (sku: string) => void;
   onProductRemoved: (shelfId: string) => void;
+  onProductLocated?: (worldPos: THREE.Vector3, shelfMesh: THREE.Mesh) => void;
+  onSearchCleared?: () => void;
 }
 
 export interface SceneClickDeps {
@@ -598,7 +600,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     editorHeight,
     editorDepth,
     onMoveRequested,
-    onProductRemoved
+    onProductRemoved,
+    onProductLocated,
+    onSearchCleared
   } = params;
 
   const clearSearchBtn = searchForm.querySelector<HTMLButtonElement>("#clear-search-btn");
@@ -691,6 +695,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     activeSku = null;
     resetDeleteBtn();
     if (clearSearchBtn) clearSearchBtn.hidden = true;
+    onSearchCleared?.();
   };
 
   const setReportMinimized = (isMinimized: boolean) => {
@@ -748,7 +753,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     const instancedMesh = runtime.instancedMeshByGeo.get(productEntry.geoKey);
     if (instancedMesh) {
       const worldPos = getInstanceWorldPosition(instancedMesh, productEntry.instanceIndex);
-      focusOnProductFromAisle(worldPos, shelfMesh, camera, controls);
+      onProductLocated?.(worldPos, shelfMesh);
     }
     highlightProduct(runtime, sku);
     setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId, reportMatches.length), false);
@@ -841,7 +846,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     if (newEntry && newShelfMesh) {
       const newInstancedMesh = runtime.instancedMeshByGeo.get(newEntry.geoKey);
       if (newInstancedMesh) {
-        focusOnProductFromAisle(getInstanceWorldPosition(newInstancedMesh, newEntry.instanceIndex), newShelfMesh, camera, controls);
+        const newWorldPos = getInstanceWorldPosition(newInstancedMesh, newEntry.instanceIndex);
+        focusOnProductFromAisle(newWorldPos, newShelfMesh, camera, controls);
+        onProductLocated?.(newWorldPos, newShelfMesh);
         highlightProduct(runtime, sku);
       }
     }

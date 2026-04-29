@@ -11,8 +11,8 @@ export const UI_COPY = {
     movementItems: [
       "Click izquierdo + arrastrar: rotar vista",
       "Rueda del mouse: acercar o alejar",
-      "Click derecho + arrastrar: desplazarse lateralmente",
-      "Teclas W, A, S, D: desplazarte por el almacen"
+      "La vista inicia en la puerta",
+      "Usa el buscador para trazar la ruta al producto"
     ],
     shelvesTitle: "Estantes",
     shelfItems: [
@@ -163,7 +163,7 @@ export function getSearchShelfMissingMessage(sku: string): string {
 
 export function getSearchSuccessMessage(sku: string, shelfId: string, matchCount = 1): string {
   const matchText = matchCount > 1 ? ` Se encontraron ${matchCount} productos con ese nombre; se muestra el primero.` : "";
-  return `Producto ${sku} encontrado en ${shelfId}. Camara enfocada y producto resaltado.${matchText}`;
+  return `Producto ${sku} encontrado en ${shelfId}. Sigue la ruta marcada desde la puerta hasta el estante.${matchText}`;
 }
 
 export function getMoveReadyMessage(sku: string): string {

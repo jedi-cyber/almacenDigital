@@ -33,7 +33,7 @@ Funciones principales:
 - `Three.js`
 - `GSAP`
 - `PHP 8`
-- `MySQL` (vía XAMPP)
+- `MySQL` con servidor local como XAMPP, Laragon u otro stack Apache/PHP
 
 ## Estructura principal
 
@@ -65,7 +65,7 @@ Funciones principales:
 
 - [tests/shelfStatus.test.ts](tests/shelfStatus.test.ts): pruebas unitarias de fase 1 (volumen).
 - [tests/canPlace.test.ts](tests/canPlace.test.ts): pruebas unitarias de fase 2 (colocación y colisión AABB).
-- [tests/api.integration.test.ts](tests/api.integration.test.ts): pruebas de integración que verifican la API REST y la persistencia MySQL. Requieren XAMPP activo; se omiten automáticamente si la API no es alcanzable.
+- [tests/api.integration.test.ts](tests/api.integration.test.ts): pruebas de integración que verifican la API REST y la persistencia MySQL. Requieren Apache/PHP y MySQL activos; se omiten automáticamente si la API no es alcanzable.
 
 ### Otros
 
@@ -80,37 +80,44 @@ Funciones principales:
 | --- | --- |
 | Node.js | 20 |
 | npm | incluido con Node.js |
-| XAMPP | cualquier versión con PHP 8 y MySQL 5.7+ |
+| Servidor local | XAMPP, Laragon u otro entorno con Apache/PHP 8 y MySQL 5.7+ |
 
 ---
 
-## Instalación y despliegue con XAMPP
+## Instalación y despliegue local
 
-### 1. Clonar o copiar el repositorio en htdocs
+### 1. Clonar o copiar el repositorio en el servidor local
 
-El backend PHP debe ejecutarse dentro del servidor web de XAMPP. La ruta correcta es:
+El backend PHP debe ejecutarse dentro de la carpeta pública de tu servidor local. Algunos ejemplos:
 
 ```text
-C:\xampp\htdocs\almacenDigital\
+XAMPP:   C:\xampp\htdocs\almacenDigital\
+Laragon: C:\laragon\www\almacenDigital\
 ```
 
 Si clonás con Git:
 
 ```bash
-cd C:\xampp\htdocs
-git clone <url-del-repositorio> almacenDigital
+git clone https://github.com/jedi-cyber/almacenDigital.git
 ```
+XAMPP: 
+```bash
+cd C:\xampp\htdocs\almacenDigital\
+```
+Laragon:
+```bash
+cd C:\laragon\www\almacenDigital\
+```
+En Laragon sería el mismo comando, pero dentro de `C:\laragon\www`. También podés copiar la carpeta manualmente. Si usás otro nombre de carpeta, actualizá el `target` del proxy en [vite.config.ts](vite.config.ts) para que apunte a la URL correcta de la API.
 
-O simplemente copiá la carpeta del proyecto a esa ruta. El nombre `almacenDigital` es importante porque el proxy de Vite apunta a `/almacenDigital/api/`.
+### 2. Iniciar Apache/PHP y MySQL
 
-### 2. Iniciar XAMPP
-
-Abrí el **Panel de Control de XAMPP** y arrancá:
+Desde XAMPP, Laragon u otro panel local, iniciá:
 
 - **Apache** — sirve el backend PHP.
 - **MySQL** — base de datos.
 
-Verificá que ambos módulos muestren el indicador verde. La API quedará disponible en `http://127.0.0.1/almacenDigital/api/`.
+Verificá que ambos servicios estén activos. Si el proyecto está en una carpeta llamada `almacenDigital`, la API quedará disponible en `http://127.0.0.1/almacenDigital/api/` o `http://localhost/almacenDigital/api/`.
 
 ### 3. Crear el archivo `.env`
 
@@ -120,7 +127,7 @@ Copiá la plantilla incluida:
 cp .env.example .env
 ```
 
-El archivo `.env` queda en la raíz del proyecto (`C:\xampp\htdocs\almacenDigital\.env`) y contiene:
+El archivo `.env` queda en la raíz del proyecto y contiene:
 
 ```env
 DB_HOST=localhost
@@ -137,7 +144,7 @@ Editá los valores si tu instalación de MySQL usa una contraseña o un usuario 
 
 ### 4. Permisos de escritura para logs (Linux/macOS)
 
-En Windows con XAMPP los permisos de archivo no suelen ser un problema. En Linux o macOS, el proceso de Apache necesita poder escribir en `api/logs/`. Otorgá permisos al directorio:
+En Windows con XAMPP o Laragon los permisos de archivo no suelen ser un problema. En Linux o macOS, el proceso de Apache necesita poder escribir en `api/logs/`. Otorgá permisos al directorio:
 
 ```bash
 chmod 775 api/logs/
@@ -231,7 +238,7 @@ npm install
 npm run dev
 ```
 
-Vite inicia en `http://localhost:5173/`. El proxy redirige `/api/*` a `http://127.0.0.1/almacenDigital/api/`, por lo que Apache y MySQL deben estar corriendo.
+Vite inicia en `http://localhost:5173/`. El proxy redirige `/api/*` al backend PHP configurado en [vite.config.ts](vite.config.ts), por lo que Apache/PHP y MySQL deben estar corriendo.
 
 ---
 
@@ -241,15 +248,21 @@ Vite inicia en `http://localhost:5173/`. El proxy redirige `/api/*` a `http://12
 npm run dev          # servidor de desarrollo con HMR
 npm run build        # build de producción (salida en dist/)
 npm run preview      # vista previa de la build de producción
-npm test             # pruebas unitarias (no requiere XAMPP)
-npm run test:integration  # pruebas de integración (requiere XAMPP activo)
+npm test             # pruebas unitarias (no requiere servidor local)
+npm run test:integration  # pruebas de integración (requiere Apache/PHP y MySQL activos)
 ```
+
+---
+
+## Aplicativo móvil
+
+El proyecto Android usa la versión compilada del frontend dentro de `app/src/main/assets/`. Para actualizarlo con los cambios del proyecto original, ejecuta `npm run build` y copia el contenido de `dist/` a los assets del aplicativo antes de generar el APK.
 
 ---
 
 ## Cómo probar la aplicación
 
-1. Arranca XAMPP (Apache + MySQL).
+1. Arranca Apache/PHP y MySQL en XAMPP, Laragon u otro entorno local.
 2. Ejecuta `npm run dev`.
 3. Abre `http://localhost:5173/`.
 
@@ -343,14 +356,6 @@ Cada estante define:
 
 La guía breve de evidencias está en [ENTREGA.md](ENTREGA.md#L1).
 
----
-
-## Calificación
-
-- **Nota:** 18/20 — proyecto sólido que cubre las funcionalidades solicitadas y cuenta con pruebas unitarias para la lógica central.
-
----
-
 ## Mejoras implementadas
 
 Los siguientes puntos de mejora identificados en la evaluación han sido abordados:
@@ -381,10 +386,10 @@ Veinte pruebas que cubren:
 - `DELETE` de producto.
 - Restauración del estado original de estantes en `afterAll`.
 
-Las pruebas se omiten automáticamente si la API no es alcanzable, por lo que `npm test` (pruebas unitarias) nunca falla por falta de XAMPP.
+Las pruebas se omiten automáticamente si la API no es alcanzable, por lo que `npm test` (pruebas unitarias) nunca falla por falta de servidor local.
 
 ```bash
-npm run test:integration   # requiere XAMPP activo con Apache y MySQL
+npm run test:integration   # requiere Apache/PHP y MySQL activos
 ```
 
 ### Optimización del motor de colocación (`src/canPlace.ts`)

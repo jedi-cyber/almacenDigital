@@ -14,6 +14,14 @@ coverage/
 test-results/
 playwright-report/
 
+# Mobile / packaged builds
+*.apk
+*.aab
+*.keystore
+*.jks
+app/build/
+.gradle/
+
 # Logs and temporary files
 api/logs/
 logs/

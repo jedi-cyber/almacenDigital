@@ -11,6 +11,13 @@ export interface SceneObjects {
   controls: OrbitControls;
 }
 
+export interface DoorObjects {
+  pivot: THREE.Object3D;
+  panel: THREE.Mesh;
+  entrancePosition: THREE.Vector3;
+  wallMeshes: THREE.Mesh[];
+}
+
 /** Paleta de colores asignada a los estantes en orden de aparición. */
 export const SHELF_PALETTE = ["#8b5e34", "#a56f3a", "#6d8a4f", "#46646f", "#ad8446", "#7a5c58"];
 
@@ -28,12 +35,19 @@ export function buildScene(canvas: HTMLCanvasElement): SceneObjects {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
-  camera.position.set(8, 6, 8);
+  camera.position.set(5.6, 1.65, 1.7);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
-  controls.target.set(0, 1.4, 0);
+  controls.enablePan = false;
+  controls.minDistance = 1.3;
+  controls.maxDistance = 7;
+  controls.minAzimuthAngle = -Infinity;
+  controls.maxAzimuthAngle = Infinity;
+  controls.minPolarAngle = 0;
+  controls.maxPolarAngle = Math.PI;
+  controls.target.set(0.5, 1.35, 1.6);
 
   return { scene, renderer, camera, controls };
 }
@@ -84,10 +98,11 @@ export function addFloor(scene: THREE.Scene): void {
  * La cara trasera se determina por el vecino más cercano con la misma orientación:
  * el pasillo queda entre ambos, la pared va al lado opuesto.
  */
-export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
+export function addWalls(scene: THREE.Scene, shelves: Shelf[]): THREE.Mesh[] {
   const wallMat = new THREE.MeshStandardMaterial({ color: "#c8bfa8", roughness: 0.88, metalness: 0.02 });
   const wallT = 0.20;
   const gap = 0.10;
+  const wallMeshes: THREE.Mesh[] = [];
 
   // Pares de estantes cuyas paredes deben unirse en esquina.
   const JOIN_PAIRS: [string, string][] = [["S02", "S03"], ["S03", "S05"], ["S05", "S04"]];
@@ -123,7 +138,9 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
       wall.position.set(wallX, wallY, shelf.position.z);
       wall.receiveShadow = true;
       wall.castShadow = true;
+      wall.userData.isWallCollider = true;
       scene.add(wall);
+      wallMeshes.push(wall);
       recs.set(shelf.id, {
         isRotated: true,
         crossPos: wallX,
@@ -145,7 +162,9 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
       wall.position.set(shelf.position.x, wallY, wallZ);
       wall.receiveShadow = true;
       wall.castShadow = true;
+      wall.userData.isWallCollider = true;
       scene.add(wall);
+      wallMeshes.push(wall);
       recs.set(shelf.id, {
         isRotated: false,
         crossPos: wallZ,
@@ -164,7 +183,9 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
     box.position.set(x, y, z);
     box.receiveShadow = true;
     box.castShadow = true;
+    box.userData.isWallCollider = true;
     scene.add(box);
+    wallMeshes.push(box);
   };
 
   for (const [idA, idB] of JOIN_PAIRS) {
@@ -201,6 +222,8 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
       addConnectorBox(extW, maxH, wallT, (hEnd + cornerX) / 2 + shift, maxH / 2, cornerZ);
     }
   }
+
+  return wallMeshes;
 }
 
 /**
@@ -208,7 +231,7 @@ export function addWalls(scene: THREE.Scene, shelves: Shelf[]): void {
  * por el lado derecho, 10 cm separada del extremo más ancho.
  * Las posiciones se calculan dinámicamente desde los datos de los estantes.
  */
-export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): { pivot: THREE.Object3D; panel: THREE.Mesh } | undefined {
+export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): DoorObjects | undefined {
   const s01 = shelves.find(s => s.id === "S01");
   const s02 = shelves.find(s => s.id === "S02");
   if (!s01 || !s02) return;
@@ -216,6 +239,7 @@ export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): { pivot: TH
   const wallMat  = new THREE.MeshStandardMaterial({ color: "#c8bfa8", roughness: 0.88, metalness: 0.02 });
   const doorMat  = new THREE.MeshStandardMaterial({ color: "#7a5230", roughness: 0.72, metalness: 0.06 });
   const frameMat = new THREE.MeshStandardMaterial({ color: "#a07840", roughness: 0.80, metalness: 0.04 });
+  const wallMeshes: THREE.Mesh[] = [];
 
   const wallT = 0.20;
   const gap   = 0.10;
@@ -239,7 +263,7 @@ export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): { pivot: TH
   const doorX = xRightMax + 0.10 + wallT / 2;
 
   // Parámetros de la puerta
-  const doorW       = 1.00;
+  const doorW       = 1.45;
   const doorH       = 2.10;
   const doorCenterZ = (zWall1 + zWall2) / 2;
   const doorZMin    = doorCenterZ - doorW / 2;
@@ -250,7 +274,11 @@ export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): { pivot: TH
     mesh.position.set(px, py, pz);
     mesh.receiveShadow = true;
     mesh.castShadow = true;
+    mesh.userData.isWallCollider = mat !== doorMat;
     scene.add(mesh);
+    if (mesh.userData.isWallCollider) {
+      wallMeshes.push(mesh);
+    }
   };
 
   // Conectores que unen la pared de cada estante con la pared-puerta
@@ -294,7 +322,12 @@ export function addDoorS01S02(scene: THREE.Scene, shelves: Shelf[]): { pivot: TH
   pivot.rotation.y = 0;
   scene.add(pivot);
 
-  return { pivot, panel };
+  return {
+    pivot,
+    panel,
+    entrancePosition: new THREE.Vector3(doorX + 0.95, 0.04, doorCenterZ),
+    wallMeshes
+  };
 }
 
 /**

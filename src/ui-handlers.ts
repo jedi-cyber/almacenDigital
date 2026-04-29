@@ -7,7 +7,7 @@ export function wireHudInteractions(container: HTMLElement): void {
   const hudToggleBtn = container.querySelector<HTMLButtonElement>("[data-hud-toggle]");
   const legendToggleBtn = container.querySelector<HTMLButtonElement>("[data-legend-toggle]");
   const legend = container.querySelector<HTMLElement>("#legend");
-  const mobileQuery = window.matchMedia("(max-width: 900px)");
+  const mobileQuery = window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)");
 
   const setCardState = (card: HTMLElement, button: HTMLButtonElement, collapsed: boolean) => {
     const body = card.querySelector<HTMLElement>("[data-card-body]");

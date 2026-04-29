@@ -57,10 +57,11 @@ function cors_headers(string $methods = "GET, POST, OPTIONS"): void
 {
     $allowed = $_ENV["ALLOWED_ORIGIN"] ?? "*";
     $origin  = $_SERVER["HTTP_ORIGIN"] ?? "";
+    $allowedOrigins = array_filter(array_map("trim", explode(",", $allowed)));
 
     if ($allowed === "*") {
         header("Access-Control-Allow-Origin: *");
-    } elseif ($origin === $allowed) {
+    } elseif ($origin !== "" && in_array($origin, $allowedOrigins, true)) {
         header("Access-Control-Allow-Origin: {$origin}");
         header("Vary: Origin");
     }

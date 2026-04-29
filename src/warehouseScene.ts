@@ -42,8 +42,25 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 
   addLights(scene);
   addFloor(scene);
-  addWalls(scene, config.shelves);
+  const wallMeshes = addWalls(scene, config.shelves);
   const door = addDoorS01S02(scene, config.shelves);
+  const wallColliders = [...wallMeshes, ...(door?.wallMeshes ?? [])];
+  const entrancePosition = door?.entrancePosition ?? new THREE.Vector3(5.6, 0.04, 1.7);
+  let doorOpen = false;
+  const setDoorOpen = (isOpen: boolean): void => {
+    if (!door) return;
+    doorOpen = isOpen;
+    gsap.to(door.pivot.rotation, { y: doorOpen ? -Math.PI / 2 : 0, duration: 0.5, ease: "power2.inOut" });
+  };
+  const ensureDoorOpen = (): boolean => {
+    if (!door || doorOpen) return false;
+    setDoorOpen(true);
+    return true;
+  };
+  setCameraAtEntrance(camera, controls, entrancePosition, refs.canvas.parentElement);
+  const blockCameraAtWalls = createWallCollisionBlocker(camera, controls, wallColliders);
+  const routeControls = createRouteStepControls(refs.canvas.parentElement);
+  let guidedRoute: GuidedRoute | null = null;
 
   const shelfMeshes = new Map<string, THREE.Mesh>();
   const shelfSprites = new Map<string, THREE.Sprite>();
@@ -146,6 +163,23 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       if (refs.shelfSelect.value === shelfId) {
         refreshShelfSummary(shelfId);
       }
+    },
+    onProductLocated: (worldPos, shelfMesh) => {
+      guidedRoute = drawGuidedRoute(
+        scene,
+        camera,
+        controls,
+        entrancePosition,
+        worldPos,
+        shelfMesh,
+        guidedRoute,
+        routeControls,
+        ensureDoorOpen
+      );
+    },
+    onSearchCleared: () => {
+      guidedRoute = clearGuidedRoute(scene, guidedRoute);
+      routeControls.hide();
     }
   });
 
@@ -171,7 +205,6 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   if (door) {
     const doorRaycaster = new THREE.Raycaster();
     const doorNdc = new THREE.Vector2();
-    let doorOpen = false;
     refs.canvas.addEventListener("click", (e: MouseEvent) => {
       if (dragController.isSuppressed()) return;
       const rect = refs.canvas.getBoundingClientRect();
@@ -181,8 +214,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       );
       doorRaycaster.setFromCamera(doorNdc, camera);
       if (doorRaycaster.intersectObject(door.panel).length > 0) {
-        doorOpen = !doorOpen;
-        gsap.to(door.pivot.rotation, { y: doorOpen ? -Math.PI / 2 : 0, duration: 0.5, ease: "power2.inOut" });
+        setDoorOpen(!doorOpen);
       }
     });
   }
@@ -202,15 +234,390 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 
   resize();
   window.addEventListener("resize", resize);
-  const updateWASDMovement = wireWASDMovement(camera, controls);
-  const clock = new THREE.Clock();
-
   renderer.setAnimationLoop(() => {
-    updateWASDMovement(clock.getDelta());
     controls.update();
+    blockCameraAtWalls();
     updateShelfTransparency(camera, shelfMeshes);
     renderer.render(scene, camera);
   });
+}
+
+function setCameraAtEntrance(
+  camera: THREE.PerspectiveCamera,
+  controls: OrbitControls,
+  entrancePosition: THREE.Vector3,
+  viewport: HTMLElement | null
+): void {
+  const viewportWidth = viewport?.clientWidth ?? window.innerWidth;
+  const viewportHeight = viewport?.clientHeight ?? window.innerHeight;
+  const isMobileViewport = viewportWidth <= 900 || viewportHeight > viewportWidth;
+  const cameraOffsetX = isMobileViewport ? 4.2 : 0.55;
+  const targetOffsetX = isMobileViewport ? -2.2 : -1.4;
+
+  camera.fov = isMobileViewport ? 82 : 60;
+  camera.position.set(entrancePosition.x + cameraOffsetX, 1.65, entrancePosition.z);
+  controls.target.set(entrancePosition.x + targetOffsetX, 1.25, entrancePosition.z);
+  camera.lookAt(controls.target);
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+interface RouteStepControls {
+  container: HTMLDivElement;
+  backButton: HTMLButtonElement;
+  nextButton: HTMLButtonElement;
+  finishButton: HTMLButtonElement;
+  setStep: (current: number, total: number) => void;
+  setBusy: (isBusy: boolean) => void;
+  show: () => void;
+  hide: () => void;
+}
+
+interface GuidedRoute {
+  points: THREE.Vector3[];
+  productFocus: THREE.Vector3;
+  activeSegment: THREE.Group | null;
+  currentStep: number;
+  controls: RouteStepControls;
+  camera: THREE.PerspectiveCamera;
+  orbitControls: OrbitControls;
+  ensureDoorOpen: () => boolean;
+}
+
+function createRouteStepControls(viewport: HTMLElement | null): RouteStepControls {
+  const container = document.createElement("div");
+  container.className = "route-step-controls";
+  container.hidden = true;
+
+  const backButton = createRouteButton("Retroceder");
+  const nextButton = createRouteButton("Avanzar ruta");
+  const finishButton = createRouteButton("Ir al final");
+
+  container.append(backButton, nextButton, finishButton);
+  viewport?.append(container);
+
+  return {
+    container,
+    backButton,
+    nextButton,
+    finishButton,
+    setStep: (current: number, total: number) => {
+      nextButton.textContent = current >= total ? `Finalizar ${current}/${total}` : `Avanzar ${current}/${total}`;
+      backButton.disabled = current <= 1;
+      nextButton.disabled = false;
+      finishButton.disabled = current >= total;
+    },
+    setBusy: (isBusy: boolean) => {
+      backButton.disabled = isBusy || backButton.disabled;
+      nextButton.disabled = isBusy;
+      finishButton.disabled = isBusy || finishButton.disabled;
+    },
+    show: () => {
+      container.hidden = false;
+    },
+    hide: () => {
+      container.hidden = true;
+      backButton.disabled = false;
+      nextButton.disabled = false;
+      finishButton.disabled = false;
+      backButton.onclick = null;
+      nextButton.onclick = null;
+      finishButton.onclick = null;
+    }
+  };
+}
+
+function createRouteButton(label: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "route-step-btn";
+  button.textContent = label;
+  return button;
+}
+
+function drawGuidedRoute(
+  scene: THREE.Scene,
+  camera: THREE.PerspectiveCamera,
+  orbitControls: OrbitControls,
+  entrancePosition: THREE.Vector3,
+  productWorldPos: THREE.Vector3,
+  shelfMesh: THREE.Mesh,
+  currentRoute: GuidedRoute | null,
+  controls: RouteStepControls,
+  ensureDoorOpen: () => boolean
+): GuidedRoute {
+  clearGuidedRoute(scene, currentRoute);
+
+  const aisleNormal = getShelfAisleNormal(shelfMesh, entrancePosition);
+  const start = entrancePosition.clone().setY(0.055);
+  const end = productWorldPos.clone().addScaledVector(aisleNormal, 0.8).setY(0.055);
+  const corner = new THREE.Vector3(start.x, 0.055, end.z);
+  const points = start.distanceTo(corner) < 0.15 || corner.distanceTo(end) < 0.15
+    ? [start, end]
+    : [start, corner, end];
+
+  const route: GuidedRoute = {
+    points,
+    productFocus: productWorldPos.clone(),
+    activeSegment: null,
+    currentStep: 0,
+    controls,
+    camera,
+    orbitControls,
+    ensureDoorOpen
+  };
+
+  controls.backButton.onclick = () => retreatGuidedRoute(scene, route);
+  controls.nextButton.onclick = () => advanceGuidedRoute(scene, route);
+  controls.finishButton.onclick = () => finishGuidedRoute(scene, route);
+  controls.show();
+  renderGuidedRouteStep(scene, route);
+  moveCameraWithRoute(route, 0);
+  return route;
+}
+
+function advanceGuidedRoute(scene: THREE.Scene, route: GuidedRoute): void {
+  if (route.currentStep >= route.points.length - 1) return;
+  route.currentStep += 1;
+
+  if (route.currentStep >= route.points.length - 1) {
+    showRouteArrival(scene, route);
+    return;
+  }
+
+  renderGuidedRouteStep(scene, route);
+  moveCameraWithRoute(route, route.currentStep);
+}
+
+function retreatGuidedRoute(scene: THREE.Scene, route: GuidedRoute): void {
+  if (route.currentStep <= 0) return;
+  route.currentStep -= 1;
+  renderGuidedRouteStep(scene, route);
+  moveCameraWithRoute(route, route.currentStep);
+}
+
+function finishGuidedRoute(scene: THREE.Scene, route: GuidedRoute): void {
+  route.currentStep = route.points.length - 1;
+  showRouteArrival(scene, route);
+}
+
+function showRouteArrival(scene: THREE.Scene, route: GuidedRoute): void {
+  disposeRouteSegment(scene, route.activeSegment);
+  route.activeSegment = createRouteArrivalMarker(route.points[route.points.length - 1]);
+  scene.add(route.activeSegment);
+  route.controls.setStep(route.points.length - 1, route.points.length - 1);
+  moveCameraWithRoute(route, route.currentStep, true);
+  window.setTimeout(() => {
+    route.controls.hide();
+    disposeRouteSegment(scene, route.activeSegment);
+    route.activeSegment = null;
+  }, 1400);
+}
+
+function renderGuidedRouteStep(scene: THREE.Scene, route: GuidedRoute): void {
+  disposeRouteSegment(scene, route.activeSegment);
+
+  const from = route.points[route.currentStep];
+  const to = route.points[route.currentStep + 1];
+  route.activeSegment = createRouteSegment(from, to, route.currentStep === route.points.length - 2);
+  scene.add(route.activeSegment);
+  route.controls.setStep(route.currentStep + 1, route.points.length - 1);
+}
+
+function createRouteSegment(from: THREE.Vector3, to: THREE.Vector3, isFinalSegment: boolean): THREE.Group {
+  const route = new THREE.Group();
+  route.name = "__guided_route_step__";
+
+  const mid = from.clone().lerp(to, 0.5);
+  const direction = to.clone().sub(from).setY(0);
+  const points = [from.clone(), mid.clone().setY(0.12), to.clone()];
+  const curve = new THREE.CatmullRomCurve3(points, false, "catmullrom", 0.05);
+  const geometry = new THREE.TubeGeometry(curve, 28, 0.04, 8, false);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x18c7ff,
+    emissive: 0x0b6f9b,
+    emissiveIntensity: 0.75,
+    roughness: 0.35
+  });
+  const tube = new THREE.Mesh(geometry, material);
+  tube.name = "__guided_route_part__";
+  route.add(tube);
+
+  addRouteStepMarkers(route, from, to, direction, isFinalSegment);
+  return route;
+}
+
+function moveCameraWithRoute(route: GuidedRoute, stepIndex: number, isArrival = false): void {
+  const point = route.points[Math.min(stepIndex, route.points.length - 1)];
+  const lookPoint = isArrival
+    ? route.productFocus
+    : route.points[Math.min(stepIndex + 1, route.points.length - 1)];
+
+  const travelDirection = lookPoint.clone().sub(point).setY(0);
+  if (travelDirection.lengthSq() < 0.001) {
+    travelDirection.set(1, 0, 0);
+  } else {
+    travelDirection.normalize();
+  }
+
+  const cameraTarget = point.clone().addScaledVector(travelDirection, -0.35);
+  cameraTarget.y = 1.55;
+  const controlsTarget = lookPoint.clone();
+  controlsTarget.y = isArrival ? Math.max(1.1, route.productFocus.y) : 1.15;
+
+  gsap.killTweensOf(route.camera.position);
+  gsap.killTweensOf(route.orbitControls.target);
+  route.controls.setBusy(true);
+  const startDelay = route.ensureDoorOpen() ? 0.52 : 0;
+
+  gsap.to(route.camera.position, {
+    x: cameraTarget.x,
+    y: cameraTarget.y,
+    z: cameraTarget.z,
+    duration: 0.85,
+    delay: startDelay,
+    ease: "power2.inOut"
+  });
+
+  gsap.to(route.orbitControls.target, {
+    x: controlsTarget.x,
+    y: controlsTarget.y,
+    z: controlsTarget.z,
+    duration: 0.85,
+    delay: startDelay,
+    ease: "power2.inOut",
+    onUpdate: () => {
+      route.camera.lookAt(route.orbitControls.target);
+      route.orbitControls.update();
+    },
+    onComplete: () => {
+      route.controls.setStep(
+        Math.min(route.currentStep + 1, route.points.length - 1),
+        route.points.length - 1
+      );
+    }
+  });
+}
+
+function clearGuidedRoute(scene: THREE.Scene, route: GuidedRoute | null): null {
+  if (!route) return null;
+
+  gsap.killTweensOf(route.camera.position);
+  gsap.killTweensOf(route.orbitControls.target);
+  disposeRouteSegment(scene, route.activeSegment);
+  route.controls.hide();
+  return null;
+}
+
+function disposeRouteSegment(scene: THREE.Scene, segment: THREE.Group | null): void {
+  if (!segment) return;
+
+  scene.remove(segment);
+  segment.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    if (Array.isArray(child.material)) {
+      child.material.forEach((material) => material.dispose());
+    } else {
+      child.material.dispose();
+    }
+  });
+}
+
+function addRouteStepMarkers(
+  route: THREE.Group,
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+  direction: THREE.Vector3,
+  isFinalSegment: boolean
+): void {
+  const markerMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffd45c,
+    emissive: 0x8c5f00,
+    emissiveIntensity: 0.55,
+    roughness: 0.45
+  });
+
+  const startMarker = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 10), markerMaterial.clone());
+  startMarker.position.copy(from).setY(0.095);
+  route.add(startMarker);
+
+  const endMarker = new THREE.Mesh(
+    isFinalSegment
+      ? new THREE.CylinderGeometry(0.16, 0.16, 0.05, 24)
+      : new THREE.SphereGeometry(0.1, 16, 10),
+    markerMaterial.clone()
+  );
+  endMarker.position.copy(to).setY(0.095);
+  route.add(endMarker);
+
+  if (direction.lengthSq() >= 0.09) {
+    direction.normalize();
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.13, 0.28, 20),
+      markerMaterial.clone()
+    );
+    arrow.position.copy(from).lerp(to, 0.55).setY(0.16);
+    arrow.rotation.z = -Math.PI / 2;
+    arrow.rotation.y = Math.atan2(direction.z, direction.x);
+    route.add(arrow);
+  }
+}
+
+function createRouteArrivalMarker(point: THREE.Vector3): THREE.Group {
+  const route = new THREE.Group();
+  route.name = "__guided_route_arrival__";
+  const marker = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.2, 0.06, 28),
+    new THREE.MeshStandardMaterial({
+      color: 0x35d07f,
+      emissive: 0x166b3d,
+      emissiveIntensity: 0.7,
+      roughness: 0.42
+    })
+  );
+  marker.position.copy(point).setY(0.11);
+  route.add(marker);
+  return route;
+}
+
+function getShelfAisleNormal(shelfMesh: THREE.Mesh, entrancePosition: THREE.Vector3): THREE.Vector3 {
+  const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(shelfMesh.quaternion).setY(0).normalize();
+  const backward = forward.clone().multiplyScalar(-1);
+  const toEntrance = entrancePosition.clone().sub(shelfMesh.position).setY(0);
+
+  if (toEntrance.lengthSq() < 1e-4) {
+    return forward;
+  }
+
+  return forward.dot(toEntrance) >= backward.dot(toEntrance) ? forward : backward;
+}
+
+function createWallCollisionBlocker(
+  camera: THREE.PerspectiveCamera,
+  controls: OrbitControls,
+  wallMeshes: THREE.Mesh[]
+): () => void {
+  const cameraRadius = 0.18;
+  const wallBoxes = wallMeshes.map((mesh) =>
+    new THREE.Box3().setFromObject(mesh).expandByScalar(cameraRadius)
+  );
+  const previousCameraPosition = camera.position.clone();
+  const previousTarget = controls.target.clone();
+
+  return () => {
+    const isBlocked = wallBoxes.some((box) => box.containsPoint(camera.position));
+    if (isBlocked) {
+      camera.position.copy(previousCameraPosition);
+      controls.target.copy(previousTarget);
+      camera.lookAt(controls.target);
+      controls.update();
+      return;
+    }
+
+    previousCameraPosition.copy(camera.position);
+    previousTarget.copy(controls.target);
+  };
 }
 
 /**
