@@ -1,0 +1,39 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_API_URL: /api
+    ports:
+      - "8080:80"
+    environment:
+      DB_HOST: db
+      DB_NAME: almacensekai
+      DB_USER: almacen_user
+      DB_PASSWORD: almacen_password
+      DB_CHARSET: utf8mb4
+      ALLOWED_ORIGIN: http://localhost:8080
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.4
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_DATABASE: almacensekai
+      MYSQL_USER: almacen_user
+      MYSQL_PASSWORD: almacen_password
+      MYSQL_ROOT_PASSWORD: root_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:
