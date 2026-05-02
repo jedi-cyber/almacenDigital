@@ -44,6 +44,7 @@ const ICON_PATHS = {
   move: "M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z",
   trash: "M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v8h-2V9Zm4 0h2v8h-2V9ZM6 9h2v8H6V9Z",
   layers: "M12 3 3 8l9 5 9-5-9-5Zm-7 8.9 7 3.89 7-3.89V15l-7 4-7-4v-3.1Z",
+  barcode: "M4 5h2v14H4V5Zm3 0h1v14H7V5Zm3 0h2v14h-2V5Zm4 0h1v14h-1V5Zm3 0h3v14h-3V5Z",
   close: "M6.7 5.3a1 1 0 0 1 1.4 0L12 9.17l3.9-3.88a1 1 0 1 1 1.4 1.42L13.4 10.6l3.9 3.89a1 1 0 0 1-1.4 1.42L12 12.01l-3.9 3.9a1 1 0 1 1-1.4-1.42l3.9-3.9-3.9-3.89a1 1 0 0 1 0-1.4Z"
 } as const;
 
@@ -117,12 +118,20 @@ function buildHudTemplate(): string {
                     />
                   </svg>
                 </button>
+                <button type="button" id="barcode-scan-btn" class="icon-button icon-button--scan" aria-label="${UI_COPY.buttons.scanBarcode}" title="${UI_COPY.buttons.scanBarcode}" data-testid="barcode-scan-btn">
+                  ${renderIcon(ICON_PATHS.barcode)}
+                  <span class="visually-hidden">${UI_COPY.buttons.scanBarcode}</span>
+                </button>
                 <button type="button" id="clear-search-btn" class="icon-button icon-button--ghost" aria-label="${UI_COPY.buttons.clearSearch}" title="${UI_COPY.buttons.clearSearch}" data-testid="clear-search-btn" hidden>
                   ${renderIcon(ICON_PATHS.close)}
                 </button>
               </div>
             </label>
         </form>
+        <div class="barcode-scanner" id="barcode-scanner" hidden>
+          <video id="barcode-video" class="barcode-video" autoplay muted playsinline></video>
+          <div class="barcode-frame" aria-hidden="true"></div>
+        </div>
         </div>
         </section>
 

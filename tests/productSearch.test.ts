@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveProductSearchQuery } from "../src/ui.js";
+import { resolveProductByExactSku, resolveProductSearchQuery } from "../src/ui.js";
 import type { ProductEntry } from "../src/warehouse.js";
 
 function entry(sku: string, name: string): [string, ProductEntry] {
@@ -50,5 +50,20 @@ describe("resolveProductSearchQuery", () => {
     ]);
 
     expect(resolveProductSearchQuery(products, "taladro")).toBeNull();
+  });
+});
+
+describe("resolveProductByExactSku", () => {
+  it("solo identifica codigos capturados contra SKU exacto", () => {
+    const products = new Map<string, ProductEntry>([
+      entry("7501000000012", "Aceite 1L"),
+      entry("SKU-002", "7501000000012"),
+    ]);
+
+    expect(resolveProductByExactSku(products, "7501000000012")).toEqual({
+      sku: "7501000000012",
+      entry: products.get("7501000000012"),
+    });
+    expect(resolveProductByExactSku(products, "Aceite")).toBeNull();
   });
 });

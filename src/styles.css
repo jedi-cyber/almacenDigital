@@ -365,8 +365,33 @@ code {
 
 .search-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 52px;
+  grid-template-columns: minmax(0, 1fr) 52px 52px 52px;
   gap: 10px;
+}
+
+.barcode-scanner {
+  position: relative;
+  overflow: hidden;
+  min-height: 180px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: #111;
+}
+
+.barcode-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+.barcode-frame {
+  position: absolute;
+  inset: 24% 12%;
+  border: 2px solid rgba(249, 245, 234, 0.86);
+  border-radius: 8px;
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
 }
 
 .search-result--modal {
@@ -928,6 +953,11 @@ code {
 
 .icon-button--ghost:hover {
   opacity: 1;
+}
+
+.icon-button--scan[data-scanning="true"] {
+  background: var(--color-error-bg);
+  color: var(--color-error-text);
 }
 
 .edit-group {

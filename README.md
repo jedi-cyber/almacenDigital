@@ -242,6 +242,40 @@ Vite inicia en `http://localhost:5173/`. El proxy redirige `/api/*` al backend P
 
 ---
 
+## Ejecutar con Docker
+
+El proyecto incluye un `Dockerfile` multi-stage y `docker-compose.yml` para levantar frontend, API PHP/Apache y MySQL.
+
+```bash
+docker compose up --build -d
+```
+
+Después de iniciar:
+
+- App: `http://localhost:8080/`
+- API: `http://localhost:8080/api/config.php`
+- MySQL expuesto en el host: `localhost:3307`
+
+Para ver el estado:
+
+```bash
+docker compose ps
+```
+
+Para detenerlo:
+
+```bash
+docker compose down
+```
+
+Los datos de MySQL quedan persistidos en el volumen `mysql_data`. Si necesitás reiniciar la base desde cero:
+
+```bash
+docker compose down -v
+```
+
+---
+
 ## Comandos disponibles
 
 ```bash
