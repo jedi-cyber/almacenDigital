@@ -128,6 +128,21 @@ function db_run_migrations(PDO $pdo): array
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
 
+    $lockName = "almacen_digital_migrations";
+    $lockAcquired = (int)$pdo->query("SELECT GET_LOCK('{$lockName}', 10)")->fetchColumn();
+    if ($lockAcquired !== 1) {
+        throw new RuntimeException("No se pudo obtener el bloqueo de migraciones.");
+    }
+
+    try {
+        return db_run_migrations_locked($pdo);
+    } finally {
+        $pdo->query("SELECT RELEASE_LOCK('{$lockName}')");
+    }
+}
+
+function db_run_migrations_locked(PDO $pdo): array
+{
     $migrationFiles = glob(__DIR__ . "/migrations/*.php") ?: [];
     sort($migrationFiles);
 

@@ -14,8 +14,7 @@ import {
   refreshShelfSections,
   removeShelfBoardAtSection,
   resizeShelfMesh,
-  SHELF_PALETTE,
-  updateShelfSectionPreview
+  SHELF_PALETTE
 } from "./three-helpers.js";
 import type { Item, Shelf, WarehouseConfig } from "./types.js";
 import {
@@ -166,6 +165,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   const sectionLabelInput = document.querySelector<HTMLInputElement>("#section-label-input");
   const updateSectionLabelBtn = document.querySelector<HTMLButtonElement>("#update-section-label-btn");
   const dimensionHint = form.querySelector<HTMLDivElement>("#dimension-hint");
+  const productCard = form.closest<HTMLElement>("[data-card]");
 
   attachMaxClamp(widthField);
   attachMaxClamp(heightField);
@@ -197,6 +197,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 
     removeGhost();
 
+    if (productCard?.dataset.collapsed === "true") return;
     if (!shelf || !shelfMesh || !(w > 0) || !(h > 0) || !(d > 0)) return;
 
     const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
@@ -309,13 +310,6 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
       const activeSection = sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1;
       dimensionHint.textContent =
         `${getSectionLabel(shelf, activeSection)} seleccionado. Maximo: ${formatInputValue(shelf.width)} x ${formatInputValue(sectionHeight)} x ${formatInputValue(shelf.depth)} m.`;
-    }
-
-    if (shelfMesh) {
-      updateShelfSectionPreview(
-        shelfMesh,
-        sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1
-      );
     }
 
     createOrUpdateGhost();
@@ -567,11 +561,14 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   heightField.addEventListener("input", createOrUpdateGhost);
   depthField.addEventListener("input", createOrUpdateGhost);
 
-  // Eliminar el fantasma cuando el card del formulario se cierra.
-  const productCard = form.closest<HTMLElement>("[data-card]");
+  // Mostrar el fantasma solo cuando el card del formulario esta desplegado.
   if (productCard) {
     new MutationObserver(() => {
-      if (productCard.dataset.collapsed === "true") removeGhost();
+      if (productCard.dataset.collapsed === "true") {
+        removeGhost();
+        return;
+      }
+      createOrUpdateGhost();
     }).observe(productCard, { attributes: true, attributeFilter: ["data-collapsed"] });
   }
 
