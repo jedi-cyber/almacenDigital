@@ -44,6 +44,7 @@ const ICON_PATHS = {
   move: "M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z",
   trash: "M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v8h-2V9Zm4 0h2v8h-2V9ZM6 9h2v8H6V9Z",
   layers: "M12 3 3 8l9 5 9-5-9-5Zm-7 8.9 7 3.89 7-3.89V15l-7 4-7-4v-3.1Z",
+  report: "M3 13h4v8H3v-8Zm6-6h4v14H9V7Zm6 3h4v11h-4V10Z",
   close: "M6.7 5.3a1 1 0 0 1 1.4 0L12 9.17l3.9-3.88a1 1 0 1 1 1.4 1.42L13.4 10.6l3.9 3.89a1 1 0 0 1-1.4 1.42L12 12.01l-3.9 3.9a1 1 0 1 1-1.4-1.42l3.9-3.9-3.9-3.89a1 1 0 0 1 0-1.4Z"
 } as const;
 
@@ -127,6 +128,12 @@ function buildHudTemplate(): string {
         </section>
 
         <div class="hud-actions">
+          ${renderIconButton({
+            id: "open-report-btn",
+            className: "icon-action-btn icon-action-btn--primary icon-action-btn--wide-mobile",
+            label: "Ver Reporte",
+            iconPath: ICON_PATHS.report
+          })}
           ${renderIconButton({
             id: "open-shelf-manager-btn",
             className: "icon-action-btn icon-action-btn--soft icon-action-btn--wide-mobile",
