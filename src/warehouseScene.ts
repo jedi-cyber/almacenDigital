@@ -1,7 +1,8 @@
+
 import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-
+import { openReportWindow } from "./report-page.js";
 import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
@@ -154,42 +155,72 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   };
 
   wireSceneClick({
-    canvas: refs.canvas,
-    camera,
-    runtime,
-    config,
-    clickInfo: refs.clickInfo,
-    clickInfoSku: refs.clickInfoSku,
-    clickInfoShelf: refs.clickInfoShelf,
-    clickInfoDims: refs.clickInfoDims,
-    isSuppressed: dragController.isSuppressed,
-    onProductSelected: selectProduct,
-    onSelectionCleared: clearSelectedProduct
-  });
+  canvas: refs.canvas,
+  camera,
+  runtime,
+  config,
+  clickInfo: refs.clickInfo,
+  clickInfoSku: refs.clickInfoSku,
+  clickInfoShelf: refs.clickInfoShelf,
+  clickInfoDims: refs.clickInfoDims,
+  isSuppressed: dragController.isSuppressed,
 
+  onProductSelected: (product) => {
+  selectProduct(product);
+
+  const clickInfo = refs.clickInfo;
+  const clickInfoSku = refs.clickInfoSku;
+  const clickInfoShelf = refs.clickInfoShelf;
+  const deleteBtn = refs.deleteProductBtn;
+
+  clickInfoSku.textContent = `SKU: ${product.sku}`;
+  clickInfoShelf.textContent = `Estante: ${product.shelfId}`;
+
+  clickInfo.hidden = false;
+  deleteBtn.hidden = false;
+},
+
+  onSelectionCleared: clearSelectedProduct
+});
   // Abrir / cerrar la puerta al hacer clic sobre el panel
-  if (door) {
+if (door) {
     const doorRaycaster = new THREE.Raycaster();
     const doorNdc = new THREE.Vector2();
     let doorOpen = false;
+
     refs.canvas.addEventListener("click", (e: MouseEvent) => {
       if (dragController.isSuppressed()) return;
+      if (dragController.getSelectedShelfId() !== null) return;
+
       const rect = refs.canvas.getBoundingClientRect();
       doorNdc.set(
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
         -((e.clientY - rect.top) / rect.height) * 2 + 1
       );
       doorRaycaster.setFromCamera(doorNdc, camera);
+
       if (doorRaycaster.intersectObject(door.panel).length > 0) {
         doorOpen = !doorOpen;
-        gsap.to(door.pivot.rotation, { y: doorOpen ? -Math.PI / 2 : 0, duration: 0.5, ease: "power2.inOut" });
+        gsap.to(door.pivot.rotation, {
+          y: doorOpen ? -Math.PI / 2 : 0,
+          duration: 0.5,
+          ease: "power2.inOut"
+        });
       }
     });
-  }
-
+  }  // ← solo UN cierre aquí
   // Wire the edit-panel's "Eliminar piso" button
   const removeBoardBtn = document.querySelector<HTMLButtonElement>("#remove-board-btn");
   removeBoardBtn?.addEventListener("click", handleRemoveBoard);
+
+  // ── Reporte completo ──
+  document.getElementById("open-report-btn")?.addEventListener("click", () => {
+    openReportWindow({
+      shelves: config.shelves,
+      productsBySku: runtime.productEntryBySku,
+      generatedAt: new Date(),
+    });
+  });
 
   const resize = () => {
     const viewport = refs.canvas.parentElement;
@@ -249,7 +280,7 @@ function wireShelfDrag(
   let activeBoardShelfId: string | null = null;
   let pointerDownPos = { x: 0, y: 0 };
   let suppressClick = false;
-  let editModeEnabled = false;
+  let editModeEnabled = false; // 👈 asegurate que sea false
 
   const toNdc = (event: PointerEvent) => {
     const rect = canvas.getBoundingClientRect();
@@ -286,6 +317,7 @@ function wireShelfDrag(
     if (hiddenLabel) hiddenLabel.textContent = label;
     editShelvesBtn.classList.toggle("edit-shelves-btn--active", editModeEnabled);
     canvas.classList.toggle("scene-canvas--edit-mode", editModeEnabled);
+    console.log("UI actualizado, editMode:", editModeEnabled);
   };
 
   /** Configura dragPlane como un plano vertical que mira hacia la cámara,
@@ -311,32 +343,48 @@ function wireShelfDrag(
     }
   };
 
-  editShelvesBtn.addEventListener("click", () => {
-    editModeEnabled = !editModeEnabled;
-    if (!editModeEnabled) {
-      dragging = false;
-      activeShelfId = null;
-      activeProductSku = null;
-      pendingProductSku = null;
-      draggedProductLocalPosition = null;
-      controls.enabled = true;
-      canvas.style.cursor = "";
-      applySelection(null);
-    }
+  editShelvesBtn.addEventListener("click", (e) => {
+  e.stopPropagation(); // 🔥 evita interferencias con canvas
 
-    syncEditButton();
-    setStatus(
-      statusMessage,
-      editModeEnabled ? UI_COPY.status.editModeEnabled : UI_COPY.status.editModeDisabled,
-      false
-    );
-  });
+  editModeEnabled = !editModeEnabled;
+
+  console.log("EDIT MODE:", editModeEnabled);
+
+  if (editModeEnabled) {
+    // ACTIVAR modo edición
+    controls.enabled = true; // 👈 importante, no lo desactives aquí
+    canvas.style.cursor = "default";
+  } else {
+    // DESACTIVAR modo edición (reset total)
+    dragging = false;
+    activeShelfId = null;
+    activeProductSku = null;
+    pendingProductSku = null;
+    draggedProductLocalPosition = null;
+
+    controls.enabled = true;
+    canvas.style.cursor = "";
+    applySelection(null);
+  }
+
+  syncEditButton();
+
+  setStatus(
+    statusMessage,
+    editModeEnabled
+      ? "Modo edición ACTIVADO"
+      : "Modo edición DESACTIVADO",
+    false
+  );
+});
 
   syncEditButton();
 
   canvas.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    if (!editModeEnabled) return;
+  console.log("CLICK canvas | editMode:", editModeEnabled);
+
+  if (event.button !== 0) return;
+  if (!editModeEnabled) return;
 
     if (pendingProductSku) {
       const pendingEntry = runtime.productEntryBySku.get(pendingProductSku);

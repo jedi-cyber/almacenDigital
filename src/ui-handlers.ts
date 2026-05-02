@@ -2,12 +2,62 @@ import { SHELF_PALETTE } from "./scene.js";
 import type { Shelf } from "./types.js";
 import { UI_COPY } from "./ui-copy.js";
 
+let selectedSku: string | null = null;
+
+/* =========================
+   UI PRINCIPAL
+========================= */
 export function wireHudInteractions(container: HTMLElement): void {
   const appShell = container.querySelector<HTMLElement>(".app-shell");
   const hudToggleBtn = container.querySelector<HTMLButtonElement>("[data-hud-toggle]");
   const legendToggleBtn = container.querySelector<HTMLButtonElement>("[data-legend-toggle]");
   const legend = container.querySelector<HTMLElement>("#legend");
   const mobileQuery = window.matchMedia("(max-width: 900px)");
+
+  // 🔥 NUEVO
+  const deleteBtn = container.querySelector("#delete-product-btn") as HTMLButtonElement;
+  const clickInfo = container.querySelector("#click-info") as HTMLDivElement;
+  const clickInfoSku = container.querySelector("#click-info-sku") as HTMLElement;
+  const clickInfoShelf = container.querySelector("#click-info-shelf") as HTMLElement;
+
+  deleteBtn.hidden = true;
+  clickInfo.hidden = true;
+
+  /* =========================
+     BOTÓN ELIMINAR
+  ========================= */
+  deleteBtn.addEventListener("click", async () => {
+    if (!selectedSku) {
+      alert("Selecciona un producto primero");
+      return;
+    }
+
+    const confirmDelete = confirm(`¿Eliminar producto ${selectedSku}?`);
+    if (!confirmDelete) return;
+
+    try {
+      await fetch(`/api/productos.php?sku=${selectedSku}`, {
+        method: "DELETE"
+      });
+
+      alert("Producto eliminado correctamente");
+
+      // reset UI
+      selectedSku = null;
+      clickInfo.hidden = true;
+      deleteBtn.hidden = true;
+
+      location.reload();
+
+    } catch (err) {
+      console.error(err);
+      alert("Error al eliminar producto");
+    }
+  });
+
+  /* =========================
+     FUNCIONES EXISTENTES
+  ========================= */
 
   const setCardState = (card: HTMLElement, button: HTMLButtonElement, collapsed: boolean) => {
     const body = card.querySelector<HTMLElement>("[data-card-body]");
@@ -18,10 +68,13 @@ export function wireHudInteractions(container: HTMLElement): void {
     body.hidden = collapsed;
     body.style.display = collapsed ? "none" : "";
     button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+
     const action = collapsed ? UI_COPY.toggles.open : UI_COPY.toggles.close;
     const label = `${action} ${sectionLabel}`;
+
     button.title = label;
     button.setAttribute("aria-label", label);
+
     const hiddenLabel = button.querySelector(".visually-hidden");
     if (hiddenLabel) hiddenLabel.textContent = label;
   };
@@ -30,25 +83,33 @@ export function wireHudInteractions(container: HTMLElement): void {
     panel.hidden = !isOpen;
     panel.style.display = isOpen ? "" : "none";
     panel.setAttribute("aria-hidden", isOpen ? "false" : "true");
+
     const openButton = container.querySelector<HTMLButtonElement>(`[data-panel-toggle="${panel.id}"]`);
     openButton?.classList.toggle("icon-action-btn--active", isOpen);
   };
 
   const setHudState = (isOpen: boolean) => {
     if (!appShell || !hudToggleBtn) return;
+
     appShell.dataset.hudOpen = isOpen ? "true" : "false";
+
     const label = isOpen ? UI_COPY.buttons.hidePanel : UI_COPY.buttons.showPanel;
+
     hudToggleBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
     hudToggleBtn.title = label;
     hudToggleBtn.setAttribute("aria-label", label);
+
     const hiddenLabel = hudToggleBtn.querySelector(".visually-hidden");
     if (hiddenLabel) hiddenLabel.textContent = label;
   };
 
   const setLegendState = (isOpen: boolean) => {
     if (!legend || !legendToggleBtn) return;
+
     legend.hidden = !isOpen;
+
     const label = isOpen ? UI_COPY.buttons.hideLegend : UI_COPY.buttons.showLegend;
+
     legendToggleBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
     legendToggleBtn.title = label;
     legendToggleBtn.setAttribute("aria-label", label);
@@ -57,32 +118,16 @@ export function wireHudInteractions(container: HTMLElement): void {
 
   const syncHudStateWithViewport = () => {
     if (!appShell) return;
+
     if (mobileQuery.matches) {
       if (!appShell.dataset.hudOpen) {
         setHudState(false);
       }
       return;
     }
+
     setHudState(true);
   };
-
-  Array.from(container.querySelectorAll<HTMLButtonElement>("[data-card-toggle]")).forEach((button) => {
-    const cardId = button.dataset.cardId;
-    const card = cardId ? container.querySelector<HTMLElement>(`#${cardId}`) : button.closest<HTMLElement>("[data-card]");
-    if (!card) return;
-    setCardState(card, button, card.dataset.collapsed === "true");
-  });
-
-  const floatingPanel = container.querySelector<HTMLElement>("#shelf-manager-panel");
-  if (floatingPanel) {
-    setPanelState(floatingPanel, false);
-  }
-
-  const editPanel = container.querySelector<HTMLElement>("#edit-panel");
-  if (editPanel) {
-    setPanelState(editPanel, false);
-  }
-  setLegendState(false);
 
   syncHudStateWithViewport();
   mobileQuery.addEventListener("change", syncHudStateWithViewport);
@@ -91,6 +136,7 @@ export function wireHudInteractions(container: HTMLElement): void {
     const target = event.target;
     if (!(target instanceof Element)) return;
 
+    // HUD móvil
     const hudToggle = target.closest<HTMLButtonElement>("[data-hud-toggle]");
     if (hudToggle) {
       event.preventDefault();
@@ -99,6 +145,7 @@ export function wireHudInteractions(container: HTMLElement): void {
       return;
     }
 
+    // Leyenda
     const legendToggle = target.closest<HTMLButtonElement>("[data-legend-toggle]");
     if (legendToggle) {
       event.preventDefault();
@@ -107,45 +154,71 @@ export function wireHudInteractions(container: HTMLElement): void {
       return;
     }
 
-    const cardButton = target.closest<HTMLButtonElement>("[data-card-toggle]");
-    if (cardButton) {
+    // ── Botones de panel flotante (lápiz, layers) ──
+    const panelToggle = target.closest<HTMLButtonElement>("[data-panel-toggle]");
+    if (panelToggle) {
       event.preventDefault();
-      const cardId = cardButton.dataset.cardId;
-      const card = cardId
-        ? container.querySelector<HTMLElement>(`#${cardId}`)
-        : cardButton.closest<HTMLElement>("[data-card]");
+      const panelId = panelToggle.dataset.panelToggle;
+      if (!panelId) return;
+      const panel = container.querySelector<HTMLElement>(`#${panelId}`);
+      if (!panel) return;
+      const isCurrentlyOpen = !panel.hidden;
+      // Cerrar todos los paneles flotantes primero
+      container.querySelectorAll<HTMLElement>(".floating-panel").forEach((p) => {
+        setPanelState(p, false);
+      });
+      // Si estaba cerrado, abrirlo
+      if (!isCurrentlyOpen) setPanelState(panel, true);
+      return;
+    }
+
+    // ── Botón X dentro de panel flotante ──
+    const panelClose = target.closest<HTMLButtonElement>("[data-panel-close]");
+    if (panelClose) {
+      event.preventDefault();
+      const panelId = panelClose.dataset.panelClose;
+      if (!panelId) return;
+      const panel = container.querySelector<HTMLElement>(`#${panelId}`);
+      if (panel) setPanelState(panel, false);
+      return;
+    }
+
+    // ── Registrar producto (card toggle) ──
+    const cardToggle = target.closest<HTMLButtonElement>("[data-card-toggle]");
+    if (cardToggle) {
+      event.preventDefault();
+      const cardId = cardToggle.dataset.cardId;
+      if (!cardId) return;
+      const card = container.querySelector<HTMLElement>(`#${cardId}`);
       if (!card) return;
-      setCardState(card, cardButton, card.dataset.collapsed !== "true");
+      const isCollapsed = card.dataset.collapsed !== "false";
+      setCardState(card, cardToggle, !isCollapsed);
       return;
-    }
-
-    const openPanelButton = target.closest<HTMLButtonElement>("[data-panel-toggle]");
-    if (openPanelButton) {
-      event.preventDefault();
-      const panelId = openPanelButton.dataset.panelToggle;
-      const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
-      if (!panel) return;
-      setPanelState(panel, panel.hidden);
-      return;
-    }
-
-    const closePanelButton = target.closest<HTMLButtonElement>("[data-panel-close]");
-    if (closePanelButton) {
-      event.preventDefault();
-      const panelId = closePanelButton.dataset.panelClose;
-      const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
-      if (!panel) return;
-      setPanelState(panel, false);
-      return;
-    }
-
-    const viewport = target.closest<HTMLElement>(".viewport");
-    if (viewport && mobileQuery.matches && appShell?.dataset.hudOpen === "true") {
-      setHudState(false);
     }
   });
 }
 
+/* =========================
+   🔥 FUNCIÓN CLAVE (EXPORTADA)
+========================= */
+export function handleProductSelection(product: any, container: HTMLElement) {
+  selectedSku = product.sku;
+
+  const clickInfo = container.querySelector("#click-info") as HTMLDivElement;
+  const clickInfoSku = container.querySelector("#click-info-sku") as HTMLElement;
+  const clickInfoShelf = container.querySelector("#click-info-shelf") as HTMLElement;
+  const deleteBtn = container.querySelector("#delete-product-btn") as HTMLButtonElement;
+
+  clickInfoSku.textContent = `SKU: ${product.sku}`;
+  clickInfoShelf.textContent = `Estante: ${product.shelfId}`;
+
+  clickInfo.hidden = false;
+  deleteBtn.hidden = false;
+}
+
+/* =========================
+   RESTO (igual)
+========================= */
 export function populateShelves(
   legend: HTMLUListElement,
   shelfSelect: HTMLSelectElement,
@@ -173,25 +246,16 @@ export function populateShelves(
   });
 }
 
-export function setStatus(
-  element: HTMLParagraphElement,
-  message: string,
-  isError: boolean
-): void {
-  const text = message.trim();
-  element.textContent = text;
-  element.hidden = text.length === 0;
-  if (!text) {
-    delete element.dataset.state;
-    return;
-  }
-  element.dataset.state = isError ? "error" : "success";
+// 👇 PEGA ESTO AL FINAL DEL ARCHIVO
+
+export function setStatus(el: HTMLElement, msg: string, isError = false) {
+  el.textContent = msg;
+  el.style.color = isError ? "red" : "green";
 }
 
-export function updateLegendCount(shelfId: string, count: number): void {
-  const legendItem = document.querySelector<HTMLLIElement>(`#legend-${shelfId}`);
-  const counter = legendItem?.querySelector("small");
-  if (counter) {
-    counter.textContent = `${count} producto${count === 1 ? "" : "s"}`;
+export function updateLegendCount(shelfId: string, count: number) {
+  const el = document.querySelector(`#legend-${shelfId} small`);
+  if (el) {
+    el.textContent = `${count} productos`;
   }
 }

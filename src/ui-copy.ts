@@ -47,6 +47,7 @@ export const UI_COPY = {
     removeBoard: "Quitar piso",
     search: "Buscar producto",
     clearSearch: "Limpiar",
+    viewReport: "Ver reporte",
   },
   toggles: {
     open: "Abrir",

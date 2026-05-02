@@ -35,18 +35,26 @@ export interface HudRefs {
   clickInfoSku: HTMLElement;
   clickInfoShelf: HTMLElement;
   clickInfoDims: HTMLElement;
-  editShelvesBtn: HTMLButtonElement;
+  editShelvesBtn: HTMLButtonElement; 
+  openReportBtn: HTMLButtonElement;
 }
 
 const ICON_PATHS = {
   chevron: "M8.47 10.97a.75.75 0 0 1 1.06 0L12 13.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z",
+
   edit: "M3 17.25V21h3.75L17.8 9.94l-3.75-3.75L3 17.25Zm14.71-9.04a1 1 0 0 0 0-1.41l-2.5-2.5a1 1 0 0 0-1.41 0l-1.46 1.46 3.75 3.75 1.62-1.3Z",
+
   move: "M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z",
+
   trash: "M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v8h-2V9Zm4 0h2v8h-2V9ZM6 9h2v8H6V9Z",
+
   layers: "M12 3 3 8l9 5 9-5-9-5Zm-7 8.9 7 3.89 7-3.89V15l-7 4-7-4v-3.1Z",
+
+  // 🔥 NUEVO ICONO (dashboard / reporte)
+  report: "M3 13h4v8H3v-8Zm6-6h4v14H9V7Zm6 3h4v11h-4V10Z",
+
   close: "M6.7 5.3a1 1 0 0 1 1.4 0L12 9.17l3.9-3.88a1 1 0 1 1 1.4 1.42L13.4 10.6l3.9 3.89a1 1 0 0 1-1.4 1.42L12 12.01l-3.9 3.9a1 1 0 1 1-1.4-1.42l3.9-3.9-3.9-3.89a1 1 0 0 1 0-1.4Z"
 } as const;
-
 function renderIcon(path: string): string {
   return `
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -126,7 +134,13 @@ function buildHudTemplate(): string {
         </div>
         </section>
 
-        <div class="hud-actions">
+        <div class="hud-actions">  
+          ${renderIconButton({
+            id: "open-report-btn",
+            className: "icon-action-btn icon-action-btn--primary icon-action-btn--wide-mobile",
+            label: "Ver Reporte",
+            iconPath: ICON_PATHS.report
+})}
           ${renderIconButton({
             id: "open-shelf-manager-btn",
             className: "icon-action-btn icon-action-btn--soft icon-action-btn--wide-mobile",
@@ -534,6 +548,7 @@ export function buildHtml(container: HTMLElement): HudRefs {
   const clickInfoShelf = container.querySelector<HTMLElement>("#click-info-shelf");
   const clickInfoDims = container.querySelector<HTMLElement>("#click-info-dims");
   const editShelvesBtn = container.querySelector<HTMLButtonElement>("#edit-shelves-btn");
+  const openReportBtn = container.querySelector<HTMLButtonElement>("#open-report-btn");
 
   if (
     !canvas ||
@@ -569,7 +584,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
     !clickInfoSku ||
     !clickInfoShelf ||
     !clickInfoDims ||
-    !editShelvesBtn
+    !editShelvesBtn ||
+    !openReportBtn
   ) {
     throw new Error("No se pudieron crear los elementos base de la escena.");
   }
@@ -608,6 +624,7 @@ export function buildHtml(container: HTMLElement): HudRefs {
     clickInfoSku,
     clickInfoShelf,
     clickInfoDims,
-    editShelvesBtn
+    editShelvesBtn,
+    openReportBtn
   };
 }
