@@ -46,6 +46,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   const door = addDoorS01S02(scene, config.shelves);
   const wallColliders = [...wallMeshes, ...(door?.wallMeshes ?? [])];
   const entrancePosition = door?.entrancePosition ?? new THREE.Vector3(5.6, 0.04, 1.7);
+  let isEditCameraFree = false;
   let doorOpen = false;
   const setDoorOpen = (isOpen: boolean): void => {
     if (!door) return;
@@ -58,7 +59,12 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     return true;
   };
   setCameraAtEntrance(camera, controls, entrancePosition, refs.canvas.parentElement);
-  const blockCameraAtWalls = createWallCollisionBlocker(camera, controls, wallColliders);
+  const blockCameraAtWalls = createWallCollisionBlocker(
+    camera,
+    controls,
+    wallColliders,
+    () => isEditCameraFree
+  );
   const routeControls = createRouteStepControls(refs.canvas.parentElement);
   let guidedRoute: GuidedRoute | null = null;
 
@@ -128,7 +134,10 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     shelfMeshes,
     shelfSprites,
     config,
-    runtime
+    runtime,
+    (enabled) => {
+      isEditCameraFree = enabled;
+    }
   );
 
   const selectProduct = wireSearchForm({
@@ -356,7 +365,8 @@ function drawGuidedRoute(
   const end = getShelfApproachPoint(productWorldPos, shelfMesh, entrancePosition);
   const obstacleMeshes = [...shelfMeshes.values(), ...wallColliders];
   const manualPoints = buildBackShelfRoutePoints(start, end, shelfMesh, shelfMeshes, entrancePosition);
-  const points = manualPoints ?? buildAisleRoutePoints(start, end, obstacleMeshes) ?? buildFallbackRoutePoints(start, end);
+  const rawPoints = manualPoints ?? buildAisleRoutePoints(start, end, obstacleMeshes) ?? buildFallbackRoutePoints(start, end);
+  const points = orthogonalizeRoutePoints(rawPoints);
 
   const route: GuidedRoute = {
     points,
@@ -412,6 +422,32 @@ function buildBackShelfRoutePoints(
 
 function compactRoutePoints(points: THREE.Vector3[]): THREE.Vector3[] {
   return points.filter((point, index, list) => index === 0 || point.distanceTo(list[index - 1]) > 0.12);
+}
+
+function orthogonalizeRoutePoints(points: THREE.Vector3[]): THREE.Vector3[] {
+  if (points.length < 2) return points;
+
+  const orthogonalPoints: THREE.Vector3[] = [points[0].clone()];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const from = orthogonalPoints[orthogonalPoints.length - 1];
+    const to = points[index].clone();
+    const hasXChange = Math.abs(to.x - from.x) > 0.12;
+    const hasZChange = Math.abs(to.z - from.z) > 0.12;
+
+    if (hasXChange && hasZChange) {
+      const previous = orthogonalPoints[orthogonalPoints.length - 2];
+      const continueX = previous ? Math.abs(from.x - previous.x) > Math.abs(from.z - previous.z) : false;
+      const corner = continueX
+        ? new THREE.Vector3(to.x, from.y, from.z)
+        : new THREE.Vector3(from.x, from.y, to.z);
+      orthogonalPoints.push(corner);
+    }
+
+    orthogonalPoints.push(to);
+  }
+
+  return compactRoutePoints(orthogonalPoints);
 }
 
 function getShelfApproachPoint(
@@ -696,7 +732,9 @@ function moveCameraWithRoute(route: GuidedRoute, stepIndex: number, isArrival = 
   const cameraTarget = point.clone().addScaledVector(travelDirection, -0.35);
   cameraTarget.y = 1.55;
   const controlsTarget = lookPoint.clone();
-  controlsTarget.y = isArrival ? Math.max(1.1, route.productFocus.y) : 1.15;
+  controlsTarget.y = isArrival
+    ? Math.max(1.2, route.productFocus.y)
+    : Math.max(1.25, Math.min(1.7, route.productFocus.y + 0.35));
 
   gsap.killTweensOf(route.camera.position);
   gsap.killTweensOf(route.orbitControls.target);
@@ -745,8 +783,8 @@ function moveCameraToRouteEnd(route: GuidedRoute): void {
 
   const cameraTarget = point.clone().addScaledVector(travelDirection, -0.75);
   cameraTarget.y = 1.45;
-  const controlsTarget = point.clone();
-  controlsTarget.y = 0.55;
+  const controlsTarget = route.productFocus.clone();
+  controlsTarget.y = Math.max(1.2, route.productFocus.y);
 
   gsap.killTweensOf(route.camera.position);
   gsap.killTweensOf(route.orbitControls.target);
@@ -876,7 +914,8 @@ function getShelfAisleNormal(shelfMesh: THREE.Mesh, entrancePosition: THREE.Vect
 function createWallCollisionBlocker(
   camera: THREE.PerspectiveCamera,
   controls: OrbitControls,
-  wallMeshes: THREE.Mesh[]
+  wallMeshes: THREE.Mesh[],
+  isDisabled: () => boolean = () => false
 ): () => void {
   const cameraRadius = 0.18;
   const minCameraY = cameraRadius;
@@ -887,6 +926,8 @@ function createWallCollisionBlocker(
   const previousTarget = controls.target.clone();
 
   return () => {
+    if (isDisabled()) return;
+
     const isBelowFloor = camera.position.y < minCameraY;
     const isBlocked = isBelowFloor || wallBoxes.some((box) => box.containsPoint(camera.position));
     if (isBlocked) {
@@ -900,6 +941,36 @@ function createWallCollisionBlocker(
     previousCameraPosition.copy(camera.position);
     previousTarget.copy(controls.target);
   };
+}
+
+function getShelfOverlapScore(
+  draggedMesh: THREE.Mesh,
+  shelfMeshes: Map<string, THREE.Mesh>,
+  draggedShelfId: string
+): number {
+  const draggedBox = getShelfCollisionBox(draggedMesh);
+  let overlapScore = 0;
+
+  for (const [id, mesh] of shelfMeshes) {
+    if (id === draggedShelfId) continue;
+    const otherBox = getShelfCollisionBox(mesh);
+    const overlapX = Math.min(draggedBox.max.x, otherBox.max.x) - Math.max(draggedBox.min.x, otherBox.min.x);
+    const overlapZ = Math.min(draggedBox.max.z, otherBox.max.z) - Math.max(draggedBox.min.z, otherBox.min.z);
+    if (overlapX > 0 && overlapZ > 0) {
+      overlapScore += overlapX * overlapZ;
+    }
+  }
+
+  return overlapScore;
+}
+
+function getShelfCollisionBox(mesh: THREE.Mesh): THREE.Box3 {
+  const box = new THREE.Box3().setFromObject(mesh);
+  box.min.x += 0.01;
+  box.min.z += 0.01;
+  box.max.x -= 0.01;
+  box.max.z -= 0.01;
+  return box;
 }
 
 /**
@@ -916,7 +987,8 @@ function wireShelfDrag(
   shelfMeshes: Map<string, THREE.Mesh>,
   shelfSprites: Map<string, THREE.Sprite>,
   config: WarehouseConfig,
-  runtime: WarehouseRuntime
+  runtime: WarehouseRuntime,
+  onEditModeChange: (enabled: boolean) => void = () => {}
 ): { isSuppressed: () => boolean; armProductMove: (sku: string) => void; getSelectedShelfId: () => string | null } {
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -939,6 +1011,16 @@ function wireShelfDrag(
   let pointerDownPos = { x: 0, y: 0 };
   let suppressClick = false;
   let editModeEnabled = false;
+  const cameraHomePosition = camera.position.clone();
+  const cameraHomeTarget = controls.target.clone();
+  const cameraHomeFov = camera.fov;
+  const defaultControlState = {
+    enablePan: controls.enablePan,
+    minDistance: controls.minDistance,
+    maxDistance: controls.maxDistance,
+    minPolarAngle: controls.minPolarAngle,
+    maxPolarAngle: controls.maxPolarAngle
+  };
 
   const toNdc = (event: PointerEvent) => {
     const rect = canvas.getBoundingClientRect();
@@ -977,6 +1059,73 @@ function wireShelfDrag(
     canvas.classList.toggle("scene-canvas--edit-mode", editModeEnabled);
   };
 
+  const applyFreeCameraMode = () => {
+    controls.enablePan = true;
+    controls.minDistance = 0.05;
+    controls.maxDistance = Infinity;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
+    controls.enabled = true;
+    onEditModeChange(true);
+  };
+
+  const restoreCameraHome = () => {
+    gsap.killTweensOf(camera.position);
+    gsap.killTweensOf(controls.target);
+
+    camera.fov = cameraHomeFov;
+    camera.updateProjectionMatrix();
+    controls.enablePan = defaultControlState.enablePan;
+    controls.minDistance = defaultControlState.minDistance;
+    controls.maxDistance = defaultControlState.maxDistance;
+    controls.minPolarAngle = defaultControlState.minPolarAngle;
+    controls.maxPolarAngle = defaultControlState.maxPolarAngle;
+    controls.enabled = true;
+    onEditModeChange(false);
+
+    gsap.to(camera.position, {
+      x: cameraHomePosition.x,
+      y: cameraHomePosition.y,
+      z: cameraHomePosition.z,
+      duration: 0.45,
+      ease: "power2.inOut"
+    });
+
+    gsap.to(controls.target, {
+      x: cameraHomeTarget.x,
+      y: cameraHomeTarget.y,
+      z: cameraHomeTarget.z,
+      duration: 0.45,
+      ease: "power2.inOut",
+      onUpdate: () => {
+        camera.lookAt(controls.target);
+        controls.update();
+      }
+    });
+  };
+
+  const setEditMode = (enabled: boolean) => {
+    if (editModeEnabled === enabled) return;
+    editModeEnabled = enabled;
+
+    if (editModeEnabled) {
+      applyFreeCameraMode();
+    } else {
+      dragging = false;
+      activeShelfId = null;
+      activeProductSku = null;
+      pendingProductSku = null;
+      draggedProductLocalPosition = null;
+      activeBoardMesh = null;
+      activeBoardShelfId = null;
+      canvas.style.cursor = "";
+      applySelection(null);
+      restoreCameraHome();
+    }
+
+    syncEditButton();
+  };
+
   /** Configura dragPlane como un plano vertical que mira hacia la cámara,
    *  pasando por la posición del producto. Permite capturar movimiento vertical
    *  del mouse para cambiar de piso al arrastrar. */
@@ -994,26 +1143,11 @@ function wireShelfDrag(
 
   const armProductMove = (sku: string) => {
     pendingProductSku = sku;
-    if (!editModeEnabled) {
-      editModeEnabled = true;
-      syncEditButton();
-    }
+    setEditMode(true);
   };
 
   editShelvesBtn.addEventListener("click", () => {
-    editModeEnabled = !editModeEnabled;
-    if (!editModeEnabled) {
-      dragging = false;
-      activeShelfId = null;
-      activeProductSku = null;
-      pendingProductSku = null;
-      draggedProductLocalPosition = null;
-      controls.enabled = true;
-      canvas.style.cursor = "";
-      applySelection(null);
-    }
-
-    syncEditButton();
+    setEditMode(!editModeEnabled);
     setStatus(
       statusMessage,
       editModeEnabled ? UI_COPY.status.editModeEnabled : UI_COPY.status.editModeDisabled,
@@ -1094,70 +1228,64 @@ function wireShelfDrag(
       }
     }
 
-    // Detectar clic sobre un piso arrastrable (búsqueda recursiva en hijos)
-    const allBoardHits = raycaster.intersectObjects([...shelfMeshes.values()], true);
-    const boardHit = allBoardHits.find((h) => (h.object as THREE.Mesh).userData.isDraggableBoard);
-    if (boardHit) {
-      const board = boardHit.object as THREE.Mesh;
-      const shelfId = String(board.userData.shelfId);
-      const shelfMesh = shelfMeshes.get(shelfId);
-      if (shelfMesh) {
-        activeBoardMesh = board;
-        activeBoardShelfId = shelfId;
-        pointerDownPos = { x: event.clientX, y: event.clientY };
-
-        // Plano vertical que mira hacia la cámara, pasando por la posición mundial del piso
-        const boardWorldPos = board.getWorldPosition(new THREE.Vector3());
-        const camDir = new THREE.Vector3()
-          .subVectors(camera.position, boardWorldPos)
-          .setY(0)
-          .normalize();
-        boardDragPlane.setFromNormalAndCoplanarPoint(camDir, boardWorldPos);
-
-        if (raycaster.ray.intersectPlane(boardDragPlane, intersectPoint)) {
-          lastIntersect.copy(intersectPoint);
-        }
-
-        dragging = true;
-        controls.enabled = false;
-        canvas.style.cursor = "ns-resize";
-        canvas.setPointerCapture(event.pointerId);
-        applySelection(shelfId);
-        return;
-      }
-    }
-
     const hits = raycaster.intersectObjects([...shelfMeshes.values()], false);
 
     if (hits.length === 0) {
+      // Detectar clic sobre un piso arrastrable solo si no se apuntó al volumen del estante completo.
+      const allBoardHits = raycaster.intersectObjects([...shelfMeshes.values()], true);
+      const boardHit = allBoardHits.find((h) => (h.object as THREE.Mesh).userData.isDraggableBoard);
+      if (boardHit) {
+        const board = boardHit.object as THREE.Mesh;
+        const shelfId = String(board.userData.shelfId);
+        const shelfMesh = shelfMeshes.get(shelfId);
+        if (shelfMesh) {
+          activeBoardMesh = board;
+          activeBoardShelfId = shelfId;
+          pointerDownPos = { x: event.clientX, y: event.clientY };
+
+          // Plano vertical que mira hacia la cámara, pasando por la posición mundial del piso
+          const boardWorldPos = board.getWorldPosition(new THREE.Vector3());
+          const camDir = new THREE.Vector3()
+            .subVectors(camera.position, boardWorldPos)
+            .setY(0)
+            .normalize();
+          boardDragPlane.setFromNormalAndCoplanarPoint(camDir, boardWorldPos);
+
+          if (raycaster.ray.intersectPlane(boardDragPlane, intersectPoint)) {
+            lastIntersect.copy(intersectPoint);
+          }
+
+          dragging = true;
+          controls.enabled = false;
+          canvas.style.cursor = "ns-resize";
+          canvas.setPointerCapture(event.pointerId);
+          applySelection(shelfId);
+          return;
+        }
+      }
+
       // Clic en espacio vacío → deseleccionar, OrbitControls mantiene control
       applySelection(null);
       return;
     }
 
     const clickedId = String((hits[0].object as THREE.Mesh).userData.shelfId);
+    activeShelfId = clickedId;
+    pointerDownPos = { x: event.clientX, y: event.clientY };
 
-    if (clickedId === selectedShelfId) {
-      // Estante ya seleccionado → iniciar arrastre
-      activeShelfId = clickedId;
-      pointerDownPos = { x: event.clientX, y: event.clientY };
+    // Elevar el plano de arrastre al centro del estante para que el rayo
+    // lo intersecte aunque la cámara esté en ángulo bajo.
+    groundPlane.constant = -(shelfMeshes.get(clickedId)?.position.y ?? 0);
 
-      // Elevar el plano de arrastre al centro del estante para que el rayo
-      // lo intersecte aunque la cámara esté en ángulo bajo.
-      groundPlane.constant = -(shelfMeshes.get(clickedId)?.position.y ?? 0);
-
-      if (raycaster.ray.intersectPlane(groundPlane, intersectPoint)) {
-        lastIntersect.copy(intersectPoint);
-      }
-
-      dragging = true;
-      controls.enabled = false;
-      canvas.style.cursor = "grabbing";
-      canvas.setPointerCapture(event.pointerId);
-    } else {
-      // Primer clic sobre estante → solo seleccionar; OrbitControls sigue activo
-      applySelection(clickedId);
+    if (raycaster.ray.intersectPlane(groundPlane, intersectPoint)) {
+      lastIntersect.copy(intersectPoint);
     }
+
+    dragging = true;
+    controls.enabled = false;
+    canvas.style.cursor = "grabbing";
+    canvas.setPointerCapture(event.pointerId);
+    applySelection(clickedId);
   });
 
   canvas.addEventListener("pointermove", (event) => {
@@ -1228,25 +1356,15 @@ function wireShelfDrag(
       lastIntersect.copy(intersectPoint);
 
       const draggedMesh = shelfMeshes.get(activeShelfId)!;
+      const previousOverlap = getShelfOverlapScore(draggedMesh, shelfMeshes, activeShelfId);
       draggedMesh.position.x += dx;
       draggedMesh.position.z += dz;
 
-      // Comprobar colisión con otros estantes (contrae 0.01 para permitir contacto)
-      const draggedBox = new THREE.Box3().setFromObject(draggedMesh);
-      draggedBox.min.x += 0.01; draggedBox.min.z += 0.01;
-      draggedBox.max.x -= 0.01; draggedBox.max.z -= 0.01;
+      const currentOverlap = getShelfOverlapScore(draggedMesh, shelfMeshes, activeShelfId);
+      const collisionIsWorse = currentOverlap > 0.0001 && currentOverlap >= previousOverlap - 0.0001;
 
-      let collision = false;
-      for (const [id, mesh] of shelfMeshes) {
-        if (id === activeShelfId) continue;
-        if (draggedBox.intersectsBox(new THREE.Box3().setFromObject(mesh))) {
-          collision = true;
-          break;
-        }
-      }
-
-      if (collision) {
-        // Revertir si hay superposición
+      if (collisionIsWorse) {
+        // Revertir si crea una superposición nueva o no ayuda a separar estantes ya encimados.
         draggedMesh.position.x -= dx;
         draggedMesh.position.z -= dz;
       } else {

@@ -46,6 +46,8 @@ export const UI_COPY = {
     addBoard: "Agregar piso manualmente",
     removeBoard: "Quitar piso",
     search: "Buscar producto",
+    scanBarcode: "Escanear codigo de barras",
+    stopBarcodeScan: "Detener escaneo",
     clearSearch: "Limpiar",
   },
   toggles: {
@@ -145,7 +147,11 @@ export const UI_COPY = {
     invalidSectionName: "Ingresa un nombre valido para el piso.",
     legacyInvalidProductForm: "Ingresa un nombre y dimensiones validas mayores a cero.",
     editModeEnabled: "Modo edicion activado. Ahora puedes mover estantes y productos.",
-    editModeDisabled: "Modo edicion desactivado. Los estantes y productos quedaron bloqueados."
+    editModeDisabled: "Modo edicion desactivado. Los estantes y productos quedaron bloqueados.",
+    barcodeUnsupported: "Este navegador no permite leer codigos de barras desde la camara.",
+    barcodeCameraError: "No se pudo acceder a la camara para escanear el codigo de barras.",
+    barcodeScanning: "Apunta la camara al codigo de barras del producto.",
+    barcodeNotFound: "Codigo capturado, pero no existe un producto con ese SKU."
   }
 } as const;
 

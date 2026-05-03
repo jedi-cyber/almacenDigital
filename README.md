@@ -177,6 +177,23 @@ Las migraciones incluidas crean las siguientes tablas:
 | `202603280004_add_board_offsets_to_estantes` | Columna `board_offsets` en `estantes` para pisos intermedios |
 | `202604080005_widen_id_columns` | Amplia IDs de estantes/productos a `VARCHAR(100)` |
 | `202604270006_add_section_labels_to_estantes` | Columna `section_labels` para nombres personalizados de pisos |
+| `202605020007_seed_default_warehouse` | Semilla inicial si `estantes` o `productos` están vacíos |
+
+### Semilla predeterminada
+
+La migración `202605020007_seed_default_warehouse` carga una semilla inicial para cualquier instalación nueva:
+
+- 5 estantes base (`S01` a `S05`).
+- 4 productos demo (`DEMO-001` a `DEMO-004`).
+
+La semilla es idempotente y conservadora: solo inserta estantes si la tabla `estantes` está vacía, y solo inserta productos si la tabla `productos` está vacía. Así un usuario con datos propios no pierde cambios al actualizar.
+
+En Docker, si ya tenés un volumen MySQL creado y querés volver a probar la semilla desde cero:
+
+```bash
+docker compose down -v
+docker compose up --build -d
+```
 
 SQL equivalente para crear la base manualmente en phpMyAdmin:
 
@@ -239,6 +256,40 @@ npm run dev
 ```
 
 Vite inicia en `http://localhost:5173/`. El proxy redirige `/api/*` al backend PHP configurado en [vite.config.ts](vite.config.ts), por lo que Apache/PHP y MySQL deben estar corriendo.
+
+---
+
+## Ejecutar con Docker
+
+El proyecto incluye un `Dockerfile` multi-stage y `docker-compose.yml` para levantar frontend, API PHP/Apache y MySQL.
+
+```bash
+docker compose up --build -d
+```
+
+Después de iniciar:
+
+- App: `http://localhost:8080/`
+- API: `http://localhost:8080/api/config.php`
+- MySQL expuesto en el host: `localhost:3307`
+
+Para ver el estado:
+
+```bash
+docker compose ps
+```
+
+Para detenerlo:
+
+```bash
+docker compose down
+```
+
+Los datos de MySQL quedan persistidos en el volumen `mysql_data`. Si necesitás reiniciar la base desde cero:
+
+```bash
+docker compose down -v
+```
 
 ---
 

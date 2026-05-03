@@ -14,8 +14,7 @@ import {
   refreshShelfSections,
   removeShelfBoardAtSection,
   resizeShelfMesh,
-  SHELF_PALETTE,
-  updateShelfSectionPreview
+  SHELF_PALETTE
 } from "./three-helpers.js";
 import type { Item, Shelf, WarehouseConfig } from "./types.js";
 import {
@@ -42,6 +41,21 @@ import { canPlace } from "./canPlace.js";
 
 export { buildHtml, populateShelves, setStatus, updateLegendCount };
 export type { HudRefs };
+
+interface BarcodeDetectorConstructor {
+  new (options?: { formats?: string[] }): BarcodeDetector;
+  getSupportedFormats?: () => Promise<string[]>;
+}
+
+interface BarcodeDetector {
+  detect: (source: CanvasImageSource) => Promise<Array<{ rawValue: string }>>;
+}
+
+declare global {
+  interface Window {
+    BarcodeDetector?: BarcodeDetectorConstructor;
+  }
+}
 
 export interface ProductFormDeps {
   config: WarehouseConfig;
@@ -151,6 +165,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   const sectionLabelInput = document.querySelector<HTMLInputElement>("#section-label-input");
   const updateSectionLabelBtn = document.querySelector<HTMLButtonElement>("#update-section-label-btn");
   const dimensionHint = form.querySelector<HTMLDivElement>("#dimension-hint");
+  const productCard = form.closest<HTMLElement>("[data-card]");
 
   attachMaxClamp(widthField);
   attachMaxClamp(heightField);
@@ -182,6 +197,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 
     removeGhost();
 
+    if (productCard?.dataset.collapsed === "true") return;
     if (!shelf || !shelfMesh || !(w > 0) || !(h > 0) || !(d > 0)) return;
 
     const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
@@ -294,13 +310,6 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
       const activeSection = sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1;
       dimensionHint.textContent =
         `${getSectionLabel(shelf, activeSection)} seleccionado. Maximo: ${formatInputValue(shelf.width)} x ${formatInputValue(sectionHeight)} x ${formatInputValue(shelf.depth)} m.`;
-    }
-
-    if (shelfMesh) {
-      updateShelfSectionPreview(
-        shelfMesh,
-        sectionField instanceof HTMLSelectElement ? Number(sectionField.value || "1") : 1
-      );
     }
 
     createOrUpdateGhost();
@@ -552,11 +561,14 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   heightField.addEventListener("input", createOrUpdateGhost);
   depthField.addEventListener("input", createOrUpdateGhost);
 
-  // Eliminar el fantasma cuando el card del formulario se cierra.
-  const productCard = form.closest<HTMLElement>("[data-card]");
+  // Mostrar el fantasma solo cuando el card del formulario esta desplegado.
   if (productCard) {
     new MutationObserver(() => {
-      if (productCard.dataset.collapsed === "true") removeGhost();
+      if (productCard.dataset.collapsed === "true") {
+        removeGhost();
+        return;
+      }
+      createOrUpdateGhost();
     }).observe(productCard, { attributes: true, attributeFilter: ["data-collapsed"] });
   }
 
@@ -606,6 +618,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   } = params;
 
   const clearSearchBtn = searchForm.querySelector<HTMLButtonElement>("#clear-search-btn");
+  const barcodeScanBtn = searchForm.querySelector<HTMLButtonElement>("#barcode-scan-btn");
+  const barcodeScanner = document.querySelector<HTMLElement>("#barcode-scanner");
+  const barcodeVideo = document.querySelector<HTMLVideoElement>("#barcode-video");
   const reportList = searchResult.querySelector<HTMLElement>("#search-report-list");
   const reportMinimizeBtn = searchResult.querySelector<HTMLButtonElement>("#minimize-search-report-btn");
   const reportRestoreBtn = searchResult.querySelector<HTMLButtonElement>("#restore-search-report-btn");
@@ -620,6 +635,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   let activeSku: string | null = null;
   let confirmPending = false;
   let confirmTimeout: number | null = null;
+  let barcodeStream: MediaStream | null = null;
+  let barcodeDetector: BarcodeDetector | null = null;
+  let barcodeScanFrame = 0;
   productEditor.hidden = true;
 
   // ── Poblar el selector de estantes del panel de traslado ──────────────────
@@ -654,6 +672,89 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     button.setAttribute("aria-label", label);
     const hiddenLabel = button.querySelector(".visually-hidden");
     if (hiddenLabel) hiddenLabel.textContent = label;
+  };
+
+  const stopBarcodeScanner = () => {
+    if (barcodeScanFrame) {
+      window.cancelAnimationFrame(barcodeScanFrame);
+      barcodeScanFrame = 0;
+    }
+    barcodeStream?.getTracks().forEach((track) => track.stop());
+    barcodeStream = null;
+    if (barcodeVideo) {
+      barcodeVideo.pause();
+      barcodeVideo.srcObject = null;
+    }
+    if (barcodeScanner) barcodeScanner.hidden = true;
+    if (barcodeScanBtn) {
+      barcodeScanBtn.dataset.scanning = "false";
+      setIconButtonLabel(barcodeScanBtn, UI_COPY.buttons.scanBarcode);
+    }
+  };
+
+  const searchByCapturedSku = (sku: string) => {
+    const input = searchForm.elements.namedItem("searchSku");
+    if (input instanceof HTMLInputElement) input.value = sku;
+
+    const exactMatch = resolveProductByExactSku(runtime.productEntryBySku, sku);
+    if (!exactMatch) {
+      clearHighlight(runtime);
+      hideResult();
+      setStatus(statusMessage, UI_COPY.status.barcodeNotFound, true);
+      return;
+    }
+
+    selectProduct(exactMatch.sku, [{ sku: exactMatch.sku, entry: exactMatch.entry }]);
+  };
+
+  const scanBarcodeFrame = async () => {
+    if (!barcodeDetector || !barcodeVideo || !barcodeStream) return;
+
+    if (barcodeVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      try {
+        const codes = await barcodeDetector.detect(barcodeVideo);
+        const rawValue = codes[0]?.rawValue?.trim();
+        if (rawValue) {
+          stopBarcodeScanner();
+          searchByCapturedSku(rawValue);
+          return;
+        }
+      } catch {
+        // Algunos navegadores fallan en frames aislados mientras enfoca la camara.
+      }
+    }
+
+    barcodeScanFrame = window.requestAnimationFrame(scanBarcodeFrame);
+  };
+
+  const startBarcodeScanner = async () => {
+    if (!barcodeScanBtn || !barcodeScanner || !barcodeVideo) return;
+
+    const Detector = window.BarcodeDetector;
+    if (!Detector || !navigator.mediaDevices?.getUserMedia) {
+      setStatus(statusMessage, UI_COPY.status.barcodeUnsupported, true);
+      return;
+    }
+
+    try {
+      barcodeDetector = new Detector({
+        formats: ["ean_13", "ean_8", "code_128", "code_39", "code_93", "upc_a", "upc_e", "itf", "codabar", "qr_code"]
+      });
+      barcodeStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false
+      });
+      barcodeVideo.srcObject = barcodeStream;
+      await barcodeVideo.play();
+      barcodeScanner.hidden = false;
+      barcodeScanBtn.dataset.scanning = "true";
+      setIconButtonLabel(barcodeScanBtn, UI_COPY.buttons.stopBarcodeScan);
+      setStatus(statusMessage, UI_COPY.status.barcodeScanning, false);
+      barcodeScanFrame = window.requestAnimationFrame(scanBarcodeFrame);
+    } catch {
+      stopBarcodeScanner();
+      setStatus(statusMessage, UI_COPY.status.barcodeCameraError, true);
+    }
   };
 
   const applyEditorLimits = (shelf: Shelf, localPositionY: number) => {
@@ -763,6 +864,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
 
   const handleSearchSubmit = (event: SubmitEvent) => {
     event.preventDefault();
+    stopBarcodeScanner();
 
     const query = String(new FormData(searchForm).get("searchSku") ?? "").trim();
 
@@ -904,10 +1006,19 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
 
   const handleClearSearch = () => {
     clearHighlight(runtime);
+    stopBarcodeScanner();
     hideResult();
     const input = searchForm.elements.namedItem("searchSku");
     if (input instanceof HTMLInputElement) input.value = "";
     setStatus(statusMessage, UI_COPY.status.initial, false);
+  };
+
+  const handleBarcodeScanClick = () => {
+    if (barcodeStream) {
+      stopBarcodeScanner();
+      return;
+    }
+    void startBarcodeScanner();
   };
 
   const handleCloseReport = () => {
@@ -995,6 +1106,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   });
 
   searchForm.addEventListener("submit", handleSearchSubmit);
+  barcodeScanBtn?.addEventListener("click", handleBarcodeScanClick);
   editorForm.addEventListener("submit", handleEditorSave);
   clearSearchBtn?.addEventListener("click", handleClearSearch);
   moveProductBtn.addEventListener("click", handleMoveProductClick);
@@ -1013,6 +1125,18 @@ export function resolveProductSearchQuery(
   const matches = resolveProductSearchMatches(productsBySku, rawQuery);
   if (matches.length === 0) return null;
   return { sku: matches[0].sku, matchCount: matches.length };
+}
+
+export function resolveProductByExactSku(
+  productsBySku: Map<string, ProductEntry>,
+  rawSku: string
+): { sku: string; entry: ProductEntry } | null {
+  const query = normalizeSearchText(rawSku);
+  if (!query) return null;
+
+  const sku = [...productsBySku.keys()].find((key) => normalizeSearchText(key) === query);
+  const entry = sku ? productsBySku.get(sku) : undefined;
+  return sku && entry ? { sku, entry } : null;
 }
 
 interface SearchMatch {
