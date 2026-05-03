@@ -43,14 +43,18 @@ function buildReportHtml(data: ReportData): string {
     const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
     const occupancyColor = occupancy > 75 ? "#ff6b6b" : occupancy > 40 ? "#ffd45c" : "#00e5a0";
     const rows = products.length === 0
-      ? `<tr><td colspan="5" class="empty-row">Sin productos registrados en este estante.</td></tr>`
+      ? `<tr><td colspan="6" class="empty-row">Sin productos registrados en este estante.</td></tr>`
       : products.map((e) => `
-        <tr>
+        <tr id="row-${e.item.sku}">
           <td><span class="sku-badge">${e.item.sku}</span></td>
           <td>${e.item.name || "—"}</td>
           <td>${fmt(e.item.width)} × ${fmt(e.item.height)} × ${fmt(e.item.depth)}</td>
           <td>${fmt(e.item.width * e.item.height * e.item.depth)} m³</td>
           <td class="pos-cell">(${fmt(e.localPosition.x)}, ${fmt(e.localPosition.y)}, ${fmt(e.localPosition.z)})</td>
+          <td class="action-cell">
+            <button class="btn-edit" onclick="openEditModal('${e.item.sku}','${e.item.name || ""}',${e.item.width},${e.item.height},${e.item.depth},'${e.shelfId}',${e.localPosition.x},${e.localPosition.y},${e.localPosition.z})">✏️ Editar</button>
+            <button class="btn-delete" onclick="deleteProduct('${e.item.sku}')">🗑️ Eliminar</button>
+          </td>
         </tr>`).join("");
 
     return `
@@ -73,7 +77,7 @@ function buildReportHtml(data: ReportData): string {
         <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(occupancy,100).toFixed(1)}%;background:${occupancyColor}"></div></div>
         <p class="vol-label">${fmt(shelfUsed)} / ${fmt(shelfVolume)} m³</p>
         <table class="product-table">
-          <thead><tr><th>SKU</th><th>NOMBRE</th><th>DIMENSIONES (M)</th><th>VOLUMEN</th><th>POSICIÓN LOCAL</th></tr></thead>
+          <thead><tr><th>SKU</th><th>NOMBRE</th><th>DIMENSIONES (M)</th><th>VOLUMEN</th><th>POSICIÓN LOCAL</th><th>ACCIONES</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -87,7 +91,7 @@ function buildReportHtml(data: ReportData): string {
 <title>Reporte — Almacén Digital 3D</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0a0d14;--surface:#111620;--surface2:#181f2e;--border:#1e2a3a;--text:#e2e8f0;--muted:#64748b;--accent2:#18c7ff;--warn:#ffd45c}
+:root{--bg:#0a0d14;--surface:#111620;--surface2:#181f2e;--border:#1e2a3a;--text:#e2e8f0;--muted:#64748b;--accent2:#18c7ff;--warn:#ffd45c;--danger:#ff6b6b;--success:#00e5a0}
 body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;padding:2rem}
 .report-brand{display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem}
 .brand-icon{width:2rem;height:2rem;flex-shrink:0}
@@ -129,9 +133,48 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 .sku-badge{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--accent2);font-size:.7rem;padding:.15rem .45rem}
 .pos-cell{color:var(--muted);font-size:.72rem}
 .empty-row{text-align:center;color:var(--muted);font-style:italic;padding:1.2rem!important}
+.action-cell{display:flex;gap:.4rem;flex-wrap:wrap}
+.btn-edit{background:var(--surface2);border:1px solid var(--accent2);color:var(--accent2);border-radius:6px;padding:.25rem .6rem;font-size:.72rem;cursor:pointer}
+.btn-edit:hover{background:var(--accent2);color:#000}
+.btn-delete{background:var(--surface2);border:1px solid var(--danger);color:var(--danger);border-radius:6px;padding:.25rem .6rem;font-size:.72rem;cursor:pointer}
+.btn-delete:hover{background:var(--danger);color:#fff}
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100}
+.modal-overlay.hidden{display:none}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:2rem;width:min(480px,90vw)}
+.modal h2{font-size:1.1rem;margin-bottom:1.2rem;color:var(--accent2)}
+.modal label{display:block;margin-bottom:.8rem;font-size:.8rem;color:var(--muted)}
+.modal input{display:block;width:100%;margin-top:.3rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:.5rem .75rem;font-size:.85rem}
+.modal input:focus{outline:none;border-color:var(--accent2)}
+.modal-actions{display:flex;gap:.75rem;margin-top:1.4rem;justify-content:flex-end}
+.btn-save{background:var(--accent2);color:#000;border:none;border-radius:8px;padding:.5rem 1.2rem;font-size:.85rem;font-weight:700;cursor:pointer}
+.btn-cancel{background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:.5rem 1.2rem;font-size:.85rem;cursor:pointer}
+.toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.75rem 1.2rem;font-size:.82rem;color:var(--text);z-index:200;opacity:0;transform:translateY(8px);transition:all .25s}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.success{border-color:var(--success);color:var(--success)}
+.toast.error{border-color:var(--danger);color:var(--danger)}
 </style>
 </head>
 <body>
+
+<!-- Modal de edición -->
+<div class="modal-overlay hidden" id="edit-modal">
+  <div class="modal">
+    <h2>✏️ Editar producto</h2>
+    <label>Nombre<input id="edit-name" type="text"/></label>
+    <label>Ancho (m)<input id="edit-width" type="number" min="0.01" step="0.01"/></label>
+    <label>Alto (m)<input id="edit-height" type="number" min="0.01" step="0.01"/></label>
+    <label>Profundidad (m)<input id="edit-depth" type="number" min="0.01" step="0.01"/></label>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeEditModal()">Cancelar</button>
+      <button class="btn-save" onclick="saveEdit()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast de notificación -->
+<div class="toast" id="toast"></div>
+
 <div class="report-brand">
   <svg class="brand-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
     <path d="M3 13h4v8H3v-8Zm6-6h4v14H9V7Zm6 3h4v11h-4V10Z" fill="#18c7ff"/>
@@ -148,6 +191,88 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 </div>
 <div class="tabs">${shelfTabs}</div>
 ${shelfCards}
+
+<script>
+let _editSku = '';
+let _editShelfId = '';
+let _editLx = 0, _editLy = 0, _editLz = 0;
+
+function showToast(msg, type = 'success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  setTimeout(() => { t.className = 'toast'; }, 3000);
+}
+
+function openEditModal(sku, name, width, height, depth, shelfId, lx, ly, lz) {
+  _editSku = sku;
+  _editShelfId = shelfId;
+  _editLx = lx; _editLy = ly; _editLz = lz;
+  document.getElementById('edit-name').value = name;
+  document.getElementById('edit-width').value = width;
+  document.getElementById('edit-height').value = height;
+  document.getElementById('edit-depth').value = depth;
+  document.getElementById('edit-modal').classList.remove('hidden');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.add('hidden');
+}
+
+async function saveEdit() {
+  const name = document.getElementById('edit-name').value.trim();
+  const width = parseFloat(document.getElementById('edit-width').value);
+  const height = parseFloat(document.getElementById('edit-height').value);
+  const depth = parseFloat(document.getElementById('edit-depth').value);
+
+  if (!name || isNaN(width) || isNaN(height) || isNaN(depth)) {
+    showToast('Completa todos los campos correctamente.', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/productos.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sku: _editSku,
+        shelfId: _editShelfId,
+        name,
+        width,
+        height,
+        depth,
+        localPosition: { x: _editLx, y: _editLy, z: _editLz }
+      })
+    });
+    if (!res.ok) throw new Error('Error al guardar');
+    closeEditModal();
+    showToast('Producto actualizado correctamente.', 'success');
+    // Actualizar fila en la tabla
+    const row = document.getElementById('row-' + _editSku);
+    if (row) {
+      const cells = row.querySelectorAll('td');
+      cells[1].textContent = name;
+      cells[2].textContent = width.toFixed(2) + ' × ' + height.toFixed(2) + ' × ' + depth.toFixed(2);
+      cells[3].textContent = (width * height * depth).toFixed(2) + ' m³';
+    }
+  } catch(e) {
+    showToast('Error al actualizar el producto.', 'error');
+  }
+}
+
+async function deleteProduct(sku) {
+  if (!confirm('¿Eliminar el producto ' + sku + '? Esta acción no se puede deshacer.')) return;
+  try {
+    const res = await fetch('/api/productos.php?sku=' + encodeURIComponent(sku), { method: 'DELETE' });
+    if (!res.ok) throw new Error('Error al eliminar');
+    const row = document.getElementById('row-' + sku);
+    if (row) row.remove();
+    showToast('Producto ' + sku + ' eliminado.', 'success');
+  } catch(e) {
+    showToast('Error al eliminar el producto.', 'error');
+  }
+}
+<\/script>
 </body>
 </html>`;
 }
