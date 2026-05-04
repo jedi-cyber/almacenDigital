@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "mobile:sync": "powershell -ExecutionPolicy Bypass -File scripts/sync-android-assets.ps1",
+    "mobile:watch": "powershell -ExecutionPolicy Bypass -File scripts/sync-android-assets.ps1 -Watch",
     "preview": "vite preview",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts"
