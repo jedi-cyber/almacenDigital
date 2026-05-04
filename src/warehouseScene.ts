@@ -234,6 +234,19 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   const removeBoardBtn = document.querySelector<HTMLButtonElement>("#remove-board-btn");
   removeBoardBtn?.addEventListener("click", handleRemoveBoard);
 
+  // ── Reporte completo ──
+  const openReportBtn = container.querySelector<HTMLButtonElement>("#open-report-btn")
+    ?? document.querySelector<HTMLButtonElement>("#open-report-btn");
+  openReportBtn?.addEventListener("click", () => {
+    import("./report-page.js").then(({ openReportWindow }) => {
+      openReportWindow({
+        shelves: config.shelves,
+        productsBySku: runtime.productEntryBySku,
+        generatedAt: new Date(),
+      });
+    });
+  });
+
   const resize = () => {
     const viewport = refs.canvas.parentElement;
     if (!viewport) return;
@@ -245,7 +258,11 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 
   resize();
   window.addEventListener("resize", resize);
+  const updateWASDMovement = wireWASDMovement(camera, controls);
+  const clock = new THREE.Clock();
+
   renderer.setAnimationLoop(() => {
+    updateWASDMovement(clock.getDelta());
     controls.update();
     blockCameraAtWalls();
     updateShelfTransparency(camera, shelfMeshes);
