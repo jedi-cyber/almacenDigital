@@ -36,10 +36,13 @@ export interface WarehouseConfig {
 
 /**
  * Definición de un producto almacenable. */
-export interface Item extends Dimensions {
+export interface Item {
   sku: string;
   name: string;
-  weight?: number;
+  width: number;
+  height: number;
+  depth: number;
+  category?: string; // 🔥 obligatorio
 }
 
 /**

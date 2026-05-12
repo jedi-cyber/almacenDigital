@@ -220,21 +220,61 @@ export function placeItem(
   shelfMesh: THREE.Mesh,
   preferredSection?: number
 ): PlacedItem | null {
+
   const placedItems = runtime.productsByShelf.get(shelf.id) ?? [];
+
   const placement = canPlace(shelf, placedItems, item, { preferredSection });
+
+  // ✅ PRIMERO validar
   if (!placement) return null;
 
+  // 🔥 Orden visual (grid suave)
+  placement.localPosition.x =
+    Math.round(placement.localPosition.x * 10) / 10;
+
+  placement.localPosition.z =
+    Math.round(placement.localPosition.z * 10) / 10;
+
   const instancedMesh = getOrCreateInstancedMesh(
-    placement.item.width, placement.item.height, placement.item.depth,
-    runtime.instancedMeshByGeo, scene
+    placement.item.width,
+    placement.item.height,
+    placement.item.depth,
+    runtime.instancedMeshByGeo,
+    scene
   );
-  const worldPos = computeWorldPos(placement.localPosition, placement.item, shelfMesh);
-  const { instanceIndex, labelSprite } = addProductInstance(placement.item, worldPos, instancedMesh);
+
+  const worldPos = computeWorldPos(
+    placement.localPosition,
+    placement.item,
+    shelfMesh
+  );
+
+  const { instanceIndex, labelSprite } = addProductInstance(
+    placement.item,
+    worldPos,
+    instancedMesh
+  );
+
   scene.add(labelSprite);
+
   animateInstanceAppearance(instancedMesh, instanceIndex);
 
-  const geoKey = makeProductGeoKey(placement.item.width, placement.item.height, placement.item.depth);
-  registerInstance(runtime, placement.item.sku, geoKey, instanceIndex, shelf.id, placement.item, placement.localPosition, labelSprite);
+  const geoKey = makeProductGeoKey(
+    placement.item.width,
+    placement.item.height,
+    placement.item.depth
+  );
+
+  registerInstance(
+    runtime,
+    placement.item.sku,
+    geoKey,
+    instanceIndex,
+    shelf.id,
+    placement.item,
+    placement.localPosition,
+    labelSprite
+  );
 
   placedItems.push(placement);
   runtime.productsByShelf.set(shelf.id, placedItems);
@@ -243,7 +283,11 @@ export function placeItem(
   skus.push(placement.item.sku);
   runtime.productSkusByShelf.set(shelf.id, skus);
 
-  persistPlacedItem(shelf.id, placement.item, placement.localPosition);
+  persistPlacedItem(
+    shelf.id,
+    placement.item,
+    placement.localPosition
+  );
 
   return placement;
 }
@@ -545,12 +589,25 @@ function computeWorldPos(
   item: Pick<Item, "width" | "height" | "depth">,
   shelfMesh: THREE.Mesh
 ): THREE.Vector3 {
-  const p = (shelfMesh.geometry as THREE.BoxGeometry).parameters as THREE.BoxGeometry["parameters"];
+  const p = (shelfMesh.geometry as THREE.BoxGeometry).parameters;
+
+  // 🔥 CONFIGURACIÓN DEL GRID
+  const GRID_SIZE = 0.4; // tamaño de celda (ajústalo si quieres)
+  const PADDING = 0.02;  // espacio entre productos
+
+  // 🧠 SNAP A GRID (alineación automática)
+  const snap = (value: number) =>
+    Math.floor(value / GRID_SIZE) * GRID_SIZE;
+
+  const snappedX = snap(localPosition.x);
+  const snappedZ = snap(localPosition.z);
+
   const localPoint = new THREE.Vector3(
-    -p.width / 2 + localPosition.x + item.width / 2,
+    -p.width / 2 + snappedX + item.width / 2 + PADDING,
     -p.height / 2 + localPosition.y + item.height / 2,
-    -p.depth / 2 + localPosition.z + item.depth / 2
+    -p.depth / 2 + snappedZ + item.depth / 2 + PADDING
   );
+
   return shelfMesh.localToWorld(localPoint);
 }
 
@@ -564,12 +621,15 @@ function persistPlacedItem(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       sku: item.sku,
-      shelfId,
+      shelfId: shelfId,
       name: item.name,
       width: item.width,
       height: item.height,
       depth: item.depth,
-      localPosition
+      category: item.category ?? "Sin categoría", // 🔥 agregado
+      localPosition: localPosition
     })
-  }).catch((e) => reportApiError("guardar el producto en el servidor", e));
+  }).catch((e) =>
+    reportApiError("guardar el producto en el servidor", e)
+  );
 }

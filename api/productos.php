@@ -24,6 +24,9 @@ try {
     exit;
 }
 
+//
+// ───────────────────────────── GET ─────────────────────────────
+//
 if ($_SERVER["REQUEST_METHOD"] === "GET") {
     try {
         $rows = $pdo->query("SELECT * FROM productos")->fetchAll(PDO::FETCH_ASSOC);
@@ -42,7 +45,8 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
                 "name"   => $row["name"],
                 "width"  => (float)$row["width"],
                 "height" => (float)$row["height"],
-                "depth"  => (float)$row["depth"]
+                "depth"  => (float)$row["depth"],
+                "category" => $row["category"] ?? "Sin categoría" // 🔥 AÑADIDO
             ],
             "localPosition" => [
                 "x" => (float)$row["local_x"],
@@ -53,19 +57,27 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
     }, $rows);
 
     echo json_encode(["products" => $products]);
+}
 
-} elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
+//
+// ───────────────────────────── POST ─────────────────────────────
+//
+elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
     $body = json_decode(file_get_contents("php://input"), true);
 
     $sku     = valid_string($body["sku"]     ?? null, 64);
     $shelfId = valid_string($body["shelfId"] ?? null, 64);
     $name    = valid_string($body["name"]    ?? ($body["sku"] ?? null), 255) ?? $sku;
+
     $width   = valid_positive_float($body["width"]  ?? null);
     $height  = valid_positive_float($body["height"] ?? null);
     $depth   = valid_positive_float($body["depth"]  ?? null);
-    $lx      = isset($body["localPosition"]["x"]) && is_numeric($body["localPosition"]["x"]) ? (float)$body["localPosition"]["x"] : null;
-    $ly      = isset($body["localPosition"]["y"]) && is_numeric($body["localPosition"]["y"]) ? (float)$body["localPosition"]["y"] : null;
-    $lz      = isset($body["localPosition"]["z"]) && is_numeric($body["localPosition"]["z"]) ? (float)$body["localPosition"]["z"] : null;
+
+    $category = valid_string($body["category"] ?? "Sin categoría", 100); // 🔥 NUEVO
+
+    $lx = isset($body["localPosition"]["x"]) && is_numeric($body["localPosition"]["x"]) ? (float)$body["localPosition"]["x"] : null;
+    $ly = isset($body["localPosition"]["y"]) && is_numeric($body["localPosition"]["y"]) ? (float)$body["localPosition"]["y"] : null;
+    $lz = isset($body["localPosition"]["z"]) && is_numeric($body["localPosition"]["z"]) ? (float)$body["localPosition"]["z"] : null;
 
     $missing = array_keys(array_filter(
         compact("sku", "shelfId", "width", "height", "depth"),
@@ -77,35 +89,42 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
 
     if (!empty($missing)) {
         http_response_code(422);
-        echo json_encode(["error" => "Campos invalidos o faltantes: " . implode(", ", $missing), "code" => "INVALID_FIELDS"]);
+        echo json_encode([
+            "error" => "Campos invalidos o faltantes: " . implode(", ", $missing),
+            "code" => "INVALID_FIELDS"
+        ]);
         exit;
     }
 
-    $stmt = $pdo->prepare("INSERT INTO productos
-            (sku, shelf_id, name, width, height, depth, local_x, local_y, local_z)
+    $stmt = $pdo->prepare("
+        INSERT INTO productos
+        (sku, shelf_id, name, width, height, depth, category, local_x, local_y, local_z)
         VALUES
-            (:sku, :shelf_id, :name, :width, :height, :depth, :local_x, :local_y, :local_z)
+        (:sku, :shelf_id, :name, :width, :height, :depth, :category, :local_x, :local_y, :local_z)
         ON DUPLICATE KEY UPDATE
             shelf_id = VALUES(shelf_id),
             name     = VALUES(name),
             width    = VALUES(width),
             height   = VALUES(height),
             depth    = VALUES(depth),
+            category = VALUES(category), -- 🔥 IMPORTANTE
             local_x  = VALUES(local_x),
             local_y  = VALUES(local_y),
-            local_z  = VALUES(local_z)");
+            local_z  = VALUES(local_z)
+    ");
 
     try {
         $stmt->execute([
-            ":sku"     => $sku,
-            ":shelf_id"=> $shelfId,
-            ":name"    => $name,
-            ":width"   => $width,
-            ":height"  => $height,
-            ":depth"   => $depth,
-            ":local_x" => $lx,
-            ":local_y" => $ly,
-            ":local_z" => $lz,
+            ":sku"      => $sku,
+            ":shelf_id" => $shelfId,
+            ":name"     => $name,
+            ":width"    => $width,
+            ":height"   => $height,
+            ":depth"    => $depth,
+            ":category" => $category, // 🔥
+            ":local_x"  => $lx,
+            ":local_y"  => $ly,
+            ":local_z"  => $lz,
         ]);
     } catch (Throwable $e) {
         api_log_error($e, "productos:POST:upsert sku={$sku}");
@@ -115,9 +134,14 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
     }
 
     echo json_encode(["ok" => true]);
+}
 
-} elseif ($_SERVER["REQUEST_METHOD"] === "DELETE") {
+//
+// ───────────────────────────── DELETE ─────────────────────────────
+//
+elseif ($_SERVER["REQUEST_METHOD"] === "DELETE") {
     $sku = $_GET["sku"] ?? "";
+
     if ($sku === "") {
         http_response_code(400);
         echo json_encode(["error" => "El parametro 'sku' es requerido.", "code" => "MISSING_SKU"]);
