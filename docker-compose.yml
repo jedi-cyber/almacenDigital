@@ -1,5 +1,6 @@
 services:
   app:
+    container_name: almacen-digital-app
     build:
       context: .
       args:
@@ -7,6 +8,7 @@ services:
     ports:
       - "8080:80"
     environment:
+      APP_ENV: production
       DB_HOST: db
       DB_NAME: almacensekai
       DB_USER: almacen_user
@@ -16,8 +18,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/api/migrate.php >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   db:
+    container_name: almacen-digital-db
     image: mysql:8.4
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     ports:
@@ -29,6 +39,7 @@ services:
       MYSQL_ROOT_PASSWORD: root_password
     volumes:
       - mysql_data:/var/lib/mysql
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
       interval: 10s

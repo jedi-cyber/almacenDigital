@@ -6,8 +6,11 @@ export function wireHudInteractions(container: HTMLElement): void {
   const appShell = container.querySelector<HTMLElement>(".app-shell");
   const hudToggleBtn = container.querySelector<HTMLButtonElement>("[data-hud-toggle]");
   const legendToggleBtn = container.querySelector<HTMLButtonElement>("[data-legend-toggle]");
+  const themeToggleBtn = container.querySelector<HTMLButtonElement>("[data-theme-toggle]");
   const legend = container.querySelector<HTMLElement>("#legend");
   const mobileQuery = window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)");
+  const themeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const themeStorageKey = "almacen-digital-theme";
 
   const setCardState = (card: HTMLElement, button: HTMLButtonElement, collapsed: boolean) => {
     const body = card.querySelector<HTMLElement>("[data-card-body]");
@@ -24,9 +27,21 @@ export function wireHudInteractions(container: HTMLElement): void {
     button.setAttribute("aria-label", label);
     const hiddenLabel = button.querySelector(".visually-hidden");
     if (hiddenLabel) hiddenLabel.textContent = label;
+    const visibleLabel = button.querySelector(".action-label");
+    if (visibleLabel) visibleLabel.textContent = action;
   };
 
   const setPanelState = (panel: HTMLElement, isOpen: boolean) => {
+    if (isOpen) {
+      Array.from(container.querySelectorAll<HTMLElement>(".floating-panel")).forEach((otherPanel) => {
+        if (otherPanel === panel) return;
+        otherPanel.hidden = true;
+        otherPanel.style.display = "none";
+        otherPanel.setAttribute("aria-hidden", "true");
+        const otherOpenButton = container.querySelector<HTMLButtonElement>(`[data-panel-toggle="${otherPanel.id}"]`);
+        otherOpenButton?.classList.remove("icon-action-btn--active");
+      });
+    }
     panel.hidden = !isOpen;
     panel.style.display = isOpen ? "" : "none";
     panel.setAttribute("aria-hidden", isOpen ? "false" : "true");
@@ -66,6 +81,32 @@ export function wireHudInteractions(container: HTMLElement): void {
     setHudState(true);
   };
 
+  const getStoredTheme = (): "light" | "dark" | null => {
+    const value = window.localStorage.getItem(themeStorageKey);
+    return value === "light" || value === "dark" ? value : null;
+  };
+
+  const getActiveTheme = (): "light" | "dark" => getStoredTheme() ?? (themeQuery.matches ? "dark" : "light");
+
+  const setTheme = (theme: "light" | "dark", shouldStore = true) => {
+    document.documentElement.dataset.theme = theme;
+    if (shouldStore) {
+      window.localStorage.setItem(themeStorageKey, theme);
+    }
+
+    const isDark = theme === "dark";
+    const nextThemeLabel = isDark ? "claro" : "oscuro";
+    const visibleLabel = themeToggleBtn?.querySelector<HTMLElement>("[data-theme-toggle-label]");
+    if (themeToggleBtn) {
+      themeToggleBtn.setAttribute("aria-pressed", isDark ? "true" : "false");
+      themeToggleBtn.setAttribute("aria-label", `Cambiar a modo ${nextThemeLabel}`);
+      themeToggleBtn.title = `Cambiar a modo ${nextThemeLabel}`;
+    }
+    if (visibleLabel) {
+      visibleLabel.textContent = isDark ? "Claro" : "Oscuro";
+    }
+  };
+
   Array.from(container.querySelectorAll<HTMLButtonElement>("[data-card-toggle]")).forEach((button) => {
     const cardId = button.dataset.cardId;
     const card = cardId ? container.querySelector<HTMLElement>(`#${cardId}`) : button.closest<HTMLElement>("[data-card]");
@@ -83,9 +124,15 @@ export function wireHudInteractions(container: HTMLElement): void {
     setPanelState(editPanel, false);
   }
   setLegendState(false);
+  setTheme(getActiveTheme(), false);
 
   syncHudStateWithViewport();
   mobileQuery.addEventListener("change", syncHudStateWithViewport);
+  themeQuery.addEventListener("change", () => {
+    if (!getStoredTheme()) {
+      setTheme(themeQuery.matches ? "dark" : "light", false);
+    }
+  });
 
   container.addEventListener("click", (event) => {
     const target = event.target;
@@ -103,7 +150,14 @@ export function wireHudInteractions(container: HTMLElement): void {
     if (legendToggle) {
       event.preventDefault();
       if (!legend) return;
-      setLegendState(legend.hidden);
+      setLegendState(legend.hidden === true);
+      return;
+    }
+
+    const themeToggle = target.closest<HTMLButtonElement>("[data-theme-toggle]");
+    if (themeToggle) {
+      event.preventDefault();
+      setTheme(getActiveTheme() === "dark" ? "light" : "dark");
       return;
     }
 
@@ -125,7 +179,7 @@ export function wireHudInteractions(container: HTMLElement): void {
       const panelId = openPanelButton.dataset.panelToggle;
       const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
       if (!panel) return;
-      setPanelState(panel, panel.hidden);
+      setPanelState(panel, panel.hidden === true);
       return;
     }
 

@@ -271,7 +271,10 @@ Comandos útiles:
 docker compose ps
 docker compose down
 docker compose down -v   # elimina también el volumen MySQL
+docker compose logs -f app
 ```
+
+El contenedor de la app incluye un healthcheck contra `api/migrate.php`, por lo que además valida conexión a MySQL y ejecuta migraciones pendientes cuando el servicio arranca.
 
 ## Uso de la aplicación
 

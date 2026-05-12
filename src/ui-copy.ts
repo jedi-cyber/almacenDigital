@@ -1,8 +1,8 @@
 export const UI_COPY = {
   page: {
-    title: "Busqueda y Enfoque de Productos",
+    title: "Almacen digital",
     description:
-      "Usa el panel para buscar productos por nombre, registrar nuevos productos y revisar el estado de cada estante.",
+      "Localiza, registra y organiza productos desde una vista 3D del almacen.",
     legacyDescription:
       "Agrega productos con canPlace() y luego ubicalos por nombre con una busqueda que enfoca la camara y resalta el producto correcto."
   },
@@ -57,7 +57,7 @@ export const UI_COPY = {
   },
   search: {
     title: "Buscar producto",
-    description: "Escribe el nombre o SKU para encontrarlo rapido, enfocarlo en la escena o eliminarlo.",
+    description: "Encuentra por nombre o SKU y enfoca automaticamente la ruta en la escena.",
     label: "Nombre o SKU del producto",
     buttonAriaLabel: "Buscar producto",
     transferTitle: "Trasladar a otro estante",
@@ -66,7 +66,7 @@ export const UI_COPY = {
   },
   productForm: {
     title: "Registrar producto",
-    description: "Registra el producto despues de elegir el estante y revisar el espacio disponible.",
+    description: "Elige ubicacion, identifica el producto y valida sus medidas antes de guardarlo.",
     steps: {
       selectShelf: "Ubicacion",
       productCode: "2. Ingresa el SKU y nombre",
@@ -96,7 +96,7 @@ export const UI_COPY = {
       updateBtn: "Aplicar tamaño"
     },
     shelfSummary: {
-      title: "Resumen del estante seleccionado",
+      title: "Capacidad del estante",
       legacyTitle: "Referencia del estante"
     },
     selectedShelfLabel: "Estante de registro",
@@ -128,10 +128,10 @@ export const UI_COPY = {
     nameLabel: "Nombre del producto",
   },
   editPanel: {
-    title: "Editar",
-    description: "Selecciona un estante o producto antes de usar estas opciones.",
-    moveSection: "Activacion de edicion",
-    deleteSection: "Eliminar",
+    title: "Herramientas de edicion",
+    description: "Usa estas acciones despues de seleccionar un estante o producto.",
+    moveSection: "Movimiento",
+    deleteSection: "Eliminacion",
     movePisosHint: "Activa el entorno de edicion y luego arrastra los pisos directamente en la escena 3D.",
   },
   status: {

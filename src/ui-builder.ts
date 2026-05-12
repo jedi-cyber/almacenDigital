@@ -45,7 +45,8 @@ const ICON_PATHS = {
   trash: "M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v8h-2V9Zm4 0h2v8h-2V9ZM6 9h2v8H6V9Z",
   layers: "M12 3 3 8l9 5 9-5-9-5Zm-7 8.9 7 3.89 7-3.89V15l-7 4-7-4v-3.1Z",
   barcode: "M4 5h2v14H4V5Zm3 0h1v14H7V5Zm3 0h2v14h-2V5Zm4 0h1v14h-1V5Zm3 0h3v14h-3V5Z",
-  close: "M6.7 5.3a1 1 0 0 1 1.4 0L12 9.17l3.9-3.88a1 1 0 1 1 1.4 1.42L13.4 10.6l3.9 3.89a1 1 0 0 1-1.4 1.42L12 12.01l-3.9 3.9a1 1 0 1 1-1.4-1.42l3.9-3.9-3.9-3.89a1 1 0 0 1 0-1.4Z"
+  close: "M6.7 5.3a1 1 0 0 1 1.4 0L12 9.17l3.9-3.88a1 1 0 1 1 1.4 1.42L13.4 10.6l3.9 3.89a1 1 0 0 1-1.4 1.42L12 12.01l-3.9 3.9a1 1 0 1 1-1.4-1.42l3.9-3.9-3.9-3.89a1 1 0 0 1 0-1.4Z",
+  theme: "M12 3a9 9 0 1 0 9 9c0-.36-.02-.72-.07-1.07A6.5 6.5 0 0 1 13.07 3.1 9.7 9.7 0 0 0 12 3Zm0 2.1a4.5 4.5 0 0 0 5.9 5.9A7 7 0 1 1 12 5.1Z"
 } as const;
 
 function renderIcon(path: string): string {
@@ -67,6 +68,7 @@ function renderIconButton(params: {
   return `
     <button type="button" id="${id}" class="${className}" aria-label="${label}" title="${label}" ${extraAttributes}>
       ${renderIcon(iconPath)}
+      <span class="action-label" aria-hidden="true">${label}</span>
       <span class="visually-hidden">${label}</span>
     </button>
   `;
@@ -89,10 +91,43 @@ function buildHudTemplate(): string {
         <span class="visually-hidden">${UI_COPY.buttons.showPanel}</span>
       </button>
       <aside id="control-panel" class="hud" aria-label="Panel de control" data-testid="control-panel">
-        <h1>${UI_COPY.page.title}</h1>
-        <p>
-          ${UI_COPY.page.description}
-        </p>
+        <header class="hud-header">
+          <span class="app-badge">3D</span>
+          <div class="hud-title-group">
+            <h1>${UI_COPY.page.title}</h1>
+            <p>${UI_COPY.page.description}</p>
+          </div>
+          <button
+            type="button"
+            id="theme-toggle-btn"
+            class="theme-toggle-btn"
+            data-theme-toggle
+            aria-label="Cambiar a modo oscuro"
+            aria-pressed="false"
+            title="Cambiar a modo oscuro"
+          >
+            ${renderIcon(ICON_PATHS.theme)}
+            <span data-theme-toggle-label>Oscuro</span>
+          </button>
+        </header>
+
+        <ol class="workflow-strip" aria-label="Flujo principal">
+          <li>
+            <span>1</span>
+            <strong>Buscar</strong>
+            <small>Ubicar ruta</small>
+          </li>
+          <li>
+            <span>2</span>
+            <strong>Registrar</strong>
+            <small>Asignar espacio</small>
+          </li>
+          <li>
+            <span>3</span>
+            <strong>Gestionar</strong>
+            <small>Editar estantes</small>
+          </li>
+        </ol>
 
         <p class="status-message" id="status-message" role="status" aria-live="polite" aria-atomic="true" data-testid="status-message" hidden>
           ${UI_COPY.status.initial}
@@ -102,6 +137,7 @@ function buildHudTemplate(): string {
           <div class="form-card-head">
             <div class="form-card-head-copy">
               <strong id="search-card-title">${UI_COPY.search.title}</strong>
+              <p>${UI_COPY.search.description}</p>
             </div>
           </div>
           <div class="form-card-body" id="search-card-body">
@@ -109,8 +145,8 @@ function buildHudTemplate(): string {
             <label class="search-label">
               <span>${UI_COPY.search.label}</span>
               <div class="search-row">
-                <input name="searchSku" type="text" placeholder="Ej. Producto A" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
-                <button type="submit" class="icon-button" aria-label="${UI_COPY.search.buttonAriaLabel}" data-testid="search-submit-btn">
+                <input name="searchSku" type="text" placeholder="SKU-001 o Caja de tornillos" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
+                <button type="submit" class="icon-button" aria-label="${UI_COPY.search.buttonAriaLabel}" title="${UI_COPY.search.buttonAriaLabel}" data-testid="search-submit-btn">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path
                       d="M10.5 4a6.5 6.5 0 1 0 4.03 11.6l4.43 4.43 1.41-1.41-4.43-4.43A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"
@@ -138,14 +174,14 @@ function buildHudTemplate(): string {
         <div class="hud-actions">
           ${renderIconButton({
             id: "open-shelf-manager-btn",
-            className: "icon-action-btn icon-action-btn--soft icon-action-btn--wide-mobile",
+            className: "icon-action-btn icon-action-btn--soft icon-action-btn--labeled",
             label: UI_COPY.buttons.manageShelf,
             iconPath: ICON_PATHS.layers,
             extraAttributes: 'data-panel-toggle="shelf-manager-panel"'
           })}
           ${renderIconButton({
             id: "open-edit-panel-btn",
-            className: "icon-action-btn icon-action-btn--soft icon-action-btn--wide-mobile",
+            className: "icon-action-btn icon-action-btn--soft icon-action-btn--labeled",
             label: UI_COPY.buttons.edit,
             iconPath: ICON_PATHS.edit,
             extraAttributes: 'data-panel-toggle="edit-panel"'
@@ -322,10 +358,11 @@ function buildHudTemplate(): string {
           <span id="click-info-dims"></span>
         </div>
 
-        <section class="form-card form-card--product" id="product-card" data-card data-collapsed="true" aria-labelledby="product-card-title" data-testid="product-card">
+        <section class="form-card form-card--product" id="product-card" data-card data-collapsed="false" aria-labelledby="product-card-title" data-testid="product-card">
           <div class="form-card-head form-card-head--split">
             <div class="form-card-head-copy">
               <strong id="product-card-title">${UI_COPY.productForm.title}</strong>
+              <p>${UI_COPY.productForm.description}</p>
             </div>
             <button
               type="button"
@@ -333,16 +370,21 @@ function buildHudTemplate(): string {
               data-card-toggle
               data-card-id="product-card"
               data-section-label="${UI_COPY.productForm.title}"
-              aria-expanded="false"
+              aria-expanded="true"
               aria-controls="product-card-body"
-              title="${UI_COPY.toggles.open} ${UI_COPY.productForm.title}"
+              title="${UI_COPY.toggles.close} ${UI_COPY.productForm.title}"
             >
               ${renderIcon(ICON_PATHS.chevron)}
-              <span class="visually-hidden">${UI_COPY.toggles.open} ${UI_COPY.productForm.title}</span>
+              <span class="action-label" aria-hidden="true">${UI_COPY.toggles.close}</span>
+              <span class="visually-hidden">${UI_COPY.toggles.close} ${UI_COPY.productForm.title}</span>
             </button>
           </div>
-          <div class="form-card-body" id="product-card-body" data-card-body hidden>
+          <div class="form-card-body" id="product-card-body" data-card-body>
           <form class="product-form" id="product-form" aria-label="${UI_COPY.productForm.title}" data-testid="product-form">
+            <div class="form-step">
+              <span>1</span>
+              <strong>Ubicacion</strong>
+            </div>
             <label>
               <span>${UI_COPY.productForm.steps.selectShelf}</span>
               <select id="product-shelf-select" aria-label="${UI_COPY.productForm.steps.selectShelf}" data-testid="product-shelf-select"></select>
@@ -353,6 +395,10 @@ function buildHudTemplate(): string {
             </label>
             <div class="dimension-hint" id="selected-shelf-display" aria-live="polite" data-testid="selected-shelf-display">
               ${UI_COPY.productForm.selectedShelfLabel}: -
+            </div>
+            <div class="form-step">
+              <span>2</span>
+              <strong>Identificacion</strong>
             </div>
             <div class="sku-name-group">
               <label>
@@ -368,7 +414,10 @@ function buildHudTemplate(): string {
 
             <section class="dimension-group">
               <div class="dimension-group-head">
-                <strong>${UI_COPY.productForm.steps.measures}</strong>
+                <div class="form-step form-step--inline">
+                  <span>3</span>
+                  <strong>${UI_COPY.productForm.steps.measures}</strong>
+                </div>
                 <span>${UI_COPY.productForm.dimensions.hint}</span>
               </div>
               <div class="dimension-hint" id="dimension-hint" aria-live="polite">
