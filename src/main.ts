@@ -2,6 +2,11 @@ import "./styles.css";
 
 import { createWarehouseApp } from "./warehouseScene.js";
 
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get("mode") === "mobile-route") {
+  document.documentElement.dataset.appMode = "mobile-route";
+}
+
 const root = document.querySelector<HTMLDivElement>("#app");
 const loadingScreen = document.querySelector<HTMLDivElement>("#loading-screen");
 

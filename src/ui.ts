@@ -6,10 +6,12 @@ import { buildHtml } from "./ui-builder.js";
 import { calcShelfStatus } from "./shelfStatus.js";
 import {
   addShelfBoard,
+  clearShelfSectionHighlight,
   collectBoardOffsets,
   flashShelfMesh,
   focusOnProductFromAisle,
   getInstanceWorldPosition,
+  highlightShelfSection,
   pickProduct,
   refreshShelfSections,
   removeShelfBoardAtSection,
@@ -20,9 +22,12 @@ import type { Item, Shelf, WarehouseConfig } from "./types.js";
 import {
   getDeleteSuccessMessage,
   getDuplicateSkuMessage,
+  getInvalidProductDimensionsMessage,
+  getInvalidSkuMessage,
   getMoveReadyMessage,
   getNoSpaceMessage,
   getPlacementSuccessMessage,
+  getProductTooLargeForSectionMessage,
   getProductName,
   getSearchNotFoundMessage,
   getSearchShelfMissingMessage,
@@ -35,7 +40,7 @@ import {
   UI_COPY
 } from "./ui-copy.js";
 import { populateShelves, setStatus, updateLegendCount } from "./ui-handlers.js";
-import { type WarehouseRuntime, clearHighlight, highlightProduct, placeItem, removeItem, transferItem, updateItemDimensions } from "./warehouse.js";
+import { type WarehouseRuntime, clearHighlight, highlightProduct, loadProductCatalogs, placeItem, removeItem, transferItem, updateItemDimensions } from "./warehouse.js";
 import type { ProductEntry } from "./warehouse.js";
 import { canPlace } from "./canPlace.js";
 
@@ -72,6 +77,7 @@ export interface ProductFormDeps {
   onShelfLabelUpdated?: (shelfId: string, shelf: Shelf) => void;
   onShelfUpdated?: () => void;
   onShelfResized?: (shelfId: string, shelf: Shelf) => void;
+  enableGhostPreview?: boolean;
 }
 
 export interface SearchFormDeps {
@@ -98,12 +104,15 @@ export interface SearchFormDeps {
   editorSkuDisplay: HTMLElement;
   editorForm: HTMLFormElement;
   editorName: HTMLInputElement;
+  editorCategory: HTMLInputElement;
+  editorBrand: HTMLInputElement;
   editorWidth: HTMLInputElement;
   editorHeight: HTMLInputElement;
   editorDepth: HTMLInputElement;
   onMoveRequested: (sku: string) => void;
   onProductRemoved: (shelfId: string) => void;
-  onProductLocated?: (worldPos: THREE.Vector3, shelfMesh: THREE.Mesh) => void;
+  beforeProductSelected?: (sku: string) => boolean;
+  onProductLocated?: (worldPos: THREE.Vector3, shelfMesh: THREE.Mesh, sku: string) => void;
   onSearchCleared?: () => void;
 }
 
@@ -117,7 +126,7 @@ export interface SceneClickDeps {
   clickInfoShelf: HTMLElement;
   clickInfoDims: HTMLElement;
   isSuppressed?: () => boolean;
-  onProductSelected?: (sku: string) => void;
+  onProductSelected?: (sku: string) => boolean | void;
   onSelectionCleared?: () => void;
 }
 
@@ -137,7 +146,8 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     shelfFree,
     onShelfLabelUpdated,
     onShelfUpdated,
-    onShelfResized
+    onShelfResized,
+    enableGhostPreview = true
   } = params;
 
   const getShelfColor = (shelfId: string) => {
@@ -187,6 +197,11 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   };
 
   const createOrUpdateGhost = () => {
+    if (!enableGhostPreview) {
+      removeGhost();
+      return;
+    }
+
     const shelfId = shelfField instanceof HTMLSelectElement ? shelfField.value : "";
     const shelf = config.shelves.find((s) => s.id === shelfId);
     const shelfMesh = shelfMeshes.get(shelfId);
@@ -501,10 +516,12 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     const shelfId = String(data.get("shelfId") ?? "");
     const sku = String(data.get("sku") ?? "").trim();
     const productName = String(data.get("productName") ?? "").trim() || getProductName(sku);
+    const category = String(data.get("category") ?? "").trim() || "Sin categoria";
+    const brand = String(data.get("brand") ?? "").trim() || "Sin marca";
     const preferredSection = Number(data.get("section") ?? "1");
-    const width = Number(data.get("width"));
-    const height = Number(data.get("height"));
-    const depth = Number(data.get("depth"));
+	    const width = Number(data.get("width"));
+	    const height = Number(data.get("height"));
+	    const depth = Number(data.get("depth"));
 
     const shelf = config.shelves.find((s) => s.id === shelfId);
     const shelfMesh = shelfMeshes.get(shelfId);
@@ -514,18 +531,50 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
       return;
     }
 
-    if (!sku || width <= 0 || height <= 0 || depth <= 0) {
-      setStatus(statusMessage, UI_COPY.status.invalidProductForm, true);
-      return;
-    }
+	    if (!sku) {
+	      setStatus(statusMessage, getInvalidSkuMessage(), true);
+	      return;
+	    }
+	
+	    const skuExists = [...runtime.productEntryBySku.keys()].some(
+	      (currentSku) => currentSku.trim().toLowerCase() === sku.toLowerCase()
+	    );
+	    if (skuExists) {
+	      setStatus(statusMessage, getDuplicateSkuMessage(sku), true);
+	      return;
+	    }
 
-    if (runtime.productEntryBySku.has(sku)) {
-      setStatus(statusMessage, getDuplicateSkuMessage(sku), true);
-      return;
-    }
+	    if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(depth) || width <= 0 || height <= 0 || depth <= 0) {
+	      setStatus(statusMessage, getInvalidProductDimensionsMessage(), true);
+	      return;
+	    }
 
-    const item: Item = { sku, name: productName, width, height, depth };
-    const placement = placeItem(runtime, scene, item, shelf, shelfMesh, preferredSection);
+	    const sectionBounds = getSectionBounds(shelf, preferredSection);
+	    const sectionHeight = sectionBounds.max - sectionBounds.min;
+	    if (width > shelf.width || height > sectionHeight || depth > shelf.depth) {
+	      setStatus(
+	        statusMessage,
+	        getProductTooLargeForSectionMessage(
+	          shelf.id,
+	          preferredSection,
+	          roundMetric(shelf.width),
+	          roundMetric(sectionHeight),
+	          roundMetric(shelf.depth)
+	        ),
+	        true
+	      );
+	      return;
+	    }
+	
+		    const item: Item = { sku, name: productName, category, brand, width, height, depth };
+	    const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
+	    const previewPlacement = canPlace(shelf, placedItems, item, { preferredSection });
+	    if (!previewPlacement) {
+	      setStatus(statusMessage, getNoSpaceMessage(sku, shelf.id, preferredSection), true);
+	      return;
+	    }
+
+	    const placement = placeItem(runtime, scene, item, shelf, shelfMesh, preferredSection);
 
     if (!placement) {
       setStatus(statusMessage, getNoSpaceMessage(sku, shelf.id, preferredSection), true);
@@ -583,7 +632,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
   return { refreshShelfSummary, handleRemoveBoard };
 }
 
-export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
+export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean {
   const {
     searchForm,
     runtime,
@@ -608,11 +657,14 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     editorSkuDisplay,
     editorForm,
     editorName,
+    editorCategory,
+    editorBrand,
     editorWidth,
     editorHeight,
     editorDepth,
     onMoveRequested,
     onProductRemoved,
+    beforeProductSelected,
     onProductLocated,
     onSearchCleared
   } = params;
@@ -627,18 +679,65 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
   const reportMinimizedSummary = searchResult.querySelector<HTMLElement>("#search-result-minimized-summary");
   const reportCloseBtn = searchResult.querySelector<HTMLButtonElement>("#close-search-report-btn");
   const reportHead = searchResult.querySelector<HTMLElement>(".search-result-head");
+  const searchCategoryFilter = searchForm.querySelector<HTMLSelectElement>("#search-category-filter");
+  const searchBrandFilter = searchForm.querySelector<HTMLSelectElement>("#search-brand-filter");
+  const categoryDatalist = document.querySelector<HTMLDataListElement>("#category-options");
+  const brandDatalist = document.querySelector<HTMLDataListElement>("#brand-options");
 
   attachMaxClamp(editorWidth);
   attachMaxClamp(editorHeight);
   attachMaxClamp(editorDepth);
 
-  let activeSku: string | null = null;
-  let confirmPending = false;
-  let confirmTimeout: number | null = null;
-  let barcodeStream: MediaStream | null = null;
-  let barcodeDetector: BarcodeDetector | null = null;
-  let barcodeScanFrame = 0;
-  productEditor.hidden = true;
+	  let activeSku: string | null = null;
+	  let confirmPending = false;
+	  let confirmTimeout: number | null = null;
+	  let barcodeStream: MediaStream | null = null;
+	  let barcodeDetector: BarcodeDetector | null = null;
+	  let barcodeScanFrame = 0;
+	  let highlightedSectionShelf: THREE.Mesh | null = null;
+	  productEditor.hidden = true;
+
+	  const populateCatalogControls = (categories: string[], brands: string[]) => {
+	    const fillSelect = (select: HTMLSelectElement | null, values: string[], allLabel: string) => {
+	      if (!select) return;
+	      const current = select.value;
+	      select.replaceChildren(new Option(allLabel, ""));
+	      values.forEach((value) => select.add(new Option(value, value)));
+	      select.value = values.includes(current) ? current : "";
+	    };
+	    const fillDatalist = (list: HTMLDataListElement | null, values: string[]) => {
+	      if (!list) return;
+	      list.replaceChildren(...values.map((value) => {
+	        const option = document.createElement("option");
+	        option.value = value;
+	        return option;
+	      }));
+	    };
+
+	    fillSelect(searchCategoryFilter, categories, "Todas");
+	    fillSelect(searchBrandFilter, brands, "Todas");
+	    fillDatalist(categoryDatalist, categories);
+	    fillDatalist(brandDatalist, brands);
+	  };
+
+	  const getRuntimeCatalogValues = () => {
+	    const entries = [...runtime.productEntryBySku.values()];
+	    return {
+	      categories: getUniqueCatalogValues(entries.map((entry) => entry.item.category)),
+	      brands: getUniqueCatalogValues(entries.map((entry) => entry.item.brand))
+	    };
+	  };
+
+	  const fallbackCatalogs = getRuntimeCatalogValues();
+	  populateCatalogControls(fallbackCatalogs.categories, fallbackCatalogs.brands);
+	  loadProductCatalogs().then((catalogs) => {
+	    const apiCategories = getUniqueCatalogValues(catalogs.categories.map((entry) => entry.name));
+	    const apiBrands = getUniqueCatalogValues(catalogs.brands.map((entry) => entry.name));
+	    populateCatalogControls(
+	      apiCategories.length > 0 ? apiCategories : fallbackCatalogs.categories,
+	      apiBrands.length > 0 ? apiBrands : fallbackCatalogs.brands
+	    );
+	  });
 
   // ── Poblar el selector de estantes del panel de traslado ──────────────────
   config.shelves.forEach((shelf) => {
@@ -704,7 +803,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
       return;
     }
 
-    selectProduct(exactMatch.sku, [{ sku: exactMatch.sku, entry: exactMatch.entry }]);
+    selectProduct(exactMatch.sku, [{ sku: exactMatch.sku, entry: exactMatch.entry, score: 1000 }]);
   };
 
   const scanBarcodeFrame = async () => {
@@ -789,17 +888,33 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     transferPanel.hidden = true;
   };
 
-  const hideResult = () => {
-    searchResult.hidden = true;
+	  const hideResult = () => {
+	    searchResult.hidden = true;
     searchResult.dataset.minimized = "false";
+    delete searchResult.dataset.resultCount;
     if (productActions) productActions.hidden = true;
     productEditor.hidden = true;
     hideTransferPanel();
     activeSku = null;
-    resetDeleteBtn();
-    if (clearSearchBtn) clearSearchBtn.hidden = true;
-    onSearchCleared?.();
-  };
+	    resetDeleteBtn();
+	    clearActiveSectionHighlight();
+	    if (clearSearchBtn) clearSearchBtn.hidden = true;
+	    onSearchCleared?.();
+	  };
+
+	  const clearActiveSectionHighlight = () => {
+	    if (!highlightedSectionShelf) return;
+	    clearShelfSectionHighlight(highlightedSectionShelf);
+	    highlightedSectionShelf = null;
+	  };
+
+	  const setActiveSectionHighlight = (shelfMesh: THREE.Mesh, shelf: Shelf | undefined, localPositionY: number) => {
+	    clearActiveSectionHighlight();
+	    if (!shelf) return;
+	    const section = getSectionNumberForPosition(shelf, localPositionY);
+	    highlightShelfSection(shelfMesh, shelf, section);
+	    highlightedSectionShelf = shelfMesh;
+	  };
 
   const setReportMinimized = (isMinimized: boolean) => {
     if (searchResult.hidden) return;
@@ -811,14 +926,15 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     const productEntry = runtime.productEntryBySku.get(sku);
     const reportMatches = matches && matches.length > 0
       ? matches
-      : productEntry ? [{ sku, entry: productEntry }] : [];
+      : productEntry ? [{ sku, entry: productEntry, score: 1000 }] : [];
 
-    if (!productEntry) {
-      clearHighlight(runtime);
-      hideResult();
-      setStatus(statusMessage, getSearchNotFoundMessage(sku), true);
-      return;
-    }
+	    if (!productEntry) {
+	      const suggestions = resolveProductSearchSuggestions(runtime.productEntryBySku, sku);
+	      clearHighlight(runtime);
+	      hideResult();
+	      setStatus(statusMessage, getSearchNotFoundMessage(sku, suggestions), true);
+	      return false;
+	    }
 
     const { shelfId, item, localPosition: localPos } = productEntry;
     const shelfMesh = shelfMeshes.get(shelfId);
@@ -826,15 +942,22 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
       clearHighlight(runtime);
       hideResult();
       setStatus(statusMessage, getSearchShelfMissingMessage(sku), true);
-      return;
+      return false;
     }
 
-    const shelfLabel = config.shelves.find((s) => s.id === shelfId)?.label ?? shelfId;
-    const shelf = config.shelves.find((s) => s.id === shelfId);
-    activeSku = sku;
-    searchResultSku.textContent = item.name ? `${item.name} (${sku})` : sku;
-    searchResultShelf.textContent = getReportSummary(reportMatches, shelfId, shelfLabel);
+    if (beforeProductSelected?.(sku) === false) return false;
+
+	    const shelf = config.shelves.find((s) => s.id === shelfId);
+	    const shelfLabel = shelf?.label ?? shelfId;
+	    const section = getSectionNumberForPosition(shelf, localPos.y);
+	    const locationText = formatProductLocation(shelfId, shelfLabel, getSectionLabel(shelf, section), localPos);
+	    activeSku = sku;
+	    searchResultSku.textContent = item.name ? `${item.name} (${sku})` : sku;
+	    searchResultShelf.textContent = reportMatches.length <= 1
+	      ? locationText
+	      : getReportSummary(reportMatches, shelfId, shelfLabel);
     renderSearchReport(reportMatches, sku);
+    searchResult.dataset.resultCount = String(reportMatches.length);
     searchResult.hidden = false;
     setReportMinimized(false);
     if (productActions) productActions.hidden = false;
@@ -845,6 +968,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
 
     editorSkuDisplay.textContent = `SKU: ${sku}`;
     editorName.value = item.name ?? "";
+    editorCategory.value = item.category ?? "Sin categoria";
+    editorBrand.value = item.brand ?? "Sin marca";
     editorWidth.value = String(item.width);
     editorHeight.value = String(item.height);
     editorDepth.value = String(item.depth);
@@ -854,29 +979,36 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     productEditor.hidden = false;
 
     const instancedMesh = runtime.instancedMeshByGeo.get(productEntry.geoKey);
-    if (instancedMesh) {
-      const worldPos = getInstanceWorldPosition(instancedMesh, productEntry.instanceIndex);
-      onProductLocated?.(worldPos, shelfMesh);
-    }
-    highlightProduct(runtime, sku);
+	    if (instancedMesh) {
+	      const worldPos = getInstanceWorldPosition(instancedMesh, productEntry.instanceIndex);
+	      onProductLocated?.(worldPos, shelfMesh, sku);
+	    }
+	    highlightProduct(runtime, sku, scene);
+	    setActiveSectionHighlight(shelfMesh, shelf, localPos.y);
     setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId, reportMatches.length), false);
+    return true;
   };
 
-  const handleSearchSubmit = (event: SubmitEvent) => {
-    event.preventDefault();
-    stopBarcodeScanner();
-
-    const query = String(new FormData(searchForm).get("searchSku") ?? "").trim();
-
-    if (!query) {
-      hideResult();
-      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
-      return;
-    }
-
-    const matches = resolveProductSearchMatches(runtime.productEntryBySku, query);
-    selectProduct(matches[0]?.sku ?? query, matches);
-  };
+	  const handleSearchSubmit = (event: SubmitEvent) => {
+	    event.preventDefault();
+	    stopBarcodeScanner();
+	
+	    const query = String(new FormData(searchForm).get("searchSku") ?? "").trim();
+	    const categoryFilter = searchCategoryFilter?.value.trim() ?? "";
+	    const brandFilter = searchBrandFilter?.value.trim() ?? "";
+	
+	    if (!query && !categoryFilter && !brandFilter) {
+	      hideResult();
+	      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
+	      return;
+	    }
+	
+	    const baseMatches = query
+	      ? resolveProductSearchMatches(runtime.productEntryBySku, query)
+	      : [...runtime.productEntryBySku.entries()].map(([sku, entry]) => ({ sku, entry, score: 1 }));
+	    const matches = filterSearchMatches(baseMatches, categoryFilter, brandFilter);
+	    selectProduct(matches[0]?.sku ?? query, matches);
+	  };
 
   const handleMoveProductClick = () => {
     if (!activeSku) return;
@@ -949,12 +1081,13 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     const newShelfMesh = shelfMeshes.get(toShelfId);
     if (newEntry && newShelfMesh) {
       const newInstancedMesh = runtime.instancedMeshByGeo.get(newEntry.geoKey);
-      if (newInstancedMesh) {
-        const newWorldPos = getInstanceWorldPosition(newInstancedMesh, newEntry.instanceIndex);
-        focusOnProductFromAisle(newWorldPos, newShelfMesh, camera, controls);
-        onProductLocated?.(newWorldPos, newShelfMesh);
-        highlightProduct(runtime, sku);
-      }
+	      if (newInstancedMesh) {
+	        const newWorldPos = getInstanceWorldPosition(newInstancedMesh, newEntry.instanceIndex);
+	        focusOnProductFromAisle(newWorldPos, newShelfMesh, camera, controls, newEntry.item);
+	        onProductLocated?.(newWorldPos, newShelfMesh, sku);
+	        highlightProduct(runtime, sku, scene);
+	        setActiveSectionHighlight(newShelfMesh, config.shelves.find((s) => s.id === toShelfId), newEntry.localPosition.y);
+	      }
     }
 
     setStatus(statusMessage, getTransferSuccessMessage(sku, fromShelfId, toShelfId, toSection), false);
@@ -972,6 +1105,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     if (!activeSku) return;
 
     const name = editorName.value.trim();
+    const category = editorCategory.value.trim() || "Sin categoria";
+    const brand = editorBrand.value.trim() || "Sin marca";
     const width = Number(editorWidth.value);
     const height = Number(editorHeight.value);
     const depth = Number(editorDepth.value);
@@ -997,11 +1132,12 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
       return;
     }
 
-    const ok = updateItemDimensions(runtime, scene, activeSku, { name, width, height, depth }, shelfMesh);
-    if (ok) {
-      highlightProduct(runtime, activeSku);
-      setStatus(statusMessage, `Producto ${activeSku} actualizado correctamente.`, false);
-    }
+	    const ok = updateItemDimensions(runtime, scene, activeSku, { name, category, brand, width, height, depth }, shelfMesh);
+	    if (ok) {
+	      highlightProduct(runtime, activeSku, scene);
+	      setActiveSectionHighlight(shelfMesh, shelf, editorEntry.localPosition.y);
+	      setStatus(statusMessage, `Producto ${activeSku} actualizado correctamente.`, false);
+	    }
   };
 
   const handleClearSearch = () => {
@@ -1033,24 +1169,32 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     for (const match of matches) {
       const { sku: matchSku, entry } = match;
       const shelfLabel = config.shelves.find((s) => s.id === entry.shelfId)?.label ?? entry.shelfId;
-      const shelf = config.shelves.find((s) => s.id === entry.shelfId);
-      const item = entry.item;
-      const section = getSectionNumberForPosition(shelf, entry.localPosition.y);
-      const locationText = `${entry.shelfId} · ${shelfLabel} · ${getSectionLabel(shelf, section)}`;
-      const dimensionsText = `${formatMetric(item.width)} x ${formatMetric(item.height)} x ${formatMetric(item.depth)} m`;
-      const metaText = `Posicion local (${formatMetric(entry.localPosition.x)}, ${formatMetric(entry.localPosition.y)}, ${formatMetric(entry.localPosition.z)})`;
-      const row = document.createElement("button");
+	      const shelf = config.shelves.find((s) => s.id === entry.shelfId);
+	      const item = entry.item;
+	      const section = getSectionNumberForPosition(shelf, entry.localPosition.y);
+	      const locationText = formatProductLocation(
+	        entry.shelfId,
+	        shelfLabel,
+	        getSectionLabel(shelf, section),
+	        entry.localPosition
+	      );
+	      const dimensionsText = `${formatMetric(item.width)} x ${formatMetric(item.height)} x ${formatMetric(item.depth)} m`;
+	      const catalogText = [
+	        item.category ? `Categoria: ${item.category}` : "",
+	        item.brand ? `Marca: ${item.brand}` : ""
+	      ].filter(Boolean).join(" · ");
+	      const row = document.createElement("button");
       row.type = "button";
       row.className = "search-report-item";
       row.dataset.selected = matchSku === selectedSku ? "true" : "false";
       row.dataset.sku = matchSku;
       row.innerHTML = `
         <span class="search-report-item-title">${escapeHtml(item.name || "Sin nombre registrado")}</span>
-        <span>SKU: ${escapeHtml(matchSku)}</span>
-        <span>${escapeHtml(locationText)}</span>
-        <span>${escapeHtml(dimensionsText)}</span>
-        <span>${escapeHtml(metaText)}</span>
-      `;
+	        <span>SKU: ${escapeHtml(matchSku)}</span>
+	        ${catalogText ? `<span>${escapeHtml(catalogText)}</span>` : ""}
+	        <span>${escapeHtml(locationText)}</span>
+	        <span>${escapeHtml(dimensionsText)}</span>
+	      `;
       row.addEventListener("click", () => {
         selectProduct(matchSku, matches);
       });
@@ -1062,12 +1206,33 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     }
   };
 
-  reportMinimizeBtn?.addEventListener("click", () => setReportMinimized(true));
-  reportRestoreBtn?.addEventListener("click", () => setReportMinimized(false));
-  reportCloseBtn?.addEventListener("click", handleCloseReport);
+	  reportMinimizeBtn?.addEventListener("click", () => setReportMinimized(true));
+	  reportRestoreBtn?.addEventListener("click", () => setReportMinimized(false));
+	  reportCloseBtn?.addEventListener("click", handleCloseReport);
+	  searchCategoryFilter?.addEventListener("change", () => {
+	    const hasQuery = String(new FormData(searchForm).get("searchSku") ?? "").trim().length > 0;
+	    if (hasQuery || searchCategoryFilter.value || searchBrandFilter?.value) {
+	      searchForm.requestSubmit();
+	    }
+	  });
+	  searchBrandFilter?.addEventListener("change", () => {
+	    const hasQuery = String(new FormData(searchForm).get("searchSku") ?? "").trim().length > 0;
+	    if (hasQuery || searchBrandFilter.value || searchCategoryFilter?.value) {
+	      searchForm.requestSubmit();
+	    }
+	  });
+
+  const setSearchResultPosition = (left: number, top: number) => {
+    searchResult.style.setProperty("left", `${left}px`, "important");
+    searchResult.style.setProperty("top", `${top}px`, "important");
+    searchResult.style.setProperty("right", "auto", "important");
+    searchResult.style.setProperty("bottom", "auto", "important");
+    searchResult.dataset.positioned = "true";
+  };
 
   reportHead?.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || (event.target as Element).closest("button")) return;
+    event.preventDefault();
 
     const rect = searchResult.getBoundingClientRect();
     const startX = event.clientX;
@@ -1077,10 +1242,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
     const pointerId = event.pointerId;
 
     searchResult.dataset.dragging = "true";
-    searchResult.style.left = `${startLeft}px`;
-    searchResult.style.top = `${startTop}px`;
-    searchResult.style.right = "auto";
-    searchResult.style.bottom = "auto";
+    setSearchResultPosition(startLeft, startTop);
     reportHead.setPointerCapture(pointerId);
 
     const moveReport = (moveEvent: PointerEvent) => {
@@ -1088,8 +1250,10 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => void {
       const nextTop = startTop + moveEvent.clientY - startY;
       const maxLeft = Math.max(12, window.innerWidth - rect.width - 12);
       const maxTop = Math.max(12, window.innerHeight - rect.height - 12);
-      searchResult.style.left = `${Math.min(Math.max(12, nextLeft), maxLeft)}px`;
-      searchResult.style.top = `${Math.min(Math.max(12, nextTop), maxTop)}px`;
+      setSearchResultPosition(
+        Math.min(Math.max(12, nextLeft), maxLeft),
+        Math.min(Math.max(12, nextTop), maxTop)
+      );
     };
 
     const stopDrag = () => {
@@ -1142,6 +1306,7 @@ export function resolveProductByExactSku(
 interface SearchMatch {
   sku: string;
   entry: ProductEntry;
+  score: number;
 }
 
 export function resolveProductSearchMatches(
@@ -1151,36 +1316,132 @@ export function resolveProductSearchMatches(
   const query = normalizeSearchText(rawQuery);
   if (!query) return [];
 
-  const exactSku = [...productsBySku.keys()].find((sku) => normalizeSearchText(sku) === query);
-  if (exactSku) {
-    const entry = productsBySku.get(exactSku);
-    return entry ? [{ sku: exactSku, entry }] : [];
-  }
-
   const entries = [...productsBySku.entries()];
-  const exactNameMatches = entries.filter(([, entry]) => normalizeSearchText(entry.item.name) === query);
-  if (exactNameMatches.length > 0) {
-    return exactNameMatches.map(([sku, entry]) => ({ sku, entry }));
+  const matches = entries
+    .map(([sku, entry]) => ({ sku, entry, score: getSearchScore(query, sku, entry) }))
+    .filter((match) => match.score > 0);
+
+  matches.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const nameCompare = a.entry.item.name.localeCompare(b.entry.item.name, "es", { sensitivity: "base" });
+    return nameCompare || a.sku.localeCompare(b.sku, "es", { sensitivity: "base" });
+  });
+
+  return matches;
+}
+
+export function resolveProductSearchSuggestions(
+  productsBySku: Map<string, ProductEntry>,
+  rawQuery: string,
+  limit = 3
+): string[] {
+  const query = normalizeSearchText(rawQuery);
+  if (!query) return [];
+
+  return [...productsBySku.entries()]
+    .map(([sku, entry]) => {
+      const candidates = getSearchCandidateLabels(sku, entry);
+      const bestDistance = Math.min(
+        ...candidates.map((candidate) => getSearchDistance(query, normalizeSearchText(candidate)))
+      );
+      const label = entry.item.name ? `${entry.item.name} (${sku})` : sku;
+      return { label, bestDistance };
+    })
+    .sort((a, b) => a.bestDistance - b.bestDistance || a.label.localeCompare(b.label, "es", { sensitivity: "base" }))
+    .filter((suggestion) => suggestion.bestDistance <= Math.max(2, Math.ceil(query.length * 0.45)))
+    .slice(0, limit)
+    .map((suggestion) => suggestion.label);
+}
+
+function filterSearchMatches(matches: SearchMatch[], category: string, brand: string): SearchMatch[] {
+  const normalizedCategory = normalizeSearchText(category);
+  const normalizedBrand = normalizeSearchText(brand);
+  return matches.filter(({ entry }) => {
+    const itemCategory = normalizeSearchText(entry.item.category);
+    const itemBrand = normalizeSearchText(entry.item.brand);
+    return (!normalizedCategory || itemCategory === normalizedCategory)
+      && (!normalizedBrand || itemBrand === normalizedBrand);
+  });
+}
+
+function getUniqueCatalogValues(values: Array<string | undefined>): string[] {
+  const byKey = new Map<string, string>();
+  values.forEach((value) => {
+    const clean = value?.trim();
+    if (!clean) return;
+    const key = normalizeSearchText(clean);
+    if (!key || byKey.has(key)) return;
+    byKey.set(key, clean);
+  });
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
+}
+
+function getSearchScore(query: string, sku: string, entry: ProductEntry): number {
+  const item = entry.item;
+  const normalizedSku = normalizeSearchText(sku);
+  const normalizedName = normalizeSearchText(item.name);
+  const normalizedCategory = normalizeSearchText(item.category);
+  const normalizedBrand = normalizeSearchText(item.brand);
+  const normalizedAll = [normalizedSku, normalizedName, normalizedCategory, normalizedBrand].filter(Boolean).join(" ");
+  const tokens = query.split(/\s+/).filter(Boolean);
+
+  if (normalizedSku === query) return 1000;
+  if (normalizedName === query) return 920;
+  if (normalizedBrand === query) return 820;
+  if (normalizedCategory === query) return 800;
+
+  let score = 0;
+  if (normalizedSku.startsWith(query)) score = Math.max(score, 760);
+  if (normalizedName.startsWith(query)) score = Math.max(score, 700);
+  if (normalizedBrand.startsWith(query)) score = Math.max(score, 620);
+  if (normalizedCategory.startsWith(query)) score = Math.max(score, 600);
+  if (normalizedSku.includes(query)) score = Math.max(score, 540);
+  if (normalizedName.includes(query)) score = Math.max(score, 500);
+  if (normalizedBrand.includes(query)) score = Math.max(score, 430);
+  if (normalizedCategory.includes(query)) score = Math.max(score, 410);
+
+  if (tokens.length > 1 && tokens.every((token) => normalizedAll.includes(token))) {
+    score = Math.max(score, 360 + tokens.length * 12);
   }
 
-  const partialMatches = entries.filter(([sku, entry]) => {
-    const normalizedSku = normalizeSearchText(sku);
-    const normalizedName = normalizeSearchText(entry.item.name);
-    return normalizedSku.includes(query) || normalizedName.includes(query);
-  });
+  return score;
+}
 
-  if (partialMatches.length === 0) return [];
+function getSearchCandidateLabels(sku: string, entry: ProductEntry): string[] {
+  return [
+    sku,
+    entry.item.name,
+    entry.item.category,
+    entry.item.brand,
+    `${entry.item.name} ${sku}`,
+    `${entry.item.category ?? ""} ${entry.item.brand ?? ""}`.trim()
+  ].filter((value): value is string => Boolean(value && value.trim()));
+}
 
-  partialMatches.sort(([skuA, entryA], [skuB, entryB]) => {
-    const nameA = normalizeSearchText(entryA.item.name);
-    const nameB = normalizeSearchText(entryB.item.name);
-    const startsA = nameA.startsWith(query) ? 0 : 1;
-    const startsB = nameB.startsWith(query) ? 0 : 1;
-    if (startsA !== startsB) return startsA - startsB;
-    return skuA.localeCompare(skuB);
-  });
+function getSearchDistance(a: string, b: string): number {
+  if (!a) return b.length;
+  if (!b) return a.length;
+  if (b.includes(a) || a.includes(b)) return Math.abs(a.length - b.length);
 
-  return partialMatches.map(([sku, entry]) => ({ sku, entry }));
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = Array.from({ length: b.length + 1 }, () => 0);
+
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) {
+      previous[j] = current[j];
+    }
+  }
+
+  return previous[b.length];
 }
 
 function normalizeSearchText(value: string | undefined): string {
@@ -1193,7 +1454,16 @@ function normalizeSearchText(value: string | undefined): string {
 
 function getReportSummary(matches: SearchMatch[], shelfId: string, shelfLabel: string): string {
   if (matches.length <= 1) return `${shelfId} · ${shelfLabel}`;
-  return `${matches.length} productos encontrados con ese nombre. Selecciona uno para enfocarlo.`;
+  return `${matches.length} coincidencias por nombre, SKU, categoria o marca. Selecciona una para enfocarla.`;
+}
+
+function formatProductLocation(
+  shelfId: string,
+  shelfLabel: string,
+  sectionLabel: string,
+  localPosition: { x: number; y: number; z: number }
+): string {
+  return `Estante ${shelfId} · ${shelfLabel} · ${sectionLabel} · Posicion X ${formatMetric(localPosition.x)}, Y ${formatMetric(localPosition.y)}, Z ${formatMetric(localPosition.z)}`;
 }
 
 function escapeHtml(value: string): string {
@@ -1218,17 +1488,23 @@ export function wireSceneClick(params: SceneClickDeps): void {
       return;
     }
 
-    const hitEntry = runtime.productEntryBySku.get(sku);
-    if (!hitEntry) return;
-    const { item: { width, height, depth }, shelfId } = hitEntry;
+    const accepted = onProductSelected?.(sku);
+    if (accepted === false) return;
 
-    const shelf = config.shelves.find((s) => s.id === shelfId);
-    clickInfoSku.textContent = sku;
-    clickInfoShelf.textContent = shelf ? `${shelfId} · ${shelf.label}` : shelfId;
-    clickInfoDims.textContent = `${width} × ${height} × ${depth} m`;
-    clickInfo.hidden = false;
-
-    onProductSelected?.(sku);
+	    const hitEntry = runtime.productEntryBySku.get(sku);
+	    if (!hitEntry) return;
+	    const { item: { width, height, depth }, shelfId, localPosition } = hitEntry;
+	    const shelf = config.shelves.find((s) => s.id === shelfId);
+	    const section = getSectionNumberForPosition(shelf, localPosition.y);
+	    clickInfoSku.textContent = sku;
+	    clickInfoShelf.textContent = formatProductLocation(
+	      shelfId,
+	      shelf?.label ?? shelfId,
+	      getSectionLabel(shelf, section),
+	      localPosition
+	    );
+	    clickInfoDims.textContent = `Medidas: ${width} x ${height} x ${depth} m`;
+	    clickInfo.hidden = false;
   };
 
   canvas.addEventListener("click", handleSceneClick);
@@ -1290,6 +1566,16 @@ function getSectionHeightForPosition(shelf: Shelf, localPositionY: number): numb
   return shelf.height / sections;
 }
 
+function getSectionBounds(shelf: Shelf, section: number): { min: number; max: number } {
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const offsets = shelf.boardOffsets && shelf.boardOffsets.length > 0
+    ? shelf.boardOffsets.map((fraction) => fraction * shelf.height)
+    : Array.from({ length: sections - 1 }, (_, index) => ((index + 1) * shelf.height) / sections);
+  const bounds = [0, ...offsets, shelf.height].sort((a, b) => a - b);
+  const index = Math.min(Math.max(Math.floor(section), 1), bounds.length - 1) - 1;
+  return { min: bounds[index], max: bounds[index + 1] };
+}
+
 function getSectionNumberForPosition(shelf: Shelf | undefined, localPositionY: number): number {
   if (!shelf) return 1;
 
@@ -1339,6 +1625,10 @@ function formatInputValue(value: number): string {
 
 function formatMetric(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+function roundMetric(value: number): number {
+  return Number(value.toFixed(2));
 }
 
 function clamp(value: number, min: number, max: number): number {

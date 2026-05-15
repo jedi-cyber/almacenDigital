@@ -8,14 +8,11 @@ header("Content-Type: application/json; charset=utf-8");
 
 try {
     $pdo = db_connect(true);
-    $applied = db_run_migrations($pdo);
+    db_ensure_schema($pdo);
 
     echo json_encode([
         "ok" => true,
-        "applied" => $applied,
-        "message" => count($applied) > 0
-            ? "Migraciones ejecutadas correctamente."
-            : "La base de datos ya estaba al dia."
+        "message" => "Esquema verificado correctamente. El proyecto ya no usa tabla migrations."
     ]);
 } catch (Throwable $exception) {
     http_response_code(500);

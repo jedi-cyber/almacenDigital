@@ -1,121 +1,69 @@
 # Almacén Digital 3D
 
-Aplicación académica en TypeScript para simular un almacén 3D. Permite administrar estantes y productos dentro de una escena Three.js, validar si un producto cabe en un estante, colocarlo sin colisiones y persistir el estado en MySQL mediante una API PHP.
-
-## Contenido
-
-- [Características](#características)
-- [Tecnologías](#tecnologías)
-- [Estructura](#estructura)
-- [Requisitos](#requisitos)
-- [Instalación local](#instalación-local)
-- [Comandos](#comandos)
-- [Aplicativo móvil](#aplicativo-móvil)
-- [Base de datos](#base-de-datos)
-- [Docker](#docker)
-- [Uso de la aplicación](#uso-de-la-aplicación)
-- [Pruebas](#pruebas)
-- [Detalles técnicos](#detalles-técnicos)
-- [Entrega](#entrega)
+Aplicación web para representar un almacén en 3D, administrar estantes y ubicar productos mediante búsqueda y ruta guiada. El proyecto usa Three.js en frontend, API PHP y MySQL/MariaDB como persistencia.
 
 ## Características
 
-- Renderizado 3D de estantes, productos, luces, sombras, suelo y paredes.
-- Cálculo de volumen total, ocupado y libre por estante.
-- Colocación automática con validación de colisiones AABB.
-- Soporte para 6 orientaciones del producto antes de descartar espacio.
-- Búsqueda por SKU o nombre, con enfoque de cámara y resaltado visual.
-- Edición de estantes: mover, rotar, redimensionar y administrar pisos intermedios.
-- Gestión de productos: agregar, eliminar, mover, transferir y editar dimensiones.
-- Persistencia de estantes, productos, posiciones, rotaciones y configuración en MySQL.
-- Restauración automática de la escena al recargar.
+- Escena 3D del almacén con estantes, productos, paredes, puerta, etiquetas y rutas guiadas.
+- Búsqueda por SKU o nombre con enfoque automático al producto.
+- Ruta visual tipo mapa para llegar al producto dentro del almacén.
+- Configuración de entrada del almacén y pasillos transitables para rutas más realistas.
+- Administración web de estantes: mover, rotar, redimensionar y gestionar pisos.
+- Administración web de productos: crear, editar, mover, transferir y eliminar.
+- API compartida para web y app móvil.
+- Base normalizada: `productos` guarda ubicación y `producto_dimensiones` guarda medidas.
+- Catálogos normalizados: `categorias` y `marcas` se relacionan con `productos`.
+- Importación de catálogo desde `productos_sinTamano.sql` con tamaño estándar.
 
 ## Tecnologías
 
-- `TypeScript`
-- `Vite`
-- `Three.js`
-- `GSAP`
-- `Vitest`
-- `PHP 8`
-- `MySQL`
-- XAMPP, Laragon u otro entorno local con Apache/PHP y MySQL
+- TypeScript, Vite, Three.js, GSAP
+- PHP 8 con PDO
+- MySQL/MariaDB
+- XAMPP para desarrollo local
+- Docker para despliegue reproducible
 
 ## Estructura
 
 ```text
-api/                    API PHP, conexión PDO y migraciones
-api/migrations/         Migraciones automáticas de MySQL
-public/                 Assets públicos y warehouse-config.json
-scripts/                Scripts auxiliares del proyecto
-src/                    Código TypeScript de la aplicación 3D
-tests/                  Pruebas unitarias e integración
-dist/                   Build generado por Vite
+api/        API PHP, conexión, validación, logs y esquema de BD
+docs/       Documentación técnica del proyecto
+public/     Assets públicos y configuración base del almacén
+scripts/    SQL y utilidades operativas
+src/        Aplicación web 3D en TypeScript
+tests/      Pruebas unitarias e integración
+dist/       Build generado por Vite
 ```
 
-Archivos principales:
+Archivos clave:
 
-- [src/warehouse.ts](src/warehouse.ts): lógica central del almacén y llamadas a la API.
-- [src/warehouseScene.ts](src/warehouseScene.ts): montaje de escena y eventos.
-- [src/canPlace.ts](src/canPlace.ts): motor de colocación y colisiones.
-- [src/scene.ts](src/scene.ts): helpers de Three.js.
-- [src/ui-builder.ts](src/ui-builder.ts): construcción del HUD.
-- [api/database.php](api/database.php): conexión, validación, CORS, logs y migraciones.
-- [api/config.php](api/config.php): lectura y persistencia de estantes.
-- [api/productos.php](api/productos.php): lectura, guardado y eliminación de productos.
+- [api/database.php](api/database.php): conexión, CORS, validaciones y `db_ensure_schema()`.
+- [api/productos.php](api/productos.php): API de productos con `JOIN` a dimensiones.
+- [api/config.php](api/config.php): API de estantes, entrada del almacén y pasillos.
+- [scripts/importar_catalogo_dimensiones.sql](scripts/importar_catalogo_dimensiones.sql): importa catálogo y crea estructura actual.
+- [src/warehouseScene.ts](src/warehouseScene.ts): escena 3D, cámara y ruta guiada.
+- [src/warehouse.ts](src/warehouse.ts): persistencia y runtime de productos.
+- [src/canPlace.ts](src/canPlace.ts): colocación y colisiones.
 
-## Requisitos
+Más detalle:
 
-| Herramienta | Versión mínima |
-| --- | --- |
-| Node.js | 20 |
-| npm | incluido con Node.js |
-| PHP | 8 |
-| MySQL | 5.7+ |
-| Servidor local | XAMPP, Laragon u otro stack Apache/PHP |
+- [docs/arquitectura.md](docs/arquitectura.md)
+- [docs/base-de-datos.md](docs/base-de-datos.md)
+- [docs/fase-8-pulido-flujo-principal.md](docs/fase-8-pulido-flujo-principal.md)
+- [docs/docker.md](docs/docker.md)
+- [docs/xampp.md](docs/xampp.md)
 
-## Instalación local
+## Instalación Local Con XAMPP
 
-### 1. Ubicar el proyecto en el servidor local
-
-El backend PHP debe estar dentro de la carpeta pública del servidor:
+Ubica el proyecto en:
 
 ```text
-XAMPP:   C:\xampp\htdocs\almacenDigital\
-Laragon: C:\laragon\www\almacenDigital\
+C:\xampp\htdocs\almacenDigital
 ```
 
-Si usas Git:
+Activa Apache y MySQL desde XAMPP.
 
-```bash
-git clone https://github.com/jedi-cyber/almacenDigital.git
-cd C:\xampp\htdocs\almacenDigital
-```
-
-Si cambias el nombre de la carpeta, actualiza el `target` del proxy en [vite.config.ts](vite.config.ts).
-
-### 2. Iniciar Apache y MySQL
-
-Desde XAMPP, Laragon u otro panel local, inicia:
-
-- Apache, para servir la API PHP.
-- MySQL, para la base de datos.
-
-Con la carpeta `almacenDigital`, la API queda disponible en:
-
-```text
-http://127.0.0.1/almacenDigital/api/
-```
-
-### 3. Crear `.env`
-
-Copia la plantilla:
-
-```bash
-cp .env.example .env
-```
-
-Contenido esperado:
+Crea `.env` desde `.env.example`:
 
 ```env
 DB_HOST=localhost
@@ -123,137 +71,78 @@ DB_NAME=almacensekai
 DB_USER=root
 DB_PASSWORD=
 DB_CHARSET=utf8mb4
-ALLOWED_ORIGIN=http://localhost:5173
+ALLOWED_ORIGIN=http://localhost:5173,https://appassets.androidplatform.net
 ```
 
-Ajusta usuario, contraseña o nombre de base de datos si tu instalación lo necesita. El archivo `.env` está ignorado por Git.
-
-### 4. Instalar dependencias
+Instala dependencias y levanta Vite:
 
 ```bash
 npm install
-```
-
-### 5. Levantar la app
-
-```bash
 npm run dev
 ```
 
-Abre:
+Web:
 
 ```text
 http://localhost:5173/
 ```
 
-Vite redirige `/api/*` al backend PHP configurado en [vite.config.ts](vite.config.ts), por eso Apache y MySQL deben estar activos.
-
-## Comandos
-
-```bash
-npm run dev               # servidor de desarrollo con HMR
-npm run build             # build de producción en dist/
-npm run preview           # vista previa del build
-npm test                  # pruebas unitarias
-npm run test:integration  # pruebas de integración con API y MySQL
-npm run mobile:sync       # compila y copia dist/ al proyecto Android
-npm run mobile:watch      # observa cambios y sincroniza Android automáticamente
-```
-
-## Aplicativo móvil
-
-El proyecto Android está en:
+API:
 
 ```text
-C:\Users\HP\AndroidStudioProjects\Almacen3D2
+http://127.0.0.1/almacenDigital/api/
 ```
 
-La app móvil usa el frontend compilado dentro de:
+## Base De Datos
+
+La base por defecto es:
 
 ```text
-C:\Users\HP\AndroidStudioProjects\Almacen3D2\app\src\main\assets
+almacensekai
 ```
 
-Para actualizar Android con la última versión web:
+El proyecto ya no usa tabla `migrations`. La API verifica y crea el esquema necesario con `db_ensure_schema()`.
 
-```bash
-npm run mobile:sync
+Tablas principales:
+
+```text
+estantes
+almacen_config
+catalogo_productos
+categorias
+marcas
+productos
+producto_dimensiones
 ```
 
-Ese comando:
+`productos` ya no contiene `width`, `height`, `depth`. Ahora contiene `dimension_id`, `categoria_id` y `marca_id`. Las dimensiones se leen desde `producto_dimensiones`; categoría y marca se leen desde `categorias` y `marcas`.
 
-1. Ejecuta `npm run build`.
-2. Genera la versión nueva en `dist/`.
-3. Copia el contenido de `dist/` a `app/src/main/assets`.
-4. Limpia archivos viejos del build anterior para evitar assets con hash obsoletos.
-
-Para trabajar sin copiar manualmente cada vez:
-
-```bash
-npm run mobile:watch
-```
-
-Ese modo observa cambios en `src/` y `public/`, recompila y sincroniza los assets del proyecto Android automáticamente. Detenlo con `Ctrl+C`.
-
-El script responsable es [scripts/sync-android-assets.ps1](scripts/sync-android-assets.ps1).
-
-Si otro desarrollador no tiene Android Studio o no tiene el proyecto Android, no necesita ejecutar estos comandos. Puede trabajar normalmente con:
-
-```bash
-npm run dev
-npm run build
-```
-
-Cuando una PC tenga el proyecto Android en otra ruta, debe definir `ANDROID_PROJECT_PATH` antes de sincronizar:
+Para importar el catálogo con tamaño estándar:
 
 ```powershell
-$env:ANDROID_PROJECT_PATH="C:\Users\TU_USUARIO\AndroidStudioProjects\Almacen3D2"
-npm run mobile:sync
+C:\xampp\mysql\bin\mysql.exe -u root almacensekai -e "DROP TABLE IF EXISTS catalogo_productos;"
+C:\xampp\mysql\bin\mysql.exe -u root almacensekai -e "SOURCE C:/xampp/htdocs/almacenDigital/productos_sinTamano.sql;"
+C:\xampp\mysql\bin\mysql.exe -u root almacensekai -e "SOURCE C:/xampp/htdocs/almacenDigital/scripts/importar_catalogo_dimensiones.sql;"
 ```
 
-Si la ruta no existe, el script muestra un mensaje amable con instrucciones en vez de terminar con un error confuso.
-
-## Base de datos
-
-No hay un paso manual obligatorio para crear tablas. La primera petición a la API ejecuta automáticamente las migraciones pendientes de [api/migrations/](api/migrations/).
-
-Flujo interno:
-
-1. `db_connect()` crea la base `almacensekai` si no existe.
-2. `db_run_migrations()` crea la tabla `migrations` si no existe.
-3. Cada migración se aplica una sola vez y en orden cronológico.
-4. Cada migración corre dentro de una transacción.
-
-Migraciones incluidas:
-
-| Migración | Cambio |
-| --- | --- |
-| `202603270001_create_estantes_table` | Crea `estantes` |
-| `202603270002_create_productos_table` | Crea `productos` |
-| `202603270003_add_sections_to_estantes` | Agrega `sections` |
-| `202603280004_add_board_offsets_to_estantes` | Agrega `board_offsets` |
-| `202604080005_widen_id_columns` | Amplía IDs a `VARCHAR(100)` |
-| `202604270006_add_section_labels_to_estantes` | Agrega `section_labels` |
-| `202605020007_seed_default_warehouse` | Carga semilla inicial si las tablas están vacías |
-
-La semilla predeterminada agrega 5 estantes (`S01` a `S05`) y 4 productos demo (`DEMO-001` a `DEMO-004`) solo cuando las tablas están vacías.
-
-Puedes revisar la base desde phpMyAdmin:
+Tamaño estándar usado:
 
 ```text
-http://127.0.0.1/phpmyadmin
+0.24 x 0.18 x 0.22
 ```
 
-En Linux/macOS, si Apache necesita permisos para logs:
+La importación distribuye productos en 4 pisos por estante para que la vista 3D aproveche la altura del almacén.
 
-```bash
-mkdir -p api/logs
-chmod 775 api/logs
+Para confirmar:
+
+```sql
+SELECT COUNT(*) FROM catalogo_productos;
+SELECT COUNT(*) FROM productos;
+SELECT COUNT(*) FROM producto_dimensiones;
+SHOW TABLES LIKE 'migrations';
 ```
 
 ## Docker
-
-El proyecto incluye `Dockerfile` y `docker-compose.yml`.
 
 ```bash
 docker compose up --build -d
@@ -263,122 +152,96 @@ URLs:
 
 - App: `http://localhost:8080/`
 - API: `http://localhost:8080/api/config.php`
-- MySQL host: `localhost:3307`
+- Catálogos: `http://localhost:8080/api/catalogos.php`
+- MySQL: `localhost:3307`
 
-Comandos útiles:
+El contenedor MySQL importa automáticamente:
 
-```bash
-docker compose ps
-docker compose down
-docker compose down -v   # elimina también el volumen MySQL
-docker compose logs -f app
+```text
+productos_sinTamano.sql
+scripts/importar_catalogo_dimensiones.sql
 ```
 
-El contenedor de la app incluye un healthcheck contra `api/migrate.php`, por lo que además valida conexión a MySQL y ejecuta migraciones pendientes cuando el servicio arranca.
+El healthcheck usa `/api/config.php`; no usa migraciones.
 
-## Uso de la aplicación
-
-### Cámara
-
-| Acción | Resultado |
-| --- | --- |
-| Click izquierdo + arrastrar | Rotar vista |
-| Rueda del mouse | Acercar o alejar |
-| Click derecho + arrastrar | Desplazamiento lateral |
-| `W` / `A` / `S` / `D` | Mover cámara en el plano horizontal |
-
-### Estantes
-
-| Acción | Resultado |
-| --- | --- |
-| Click en **Editar estantes** | Activa modo edición |
-| Click sobre un estante | Selecciona el estante |
-| Click en espacio vacío | Deselecciona |
-| Arrastrar estante seleccionado | Mueve el estante |
-| `R` con estante seleccionado | Rota 90 grados |
-| **Agregar piso** | Inserta un piso intermedio |
-| **Eliminar piso** | Elimina el último piso añadido |
-| **Redimensionar** | Cambia dimensiones |
-
-Los cambios de posición, rotación, pisos y dimensiones se guardan automáticamente.
-
-### Productos
-
-| Acción | Resultado |
-| --- | --- |
-| Seleccionar estante | Muestra resumen volumétrico |
-| Completar SKU, nombre y dimensiones | Prepara el producto |
-| **Agregar producto** | Coloca, anima y persiste |
-| Buscar por SKU o nombre | Enfoca y resalta |
-| Click sobre producto | Abre panel de información |
-| **Eliminar** | Elimina de escena y BD |
-| **Mover** | Permite recolocar |
-| **Transferir** | Mueve a otro estante |
-| **Editar** | Modifica dimensiones |
-
-## Pruebas
-
-Pruebas unitarias:
+Para reiniciar la base Docker desde cero:
 
 ```bash
+docker compose down -v
+docker compose up --build -d
+```
+
+## Comandos
+
+```bash
+npm run dev
+npm run build
+npm run preview
 npm test
-```
-
-Pruebas de integración:
-
-```bash
 npm run test:integration
 ```
 
-Las pruebas de integración requieren Apache/PHP y MySQL activos. Si la API no está disponible, se omiten automáticamente.
+## Web Y Móvil
 
-Cobertura principal:
+Este repositorio contiene la web y la API. La app móvil está separada en:
 
-- Cálculo de volumen.
-- Colocación y colisión AABB.
-- Forma de respuestas `GET`.
-- Validación de `POST`.
-- Persistencia crear, listar y verificar.
-- Eliminación de productos.
-- Restauración del estado de estantes al finalizar.
+```text
+C:\Users\HP\AndroidStudioProjects\Almacen3D2
+```
 
-## Detalles técnicos
+Separación funcional:
 
-### Motor de colocación
+- Web: administra estantes, elimina productos, edita estructura del almacén y opera la escena completa.
+- Móvil: busca, crea y edita productos; no elimina productos ni edita estantes.
+- Ambos consumen la API PHP/MySQL.
 
-El motor en [src/canPlace.ts](src/canPlace.ts) usa compresión de coordenadas y validación AABB:
+La app móvil usa:
 
-1. Extrae coordenadas candidatas desde caras de productos ya colocados.
-2. Filtra combinaciones dentro de los límites del estante y del piso actual.
-3. Precalcula las cajas AABB existentes para evitar trabajo repetido.
-4. Prueba las 6 orientaciones ortogonales del producto.
-5. Devuelve la primera posición válida o informa que no hay espacio.
+```text
+http://192.168.18.189/almacenDigital/api/
+```
 
-### Configuración de estantes
+## Uso
 
-Los estantes se cargan desde MySQL. Si la base está vacía o incompleta, se usa [public/warehouse-config.json](public/warehouse-config.json) como fallback y luego se persiste.
+Productos:
 
-Campos principales:
+- Buscar por SKU o nombre.
+- Crear producto con SKU, nombre, categoría, estante y dimensiones.
+- Editar dimensiones y ubicación.
+- Abrir ruta guiada hacia el producto.
 
-| Campo | Descripción |
-| --- | --- |
-| `id` | Identificador único |
-| `label` | Nombre visible |
-| `width` / `height` / `depth` | Dimensiones |
-| `position` | Coordenada `{x, y, z}` |
-| `rotationY` | Rotación sobre eje Y |
-| `sections` | Número de secciones uniformes |
-| `boardOffsets` | Posiciones de pisos como fracción `[0..1]` |
+Estantes y ruta:
 
-### Seguridad y errores
+- Editar desde web.
+- Mover o rotar en modo edición.
+- Cambiar tamaño o pisos.
+- Guardar la entrada del almacén desde el panel de gestión.
+- Definir pasillos en JSON para que la ruta guiada se comporte más como un mapa interior.
 
-- Las credenciales se leen desde `.env`.
-- CORS usa `ALLOWED_ORIGIN`.
-- Las entradas se validan antes de persistir.
-- Las consultas SQL usan PDO con sentencias preparadas.
-- Los errores se registran en `api/logs/error.log`.
-- Las respuestas de error incluyen `code` para facilitar depuración desde el frontend.
+Cámara:
 
-## Entrega
+- Mouse para rotar y hacer zoom.
+- `W`, `A`, `S`, `D` para desplazamiento horizontal.
 
-La guía breve de evidencias está en [ENTREGA.md](ENTREGA.md).
+## Pruebas
+
+```bash
+npm test
+npm run test:integration
+```
+
+Las pruebas de integración requieren Apache y MySQL activos.
+
+## Respaldos
+
+Antes de cambios grandes:
+
+```powershell
+C:\xampp\mysql\bin\mysqldump.exe -u root almacensekai > backup.sql
+```
+
+En este proyecto se generó un respaldo antes de normalizar dimensiones:
+
+```text
+backup_antes_dimensiones_20260513_094243.sql
+```

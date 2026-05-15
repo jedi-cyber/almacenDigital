@@ -20,7 +20,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost/api/migrate.php >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost/api/config.php >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -39,6 +39,8 @@ services:
       MYSQL_ROOT_PASSWORD: root_password
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./productos_sinTamano.sql:/docker-entrypoint-initdb.d/01_catalogo_productos.sql:ro
+      - ./scripts/importar_catalogo_dimensiones.sql:/docker-entrypoint-initdb.d/02_importar_catalogo_dimensiones.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]

@@ -93,6 +93,58 @@ function buildDonutChart(used: number, total: number): string {
   </svg>`;
 }
 
+function countByCatalog(
+  products: ProductEntry[],
+  getValue: (entry: ProductEntry) => string | undefined
+): Array<{ name: string; count: number }> {
+  const counts = new Map<string, { name: string; count: number }>();
+  products.forEach((entry) => {
+    const name = getValue(entry)?.trim() || "Sin definir";
+    const key = name.toLowerCase();
+    const current = counts.get(key) ?? { name, count: 0 };
+    current.count += 1;
+    counts.set(key, current);
+  });
+  return [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "es"));
+}
+
+function getSectionBounds(shelf: Shelf): Array<{ section: number; label: string; min: number; max: number }> {
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const offsets = shelf.boardOffsets && shelf.boardOffsets.length > 0
+    ? shelf.boardOffsets.map((fraction) => fraction * shelf.height)
+    : Array.from({ length: sections - 1 }, (_, index) => ((index + 1) * shelf.height) / sections);
+  const bounds = [0, ...offsets, shelf.height].sort((a, b) => a - b);
+  return bounds.slice(0, -1).map((min, index) => ({
+    section: index + 1,
+    label: shelf.sectionLabels?.[index] || `Piso ${index + 1}`,
+    min,
+    max: bounds[index + 1]
+  }));
+}
+
+function getSectionForProduct(shelf: Shelf, product: ProductEntry): number {
+  const sections = getSectionBounds(shelf);
+  const y = product.localPosition.y;
+  return sections.find((section, index) =>
+    y >= section.min && (y < section.max || index === sections.length - 1)
+  )?.section ?? 1;
+}
+
+function isIncompleteProduct(entry: ProductEntry, shelves: Shelf[]): boolean {
+  const hasShelf = shelves.some((shelf) => shelf.id === entry.shelfId);
+  const hasValidDims = entry.item.width > 0 && entry.item.height > 0 && entry.item.depth > 0;
+  const hasValidPosition = Number.isFinite(entry.localPosition.x)
+    && Number.isFinite(entry.localPosition.y)
+    && Number.isFinite(entry.localPosition.z);
+  const hasCatalog = Boolean(entry.item.category?.trim()) && Boolean(entry.item.brand?.trim());
+  return !hasShelf || !hasValidDims || !hasValidPosition || !entry.item.name?.trim() || !hasCatalog;
+}
+
+function csvEscape(value: string | number | null | undefined): string {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 function buildReportHtml(data: ReportData): string {
   const { shelves, productsBySku, generatedAt } = data;
   const allProducts = [...productsBySku.values()];
@@ -132,6 +184,41 @@ function buildReportHtml(data: ReportData): string {
     const medals = ["🥇", "🥈", "🥉"];
     return `<div class="top-item"><span class="top-rank">${medals[i]}</span><span class="top-name">${e.item.name || e.item.sku}</span><span class="top-vol">${fmt(vol)} m³</span></div>`;
   }).join("");
+  const categoryStats = countByCatalog(allProducts, (entry) => entry.item.category);
+  const brandStats = countByCatalog(allProducts, (entry) => entry.item.brand);
+  const incompleteProducts = allProducts.filter((entry) => isIncompleteProduct(entry, shelves));
+  const productsCsv = [
+    ["SKU", "Nombre", "Categoria", "Marca", "Estante", "Piso", "Ancho", "Alto", "Profundidad", "Volumen", "X", "Y", "Z"],
+    ...allProducts.map((entry) => {
+      const shelf = shelves.find((item) => item.id === entry.shelfId);
+      const section = shelf ? getSectionForProduct(shelf, entry) : "";
+      const volume = entry.item.width * entry.item.height * entry.item.depth;
+      return [
+        entry.item.sku,
+        entry.item.name,
+        entry.item.category ?? "Sin categoria",
+        entry.item.brand ?? "Sin marca",
+        entry.shelfId,
+        section,
+        fmt(entry.item.width),
+        fmt(entry.item.height),
+        fmt(entry.item.depth),
+        fmt(volume),
+        fmt(entry.localPosition.x),
+        fmt(entry.localPosition.y),
+        fmt(entry.localPosition.z)
+      ];
+    })
+  ].map((row) => row.map(csvEscape).join(",")).join("\n");
+  const catalogRowsHtml = categoryStats.slice(0, 5).map((category) =>
+    `<div class="intel-row"><span class="intel-label">${category.name}</span><span class="intel-value">${category.count} prod.</span></div>`
+  ).join("");
+  const brandRowsHtml = brandStats.slice(0, 5).map((brand) =>
+    `<div class="intel-row"><span class="intel-label">${brand.name}</span><span class="intel-value">${brand.count} prod.</span></div>`
+  ).join("");
+  const incompleteRowsHtml = incompleteProducts.slice(0, 8).map((entry) =>
+    `<div class="intel-row"><span class="intel-label">${entry.item.sku}</span><span class="intel-value warn">${entry.item.name || "Sin nombre"} · ${entry.shelfId || "Sin estante"}</span></div>`
+  ).join("");
 
   const donutSvg = buildDonutChart(usedVolume, totalVolume);
   const barChartSvg = buildBarChart(shelves, allProducts);
@@ -162,9 +249,21 @@ function buildReportHtml(data: ReportData): string {
       : "";
 
     const densityM3 = shelfUsed > 0 ? (products.length / shelfVolume).toFixed(2) : "0";
+    const floorRows = getSectionBounds(shelf).map((section) => {
+      const floorProducts = products.filter((entry) => getSectionForProduct(shelf, entry) === section.section);
+      const floorVolume = shelf.width * shelf.depth * Math.max(0, section.max - section.min);
+      const floorUsed = floorProducts.reduce((sum, entry) => sum + entry.item.width * entry.item.height * entry.item.depth, 0);
+      const floorPct = floorVolume > 0 ? (floorUsed / floorVolume) * 100 : 0;
+      return `
+        <div class="floor-row">
+          <span>${section.label}</span>
+          <div class="floor-bar"><i style="width:${Math.min(floorPct, 100).toFixed(1)}%;background:${occColor(floorPct)}"></i></div>
+          <strong>${floorProducts.length} prod. · ${floorPct.toFixed(1)}%</strong>
+        </div>`;
+    }).join("");
 
     const rows = products.length === 0
-      ? `<tr><td colspan="5" class="empty-row">Sin productos registrados en este estante.</td></tr>`
+      ? `<tr><td colspan="6" class="empty-row">Sin productos registrados en este estante.</td></tr>`
       : products.map((e) => {
           const vol = e.item.width * e.item.height * e.item.depth;
           const pos = posLabel(e.localPosition.x, e.localPosition.y, e.localPosition.z, shelf);
@@ -172,6 +271,7 @@ function buildReportHtml(data: ReportData): string {
           <tr>
             <td><span class="sku-badge">${e.item.sku}</span></td>
             <td>${e.item.name || "—"}</td>
+            <td class="catalog-cell">${e.item.category || "Sin categoria"}<br><small>${e.item.brand || "Sin marca"}</small></td>
             <td class="dim-cell">${fmt(e.item.width)} × ${fmt(e.item.height)} × ${fmt(e.item.depth)}</td>
             <td><span class="vol-chip">${fmt(vol)} m³</span></td>
             <td class="pos-cell">${pos}</td>
@@ -197,9 +297,13 @@ function buildReportHtml(data: ReportData): string {
       </div>
       <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(occupancy,100).toFixed(1)}%;background:${oc}"></div></div>
       <p class="vol-label">${fmt(shelfUsed)} / ${fmt(shelfVolume)} m³ &nbsp;·&nbsp; libre: ${fmt(shelfVolume - shelfUsed)} m³</p>
+      <div class="floor-occupancy">
+        <strong>Ocupación por piso</strong>
+        ${floorRows}
+      </div>
       ${wasteAlert}
       <table class="product-table">
-        <thead><tr><th>SKU</th><th>NOMBRE</th><th>DIMENSIONES (M)</th><th>VOLUMEN</th><th>UBICACIÓN</th></tr></thead>
+        <thead><tr><th>SKU</th><th>NOMBRE</th><th>CAT./MARCA</th><th>DIMENSIONES (M)</th><th>VOLUMEN</th><th>UBICACIÓN</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -281,6 +385,14 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 .progress-bar{height:4px;background:var(--border);border-radius:999px;overflow:hidden;margin-bottom:.4rem}
 .progress-fill{height:100%;border-radius:999px}
 .vol-label{font-size:.72rem;color:var(--muted);text-align:right;margin-bottom:.75rem}
+.floor-occupancy{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:.7rem .8rem;margin-bottom:.85rem}
+.floor-occupancy>strong{display:block;color:var(--text);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;margin-bottom:.5rem}
+.floor-row{display:grid;grid-template-columns:90px 1fr 120px;gap:.6rem;align-items:center;padding:.25rem 0}
+.floor-row span{color:var(--muted);font-size:.72rem}
+.floor-row strong{color:var(--text);font-size:.72rem;text-align:right}
+.floor-bar{height:7px;background:var(--border);border-radius:999px;overflow:hidden}
+.floor-bar i{display:block;height:100%;border-radius:999px}
+@media(max-width:620px){.floor-row{grid-template-columns:1fr}.floor-row strong{text-align:left}}
 /* Alert */
 .shelf-alert{background:rgba(255,212,92,.08);border:1px solid rgba(255,212,92,.25);border-radius:8px;color:var(--warn);font-size:.78rem;padding:.55rem .9rem;margin-bottom:.9rem}
 /* Table */
@@ -292,18 +404,23 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 .sku-badge{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--accent);font-size:.7rem;padding:.15rem .45rem}
 .vol-chip{background:rgba(24,199,255,.1);color:var(--accent);border-radius:4px;font-size:.72rem;padding:.1rem .4rem}
 .dim-cell{color:var(--muted);font-size:.74rem}
+.catalog-cell{color:var(--text);font-size:.74rem}
+.catalog-cell small{color:var(--muted);font-size:.68rem}
 .pos-cell{color:var(--muted);font-size:.72rem}
 .empty-row{text-align:center;color:var(--muted);font-style:italic;padding:1.2rem!important}
 /* ─── Sección print ─── */
 .print-section{text-align:center;padding:2.5rem 0 1.5rem;border-top:1px solid var(--border);margin-top:2rem}
 .print-section p{font-size:.78rem;color:var(--muted);margin-bottom:1rem}
+.report-actions{display:flex;gap:.75rem;justify-content:center;flex-wrap:wrap}
 .btn-print{background:var(--accent);color:#000;border:none;border-radius:10px;padding:.7rem 2rem;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.04em;transition:opacity .2s}
+.btn-export{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:.7rem 2rem;font-size:.9rem;font-weight:700;cursor:pointer;letter-spacing:.04em;transition:opacity .2s}
 .btn-print:hover{opacity:.85}
+.btn-export:hover{opacity:.85}
 /* ─── Print media ─── */
 @media print{
   body{background:#fff;color:#000;padding:1rem}
   :root{--bg:#fff;--surface:#f9f9f9;--surface2:#f0f0f0;--border:#ccc;--text:#111;--muted:#555;--accent:#0077aa;--warn:#b06000;--danger:#cc0000;--success:#006633}
-  .tabs,.print-section,.btn-print{display:none!important}
+  .tabs,.print-section,.btn-print,.btn-export{display:none!important}
   .shelf-card{break-inside:avoid;page-break-inside:avoid}
 }
 </style>
@@ -342,12 +459,17 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
     <p class="kpi-value warn">${fmt(usedVolume)}</p>
     <p class="kpi-sub">${globalOccupancy.toFixed(1)}% ocupación global</p>
   </div>
-  <div class="kpi-card">
-    <p class="kpi-label">Espacio Libre</p>
-    <p class="kpi-value ok">${fmt(freeVolume)}</p>
-    <p class="kpi-sub">m³ disponibles</p>
-  </div>
-</div>
+	  <div class="kpi-card">
+	    <p class="kpi-label">Espacio Libre</p>
+	    <p class="kpi-value ok">${fmt(freeVolume)}</p>
+	    <p class="kpi-sub">m³ disponibles</p>
+	  </div>
+	  <div class="kpi-card">
+	    <p class="kpi-label">Datos Incompletos</p>
+	    <p class="kpi-value ${incompleteProducts.length > 0 ? "danger" : "ok"}">${incompleteProducts.length}</p>
+	    <p class="kpi-sub">productos por revisar</p>
+	  </div>
+	</div>
 
 <!-- Gráficos -->
 <div class="charts-grid">
@@ -381,9 +503,9 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
       <span class="intel-value ${s.pct > 70 ? "danger" : s.pct > 35 ? "warn" : "ok"}">${s.pct.toFixed(1)}% · ${fmt(s.used)}/${fmt(s.vol)} m³</span>
     </div>`).join("")}
   </div>
-  <div class="analysis-card">
-    <p class="analysis-title">Top 3 productos por volumen</p>
-    ${topProductsHtml || `<p style="color:var(--muted);font-size:.8rem">Sin productos registrados.</p>`}
+	  <div class="analysis-card">
+	    <p class="analysis-title">Top 3 productos por volumen</p>
+	    ${topProductsHtml || `<p style="color:var(--muted);font-size:.8rem">Sin productos registrados.</p>`}
     <div style="margin-top:1rem">
       <p class="analysis-title" style="margin-bottom:.6rem">Eficiencia de almacenaje</p>
       <div class="intel-row">
@@ -397,21 +519,50 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
       <div class="intel-row">
         <span class="intel-label">Capacidad no usada</span>
         <span class="intel-value warn">${fmt(freeVolume)} m³</span>
-      </div>
-    </div>
-  </div>
+	    </div>
+	  </div>
+	  <div class="analysis-card">
+	    <p class="analysis-title">Categorias</p>
+	    ${catalogRowsHtml || `<p style="color:var(--muted);font-size:.8rem">Sin categorias registradas.</p>`}
+	  </div>
+	  <div class="analysis-card">
+	    <p class="analysis-title">Marcas</p>
+	    ${brandRowsHtml || `<p style="color:var(--muted);font-size:.8rem">Sin marcas registradas.</p>`}
+	  </div>
+	  <div class="analysis-card">
+	    <p class="analysis-title">Productos con datos incompletos</p>
+	    ${incompleteRowsHtml || `<p style="color:var(--muted);font-size:.8rem">No se detectaron productos incompletos.</p>`}
+	  </div>
+	</div>
 </div>
 
 <!-- Detalle por estante -->
 <div class="tabs">${shelfTabs}</div>
 ${shelfCards}
 
-<!-- Botón imprimir -->
-<div class="print-section">
-  <p>Este reporte puede guardarse como PDF usando la función de impresión del navegador.</p>
-  <button class="btn-print" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
-</div>
-
-</body>
-</html>`;
+	<!-- Botón imprimir -->
+	<div class="print-section">
+	  <p>Exporta el detalle para auditoría o guarda una copia en PDF desde impresión.</p>
+	  <div class="report-actions">
+	    <button class="btn-print" onclick="window.print()">Imprimir / Guardar PDF</button>
+	    <button class="btn-export" onclick="downloadProductsCsv()">Exportar Excel CSV</button>
+	  </div>
+	</div>
+	
+	<script>
+	const productsCsv = ${JSON.stringify(productsCsv)};
+	function downloadProductsCsv() {
+	  const blob = new Blob([productsCsv], { type: "text/csv;charset=utf-8" });
+	  const url = URL.createObjectURL(blob);
+	  const link = document.createElement("a");
+	  link.href = url;
+	  link.download = "reporte-productos-almacen.csv";
+	  document.body.appendChild(link);
+	  link.click();
+	  link.remove();
+	  URL.revokeObjectURL(url);
+	}
+	</script>
+	</body>
+	</html>`;
 }

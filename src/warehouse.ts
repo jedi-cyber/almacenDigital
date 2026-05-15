@@ -33,11 +33,11 @@ export interface WarehouseRuntime {
   productEntryBySku: Map<string, ProductEntry>;
   /** Reverse raycasting map: "${geoKey}/${instanceIndex}" → sku. */
   instanceOwner: Map<string, string>;
-  /** Currently highlighted product, with its original color and GSAP proxy. */
+  /** Currently highlighted product, represented by a frame instead of changing its color. */
   highlighted: {
     sku: string;
-    originalColor: THREE.Color;
-    colorProxy: { r: number; g: number; b: number };
+    frame: THREE.LineSegments;
+    pulseProxy: { scale: number; opacity: number };
   } | null;
 }
 
@@ -58,6 +58,28 @@ function resolveApiBaseUrl(): string {
 }
 
 const API = resolveApiBaseUrl();
+
+export interface CatalogOption {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+export interface ProductCatalogs {
+  categories: CatalogOption[];
+  brands: CatalogOption[];
+}
+
+export type PlacedProductsLoadResult =
+  | {
+      ok: true;
+      products: Array<{ shelfId: string; item: Item; localPosition: { x: number; y: number; z: number } }>;
+    }
+  | {
+      ok: false;
+      products: [];
+      message: string;
+    };
 
 // ── API error reporting ───────────────────────────────────────────────────────
 
@@ -113,18 +135,39 @@ export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
   return defaultConfig;
 }
 
-export async function loadPlacedProducts(): Promise<
-  Array<{ shelfId: string; item: Item; localPosition: { x: number; y: number; z: number } }>
-> {
+export async function loadPlacedProducts(): Promise<PlacedProductsLoadResult> {
   try {
     const response = await fetch(`${API}/productos.php`);
-    if (!response.ok) return [];
+    if (!response.ok) {
+      throw new Error(`Respuesta HTTP ${response.status}`);
+    }
     const data = (await response.json()) as {
       products: Array<{ shelfId: string; item: Item; localPosition: { x: number; y: number; z: number } }>;
     };
-    return data.products ?? [];
-  } catch {
-    return [];
+    return { ok: true, products: data.products ?? [] };
+  } catch (error) {
+    reportApiError("cargar productos guardados", error);
+    const detail = error instanceof Error && error.message ? ` Detalle: ${error.message}` : "";
+    return {
+      ok: false,
+      products: [],
+      message: `No se pudo conectar con la API de productos.${detail}`
+    };
+  }
+}
+
+export async function loadProductCatalogs(): Promise<ProductCatalogs> {
+  try {
+    const response = await fetch(`${API}/catalogos.php`);
+    if (!response.ok) throw new Error(`No se pudieron cargar catalogos: ${response.status}`);
+    const data = (await response.json()) as ProductCatalogs;
+    return {
+      categories: Array.isArray(data.categories) ? data.categories : [],
+      brands: Array.isArray(data.brands) ? data.brands : []
+    };
+  } catch (error) {
+    reportApiError("cargar categorias y marcas", error);
+    return { categories: [], brands: [] };
   }
 }
 
@@ -194,7 +237,6 @@ export function restoreItem(
     runtime.instancedMeshByGeo, scene
   );
   const { instanceIndex, labelSprite } = addProductInstance(item, computeWorldPos(localPosition, item, shelfMesh), instancedMesh);
-  scene.add(labelSprite);
 
   const geoKey = makeProductGeoKey(item.width, item.height, item.depth);
   registerInstance(runtime, item.sku, geoKey, instanceIndex, shelfId, item, localPosition, labelSprite);
@@ -254,8 +296,6 @@ export function placeItem(
     worldPos,
     instancedMesh
   );
-
-  scene.add(labelSprite);
 
   animateInstanceAppearance(instancedMesh, instanceIndex);
 
@@ -358,55 +398,64 @@ export function removeItem(
 
 import gsap from "gsap";
 
-export function highlightProduct(runtime: WarehouseRuntime, sku: string): boolean {
+export function highlightProduct(runtime: WarehouseRuntime, sku: string, scene: THREE.Scene): boolean {
   clearHighlight(runtime);
 
   const entry = runtime.productEntryBySku.get(sku);
   if (!entry) return false;
 
   const instancedMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
-  if (!instancedMesh || !instancedMesh.instanceColor) return false;
+  if (!instancedMesh) return false;
 
-  const originalColor = new THREE.Color();
-  instancedMesh.getColorAt(entry.instanceIndex, originalColor);
+  instancedMesh.getMatrixAt(entry.instanceIndex, _highlightMatrix);
+  _highlightMatrix.premultiply(instancedMesh.matrixWorld);
+  _highlightPosition.setFromMatrixPosition(_highlightMatrix);
 
-  const cyan = new THREE.Color(0x00ffff);
-  const colorProxy = { r: originalColor.r, g: originalColor.g, b: originalColor.b };
+  const padding = 0.08;
+  const geometry = new THREE.EdgesGeometry(
+    new THREE.BoxGeometry(entry.item.width + padding, entry.item.height + padding, entry.item.depth + padding)
+  );
+  const material = new THREE.LineBasicMaterial({
+    color: 0xf8fafc,
+    transparent: true,
+    opacity: 0.95,
+    depthTest: false
+  });
+  const frame = new THREE.LineSegments(geometry, material);
+  frame.name = `__product_highlight_frame_${sku}`;
+  frame.position.copy(_highlightPosition);
+  frame.renderOrder = 20;
+  scene.add(frame);
 
-  gsap.to(colorProxy, {
-    r: cyan.r,
-    g: cyan.g,
-    b: cyan.b,
-    duration: 0.7,
+  const pulseProxy = { scale: 1, opacity: 0.95 };
+  gsap.to(pulseProxy, {
+    scale: 1.06,
+    opacity: 0.45,
+    duration: 0.85,
     repeat: -1,
     yoyo: true,
     ease: "sine.inOut",
     onUpdate: () => {
-      instancedMesh.setColorAt(entry.instanceIndex, _tmpColor.setRGB(colorProxy.r, colorProxy.g, colorProxy.b));
-      instancedMesh.instanceColor!.needsUpdate = true;
+      frame.scale.setScalar(pulseProxy.scale);
+      material.opacity = pulseProxy.opacity;
     }
   });
 
-  runtime.highlighted = { sku, originalColor, colorProxy };
+  runtime.highlighted = { sku, frame, pulseProxy };
   return true;
 }
 
-const _tmpColor = new THREE.Color();
+const _highlightMatrix = new THREE.Matrix4();
+const _highlightPosition = new THREE.Vector3();
 
 export function clearHighlight(runtime: WarehouseRuntime): void {
   if (!runtime.highlighted) return;
 
-  const { sku, originalColor, colorProxy } = runtime.highlighted;
-  gsap.killTweensOf(colorProxy);
-
-  const entry = runtime.productEntryBySku.get(sku);
-  if (entry) {
-    const instancedMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
-    if (instancedMesh && instancedMesh.instanceColor) {
-      instancedMesh.setColorAt(entry.instanceIndex, originalColor);
-      instancedMesh.instanceColor.needsUpdate = true;
-    }
-  }
+  const { frame, pulseProxy } = runtime.highlighted;
+  gsap.killTweensOf(pulseProxy);
+  frame.removeFromParent();
+  frame.geometry.dispose();
+  (frame.material as THREE.Material).dispose();
 
   runtime.highlighted = null;
 }
@@ -467,7 +516,6 @@ export function transferItem(
   );
   const worldPos = computeWorldPos(placement.localPosition, placement.item, targetShelfMesh);
   const { instanceIndex: newIndex, labelSprite: newLabel } = addProductInstance(placement.item, worldPos, newInstancedMesh);
-  scene.add(newLabel);
   animateInstanceAppearance(newInstancedMesh, newIndex);
 
   const newGeoKey = makeProductGeoKey(placement.item.width, placement.item.height, placement.item.depth);
@@ -496,7 +544,7 @@ export function updateItemDimensions(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
   sku: string,
-  newDimensions: { name: string; width: number; height: number; depth: number },
+  newDimensions: { name: string; category?: string; brand?: string; width: number; height: number; depth: number },
   shelfMesh: THREE.Mesh
 ): boolean {
   const entry = runtime.productEntryBySku.get(sku);
@@ -514,6 +562,8 @@ export function updateItemDimensions(
 
   // Update logical item
   if (newDimensions.name) placedItem.item.name = newDimensions.name;
+  placedItem.item.category = newDimensions.category ?? placedItem.item.category ?? "Sin categoria";
+  placedItem.item.brand = newDimensions.brand ?? placedItem.item.brand ?? "Sin marca";
   placedItem.item.width = newDimensions.width;
   placedItem.item.height = newDimensions.height;
   placedItem.item.depth = newDimensions.depth;
@@ -534,7 +584,6 @@ export function updateItemDimensions(
   );
   const worldPos = computeWorldPos(localPosition, placedItem.item, shelfMesh);
   const { instanceIndex: newIdx, labelSprite: newLabel } = addProductInstance(placedItem.item, worldPos, newInstancedMesh);
-  scene.add(newLabel);
 
   const newGeoKey = makeProductGeoKey(placedItem.item.width, placedItem.item.height, placedItem.item.depth);
   registerInstance(runtime, sku, newGeoKey, newIdx, shelfId, placedItem.item, localPosition, newLabel);
@@ -626,7 +675,8 @@ function persistPlacedItem(
       width: item.width,
       height: item.height,
       depth: item.depth,
-      category: item.category ?? "Sin categoría", // 🔥 agregado
+      category: item.category ?? "Sin categoria",
+      brand: item.brand ?? "Sin marca",
       localPosition: localPosition
     })
   }).catch((e) =>

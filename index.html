@@ -8,8 +8,20 @@
   </head>
   <body>
     <div id="loading-screen" role="status" aria-label="Iniciando almacen digital" aria-live="polite">
-      <div class="loading-spinner" aria-hidden="true"></div>
-      <p id="loading-status">Iniciando almacen digital...</p>
+      <div class="loading-card">
+        <div class="loading-mark" aria-hidden="true">
+          <div class="loading-spinner"></div>
+        </div>
+        <div class="loading-copy">
+          <strong>Almacen Digital 3D</strong>
+          <p id="loading-status">Iniciando almacen digital...</p>
+        </div>
+        <div class="loading-steps" aria-hidden="true">
+          <span>Almacen</span>
+          <span>Productos</span>
+          <span>Ruta 3D</span>
+        </div>
+      </div>
     </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>

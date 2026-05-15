@@ -404,6 +404,60 @@ export function updateShelfSectionPreview(shelfMesh: THREE.Mesh, section: number
   shelfMesh.add(preview);
 }
 
+export function highlightShelfSection(
+  shelfMesh: THREE.Mesh,
+  shelf: Shelf,
+  section: number,
+  color = 0x38bdf8
+): THREE.Mesh {
+  const existing = shelfMesh.getObjectByName("__located_section_highlight__");
+  if (existing) {
+    shelfMesh.remove(existing);
+    const oldMesh = existing as THREE.Mesh;
+    oldMesh.geometry.dispose();
+    (oldMesh.material as THREE.Material).dispose();
+  }
+
+  const geometry = shelfMesh.geometry as THREE.BoxGeometry;
+  const p = geometry.parameters;
+  const bounds = getSectionLocalBounds(shelf, section);
+  const sectionHeight = Math.max(0.04, bounds.max - bounds.min);
+  const highlight = new THREE.Mesh(
+    new THREE.BoxGeometry(p.width + 0.05, sectionHeight, p.depth + 0.05),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false
+    })
+  );
+
+  highlight.name = "__located_section_highlight__";
+  highlight.renderOrder = 3;
+  highlight.position.set(0, -p.height / 2 + bounds.min + sectionHeight / 2, 0);
+  shelfMesh.add(highlight);
+  return highlight;
+}
+
+export function clearShelfSectionHighlight(shelfMesh: THREE.Mesh): void {
+  const existing = shelfMesh.getObjectByName("__located_section_highlight__");
+  if (!existing) return;
+  shelfMesh.remove(existing);
+  const mesh = existing as THREE.Mesh;
+  mesh.geometry.dispose();
+  (mesh.material as THREE.Material).dispose();
+}
+
+function getSectionLocalBounds(shelf: Shelf, section: number): { min: number; max: number } {
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const offsets = shelf.boardOffsets && shelf.boardOffsets.length > 0
+    ? shelf.boardOffsets.map((fraction) => fraction * shelf.height)
+    : Array.from({ length: sections - 1 }, (_, index) => ((index + 1) * shelf.height) / sections);
+  const bounds = [0, ...offsets, shelf.height].sort((a, b) => a - b);
+  const index = Math.min(Math.max(Math.floor(section), 1), bounds.length - 1) - 1;
+  return { min: bounds[index], max: bounds[index + 1] };
+}
+
 /**
  * Convierte coordenadas locales del algoritmo a coordenadas globales de Three.js.
  */
@@ -644,35 +698,6 @@ export function skuToColor(sku: string): string {
   return `#${(hash & 0xffffff).toString(16).padStart(6, "0")}`;
 }
 
-function createSkuLabelSprite(sku: string, name: string): THREE.Sprite {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 80;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("No se pudo crear el contexto 2D para la etiqueta del producto.");
-
-  ctx.fillStyle = "rgba(20, 14, 8, 0.80)";
-  roundRect(ctx, 4, 4, 248, 72, 14);
-  ctx.fill();
-
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#fff8ec";
-  ctx.font = "700 24px Segoe UI";
-  ctx.textBaseline = "middle";
-  ctx.fillText(sku, 128, 26);
-
-  ctx.fillStyle = "#ffd580";
-  ctx.font = "400 18px Segoe UI";
-  ctx.fillText(name, 128, 54, 236);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false })
-  );
-  sprite.scale.set(0.8, 0.25, 1);
-  return sprite;
-}
-
 function createShelfLabelSprite(text: string, shelf: Shelf, color: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
   canvas.width = 512;
@@ -889,16 +914,28 @@ export function focusOnProductFromAisle(
   productPos: THREE.Vector3,
   shelfMesh: THREE.Mesh,
   camera: THREE.PerspectiveCamera,
-  controls: OrbitControls
+  controls: OrbitControls,
+  productSize?: { width: number; height: number; depth: number }
 ): void {
   const target = productPos.clone();
-  const viewDistance = 2.5;
-  const elevation = 1.0;
+  const shelfParams = (shelfMesh.geometry as THREE.BoxGeometry).parameters;
+  const localProductPos = shelfMesh.worldToLocal(productPos.clone());
+  const productDepth = productSize?.depth ?? 0.35;
+  const productHeight = productSize?.height ?? 0.25;
+  const productBackRatio = (localProductPos.z + shelfParams.depth / 2) / Math.max(0.01, shelfParams.depth);
+  const productHighRatio = (localProductPos.y + shelfParams.height / 2) / Math.max(0.01, shelfParams.height);
+  const viewDistance = Math.max(2.1, Math.min(4.2, shelfParams.depth * 1.15 + productDepth * 2.2));
+  const elevation = productHighRatio > 0.72 ? 0.42 : productHighRatio < 0.28 ? 0.82 : 0.62;
   const aisleNormal = getAisleFacingNormal(shelfMesh, camera.position);
+  const sideOffset = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), aisleNormal).normalize();
+  const backCompensation = (productBackRatio - 0.5) * Math.min(1.1, shelfParams.depth * 0.42);
   const camTarget = target
     .clone()
     .addScaledVector(aisleNormal, viewDistance)
-    .setY(target.y + elevation);
+    .addScaledVector(sideOffset, backCompensation)
+    .setY(Math.max(0.75, target.y + elevation + productHeight * 0.5));
+  const focusTarget = target.clone();
+  focusTarget.y += Math.min(0.25, productHeight * 0.35);
 
   gsap.killTweensOf(camera.position);
   gsap.killTweensOf(controls.target);
@@ -912,9 +949,9 @@ export function focusOnProductFromAisle(
   });
 
   gsap.to(controls.target, {
-    x: target.x,
-    y: target.y,
-    z: target.z,
+    x: focusTarget.x,
+    y: focusTarget.y,
+    z: focusTarget.z,
     duration: 1.5,
     ease: "power2.inOut",
     onUpdate: () => {
@@ -973,8 +1010,8 @@ export function getOrCreateInstancedMesh(
 
 /**
  * Appends a new instance at worldPos with the product's color.
- * Returns the assigned instanceIndex and a floating label sprite
- * (caller must add the sprite to the scene).
+ * Returns the assigned instanceIndex and an internal label sprite kept for
+ * compatibility with movement/removal flows. Product labels are not rendered.
  */
 export function addProductInstance(
   item: Item,
@@ -990,7 +1027,8 @@ export function addProductInstance(
   instancedMesh.instanceMatrix.needsUpdate = true;
   instancedMesh.instanceColor!.needsUpdate = true;
 
-  const labelSprite = createSkuLabelSprite(item.sku, item.name);
+  const labelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, opacity: 0 }));
+  labelSprite.visible = false;
   labelSprite.position.set(worldPos.x, worldPos.y + item.height / 2 + 0.12, worldPos.z);
 
   return { instanceIndex, labelSprite };

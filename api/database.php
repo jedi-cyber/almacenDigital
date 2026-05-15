@@ -118,67 +118,309 @@ function db_connect(bool $ensureDatabase = true): PDO
     return $pdo;
 }
 
-function db_run_migrations(PDO $pdo): array
+function db_ensure_schema(PDO $pdo): void
 {
     $pdo->exec(
-        "CREATE TABLE IF NOT EXISTS migrations (
-            id VARCHAR(191) NOT NULL PRIMARY KEY,
-            batch INT NOT NULL,
-            migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        "CREATE TABLE IF NOT EXISTS estantes (
+            id VARCHAR(100) NOT NULL PRIMARY KEY,
+            label VARCHAR(100) NOT NULL,
+            sections INT NOT NULL DEFAULT 1,
+            board_offsets TEXT DEFAULT NULL,
+            section_labels TEXT DEFAULT NULL,
+            width FLOAT NOT NULL,
+            height FLOAT NOT NULL,
+            depth FLOAT NOT NULL,
+            pos_x FLOAT NOT NULL DEFAULT 0,
+            pos_y FLOAT NOT NULL DEFAULT 0,
+            pos_z FLOAT NOT NULL DEFAULT 0,
+            rotation_y FLOAT NOT NULL DEFAULT 0
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
 
-    $lockName = "almacen_digital_migrations";
-    $lockAcquired = (int)$pdo->query("SELECT GET_LOCK('{$lockName}', 10)")->fetchColumn();
-    if ($lockAcquired !== 1) {
-        throw new RuntimeException("No se pudo obtener el bloqueo de migraciones.");
-    }
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS almacen_config (
+            config_key VARCHAR(100) NOT NULL PRIMARY KEY,
+            config_value JSON NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
 
-    try {
-        return db_run_migrations_locked($pdo);
-    } finally {
-        $pdo->query("SELECT RELEASE_LOCK('{$lockName}')");
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS producto_dimensiones (
+            id INT NOT NULL AUTO_INCREMENT,
+            producto_sku VARCHAR(100) NOT NULL,
+            width FLOAT NOT NULL,
+            height FLOAT NOT NULL,
+            depth FLOAT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_producto_dimensiones_sku (producto_sku)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS categorias (
+            id INT NOT NULL AUTO_INCREMENT,
+            nombre VARCHAR(150) NOT NULL,
+            slug VARCHAR(180) NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_categorias_nombre (nombre),
+            KEY idx_categorias_slug (slug)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS marcas (
+            id INT NOT NULL AUTO_INCREMENT,
+            nombre VARCHAR(150) NOT NULL,
+            slug VARCHAR(180) NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_marcas_nombre (nombre),
+            KEY idx_marcas_slug (slug)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS productos (
+            sku VARCHAR(100) NOT NULL PRIMARY KEY,
+            shelf_id VARCHAR(100) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            category VARCHAR(150) NOT NULL DEFAULT 'Sin categoria',
+            categoria_id INT NULL,
+            marca_id INT NULL,
+            dimension_id INT NULL,
+            local_x FLOAT NOT NULL DEFAULT 0,
+            local_y FLOAT NOT NULL DEFAULT 0,
+            local_z FLOAT NOT NULL DEFAULT 0,
+            INDEX idx_productos_categoria_id (categoria_id),
+            INDEX idx_productos_marca_id (marca_id),
+            INDEX idx_productos_dimension_id (dimension_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS producto_historial (
+            id BIGINT NOT NULL AUTO_INCREMENT,
+            producto_sku VARCHAR(100) NOT NULL,
+            accion ENUM('creado','editado','movido','eliminado') NOT NULL,
+            shelf_id_anterior VARCHAR(100) NULL,
+            shelf_id_nuevo VARCHAR(100) NULL,
+            local_x_anterior FLOAT NULL,
+            local_y_anterior FLOAT NULL,
+            local_z_anterior FLOAT NULL,
+            local_x_nuevo FLOAT NULL,
+            local_y_nuevo FLOAT NULL,
+            local_z_nuevo FLOAT NULL,
+            resumen VARCHAR(255) NOT NULL,
+            detalles JSON NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_producto_historial_sku (producto_sku),
+            KEY idx_producto_historial_accion (accion),
+            KEY idx_producto_historial_created_at (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    db_add_column_if_missing($pdo, "productos", "category", "VARCHAR(150) NOT NULL DEFAULT 'Sin categoria'");
+    db_add_column_if_missing($pdo, "productos", "categoria_id", "INT NULL");
+    db_add_column_if_missing($pdo, "productos", "marca_id", "INT NULL");
+    db_add_column_if_missing($pdo, "productos", "dimension_id", "INT NULL");
+    $pdo->exec("ALTER TABLE productos MODIFY COLUMN name VARCHAR(255) NOT NULL");
+    db_add_index_if_missing($pdo, "productos", "idx_productos_categoria_id", "categoria_id");
+    db_add_index_if_missing($pdo, "productos", "idx_productos_marca_id", "marca_id");
+    db_add_index_if_missing($pdo, "productos", "idx_productos_dimension_id", "dimension_id");
+    db_seed_product_catalogs($pdo);
+    db_migrate_inline_product_dimensions($pdo);
+    db_seed_default_shelves($pdo);
+}
+
+function db_add_column_if_missing(PDO $pdo, string $table, string $column, string $definition): void
+{
+    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$table}` LIKE :column");
+    $stmt->execute([":column" => $column]);
+    if (!$stmt->fetch(PDO::FETCH_ASSOC)) {
+        $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN `{$column}` {$definition}");
     }
 }
 
-function db_run_migrations_locked(PDO $pdo): array
+function db_drop_column_if_exists(PDO $pdo, string $table, string $column): void
 {
-    $migrationFiles = glob(__DIR__ . "/migrations/*.php") ?: [];
-    sort($migrationFiles);
+    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$table}` LIKE :column");
+    $stmt->execute([":column" => $column]);
+    if ($stmt->fetch(PDO::FETCH_ASSOC)) {
+        $pdo->exec("ALTER TABLE `{$table}` DROP COLUMN `{$column}`");
+    }
+}
 
-    $executed = $pdo->query("SELECT id FROM migrations")->fetchAll(PDO::FETCH_COLUMN) ?: [];
-    $executedMap = array_fill_keys($executed, true);
-    $batch = (int)$pdo->query("SELECT COALESCE(MAX(batch), 0) + 1 FROM migrations")->fetchColumn();
-    $applied = [];
+function db_add_index_if_missing(PDO $pdo, string $table, string $index, string $column): void
+{
+    $stmt = $pdo->prepare("SHOW INDEX FROM `{$table}` WHERE Key_name = :index_name");
+    $stmt->execute([":index_name" => $index]);
+    if (!$stmt->fetch(PDO::FETCH_ASSOC)) {
+        $pdo->exec("ALTER TABLE `{$table}` ADD INDEX `{$index}` (`{$column}`)");
+    }
+}
 
-    foreach ($migrationFiles as $migrationFile) {
-        $migration = require $migrationFile;
-        if (!is_array($migration) || !isset($migration["id"], $migration["up"]) || !is_callable($migration["up"])) {
-            throw new RuntimeException("Migracion invalida: " . basename($migrationFile));
-        }
+function db_migrate_inline_product_dimensions(PDO $pdo): void
+{
+    $hasWidth = db_column_exists($pdo, "productos", "width");
+    $hasHeight = db_column_exists($pdo, "productos", "height");
+    $hasDepth = db_column_exists($pdo, "productos", "depth");
 
-        $migrationId = (string)$migration["id"];
-        if (isset($executedMap[$migrationId])) {
-            continue;
-        }
-
-        $pdo->beginTransaction();
-        try {
-            $migration["up"]($pdo);
-            $stmt = $pdo->prepare("INSERT INTO migrations (id, batch) VALUES (:id, :batch)");
-            $stmt->execute([
-                ":id" => $migrationId,
-                ":batch" => $batch
-            ]);
-            $pdo->commit();
-            $applied[] = $migrationId;
-        } catch (Throwable $exception) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $exception;
-        }
+    if ($hasWidth && $hasHeight && $hasDepth) {
+        $pdo->exec(
+            "INSERT INTO producto_dimensiones (producto_sku, width, height, depth)
+             SELECT
+                sku,
+                COALESCE(NULLIF(width, 0), 0.24),
+                COALESCE(NULLIF(height, 0), 0.18),
+                COALESCE(NULLIF(depth, 0), 0.22)
+             FROM productos
+             ON DUPLICATE KEY UPDATE
+                width = VALUES(width),
+                height = VALUES(height),
+                depth = VALUES(depth)"
+        );
+    } else {
+        $pdo->exec(
+            "INSERT INTO producto_dimensiones (producto_sku, width, height, depth)
+             SELECT sku, 0.24, 0.18, 0.22
+             FROM productos
+             WHERE dimension_id IS NULL
+             ON DUPLICATE KEY UPDATE
+                producto_sku = VALUES(producto_sku)"
+        );
     }
 
-    return $applied;
+    $pdo->exec(
+        "UPDATE productos p
+         INNER JOIN producto_dimensiones d ON d.producto_sku = p.sku
+         SET p.dimension_id = d.id
+         WHERE p.dimension_id IS NULL"
+    );
+
+    db_drop_column_if_exists($pdo, "productos", "width");
+    db_drop_column_if_exists($pdo, "productos", "height");
+    db_drop_column_if_exists($pdo, "productos", "depth");
+}
+
+function db_column_exists(PDO $pdo, string $table, string $column): bool
+{
+    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$table}` LIKE :column");
+    $stmt->execute([":column" => $column]);
+    return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+function db_seed_product_catalogs(PDO $pdo): void
+{
+    db_insert_catalog_value($pdo, "categorias", "Sin categoria");
+    db_insert_catalog_value($pdo, "marcas", "Sin marca");
+
+    if (db_table_exists($pdo, "catalogo_productos")) {
+        $pdo->exec(
+            "INSERT INTO categorias (nombre, slug)
+             SELECT DISTINCT
+                TRIM(COALESCE(NULLIF(categoria, ''), 'Sin categoria')) AS nombre,
+                LOWER(REPLACE(TRIM(COALESCE(NULLIF(categoria, ''), 'Sin categoria')), ' ', '-')) AS slug
+             FROM catalogo_productos
+             ON DUPLICATE KEY UPDATE nombre = VALUES(nombre)"
+        );
+
+        $pdo->exec(
+            "INSERT INTO marcas (nombre, slug)
+             SELECT DISTINCT
+                TRIM(COALESCE(NULLIF(marca, ''), 'Sin marca')) AS nombre,
+                LOWER(REPLACE(TRIM(COALESCE(NULLIF(marca, ''), 'Sin marca')), ' ', '-')) AS slug
+             FROM catalogo_productos
+             ON DUPLICATE KEY UPDATE nombre = VALUES(nombre)"
+        );
+
+        $pdo->exec(
+            "UPDATE productos p
+             INNER JOIN catalogo_productos c ON c.sku = p.sku
+             INNER JOIN categorias cat ON cat.nombre = TRIM(COALESCE(NULLIF(c.categoria, ''), 'Sin categoria'))
+             LEFT JOIN marcas m ON m.nombre = TRIM(COALESCE(NULLIF(c.marca, ''), 'Sin marca'))
+             SET
+                p.categoria_id = cat.id,
+                p.marca_id = m.id,
+                p.category = cat.nombre
+             WHERE p.categoria_id IS NULL OR p.marca_id IS NULL"
+        );
+    }
+
+    $pdo->exec(
+        "UPDATE productos p
+         INNER JOIN categorias cat ON cat.nombre = p.category
+         SET p.categoria_id = cat.id
+         WHERE p.categoria_id IS NULL"
+    );
+
+    $pdo->exec(
+        "UPDATE productos p
+         INNER JOIN marcas m ON m.nombre = 'Sin marca'
+         SET p.marca_id = m.id
+         WHERE p.marca_id IS NULL"
+    );
+}
+
+function db_insert_catalog_value(PDO $pdo, string $table, string $name): int
+{
+    $slug = strtolower(str_replace(" ", "-", trim($name)));
+    $stmt = $pdo->prepare("INSERT INTO `{$table}` (nombre, slug) VALUES (:nombre, :slug) ON DUPLICATE KEY UPDATE nombre = VALUES(nombre)");
+    $stmt->execute([":nombre" => $name, ":slug" => $slug]);
+
+    $select = $pdo->prepare("SELECT id FROM `{$table}` WHERE nombre = :nombre");
+    $select->execute([":nombre" => $name]);
+    return (int)$select->fetchColumn();
+}
+
+function db_table_exists(PDO $pdo, string $table): bool
+{
+    $stmt = $pdo->prepare("SHOW TABLES LIKE :table_name");
+    $stmt->execute([":table_name" => $table]);
+    return (bool)$stmt->fetchColumn();
+}
+
+function db_seed_default_shelves(PDO $pdo): void
+{
+    $count = (int)$pdo->query("SELECT COUNT(*) FROM estantes")->fetchColumn();
+    if ($count > 0) {
+        return;
+    }
+
+    $shelves = [
+        ["S01", "Estante 1", 4, "[\"Piso 1\",\"Piso 2\",\"Piso 3\",\"Piso 4\"]", 5, 3, 1.5, 0.181258, 1.5, -1.35038, 0],
+        ["S02", "Estante 2", 4, "[\"Piso 1\",\"Piso 2\",\"Piso 3\",\"Piso 4\"]", 9.3, 3, 1.5, -2.33224, 1.5, 4.36018, 0],
+        ["S03", "Estante 3", 4, "[\"Piso 1\",\"Piso 2\",\"Piso 3\",\"Piso 4\"]", 10.5, 3, 1.5, -7.69119, 1.5, -1.79926, 1.5708],
+        ["S04", "Estante 4", 4, "[\"Piso 1\",\"Piso 2\",\"Piso 3\",\"Piso 4\"]", 5, 3, 1.5, -3.19786, 1.5, -4.67629, 1.5708],
+        ["S05", "Estante 5", 4, "[\"Piso 1\",\"Piso 2\",\"Piso 3\",\"Piso 4\"]", 3, 3, 1.5, -5.4773, 1.5, -7.88806, 0],
+    ];
+
+    $stmt = $pdo->prepare(
+        "INSERT INTO estantes
+            (id, label, sections, section_labels, width, height, depth, pos_x, pos_y, pos_z, rotation_y)
+         VALUES
+            (:id, :label, :sections, :section_labels, :width, :height, :depth, :pos_x, :pos_y, :pos_z, :rotation_y)"
+    );
+
+    foreach ($shelves as $shelf) {
+        $stmt->execute([
+            ":id" => $shelf[0],
+            ":label" => $shelf[1],
+            ":sections" => $shelf[2],
+            ":section_labels" => $shelf[3],
+            ":width" => $shelf[4],
+            ":height" => $shelf[5],
+            ":depth" => $shelf[6],
+            ":pos_x" => $shelf[7],
+            ":pos_y" => $shelf[8],
+            ":pos_z" => $shelf[9],
+            ":rotation_y" => $shelf[10],
+        ]);
+    }
 }

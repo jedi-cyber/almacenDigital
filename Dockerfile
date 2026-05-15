@@ -38,4 +38,4 @@ RUN mkdir -p /var/www/html/api/logs \
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost/api/migrate.php >/dev/null || exit 1
+    CMD curl -fsS http://localhost/api/config.php >/dev/null || exit 1

@@ -1,1149 +1,141 @@
 <?php
-/**
- * importar_productos.php
- * ─────────────────────────────────────────────────────────────────
- * Importa todos los productos del Excel al almacén digital.
- * Distribuye los productos por categoría en cada estante (S01-S05).
- *
- * USO:
- *   1. Copia este archivo a:  C:/laragon/www/almacenDigital/api/
- *   2. Abre en navegador:     http://localhost/almacenDigital/api/importar_productos.php
- *   3. Espera el resultado
- *   4. ¡Elimina el archivo después de usarlo! (seguridad)
- * ─────────────────────────────────────────────────────────────────
- */
+declare(strict_types=1);
 
 require_once __DIR__ . "/database.php";
 
 header("Content-Type: text/html; charset=utf-8");
 
-// ── Conexión ──────────────────────────────────────────────────────
+$standardWidth = 0.24;
+$standardHeight = 0.18;
+$standardDepth = 0.22;
+
 try {
     $pdo = db_connect(true);
-    db_run_migrations($pdo);
+    db_ensure_schema($pdo);
+
+    if (!db_table_exists($pdo, "catalogo_productos")) {
+        throw new RuntimeException("No existe catalogo_productos. Importa primero productos_sinTamano.sql.");
+    }
+
+    $pdo->beginTransaction();
+
+    $pdo->exec(
+        "INSERT INTO categorias (nombre, slug)
+         SELECT DISTINCT
+            TRIM(COALESCE(NULLIF(categoria, ''), 'Sin categoria')),
+            LOWER(REPLACE(TRIM(COALESCE(NULLIF(categoria, ''), 'Sin categoria')), ' ', '-'))
+         FROM catalogo_productos
+         ON DUPLICATE KEY UPDATE nombre = VALUES(nombre)"
+    );
+
+    $pdo->exec(
+        "INSERT INTO marcas (nombre, slug)
+         SELECT DISTINCT
+            TRIM(COALESCE(NULLIF(marca, ''), 'Sin marca')),
+            LOWER(REPLACE(TRIM(COALESCE(NULLIF(marca, ''), 'Sin marca')), ' ', '-'))
+         FROM catalogo_productos
+         ON DUPLICATE KEY UPDATE nombre = VALUES(nombre)"
+    );
+
+    $dimensionStmt = $pdo->prepare(
+        "INSERT INTO producto_dimensiones (producto_sku, width, height, depth)
+         SELECT sku, :width, :height, :depth
+         FROM catalogo_productos
+         ON DUPLICATE KEY UPDATE
+            width = VALUES(width),
+            height = VALUES(height),
+            depth = VALUES(depth)"
+    );
+    $dimensionStmt->execute([
+        ":width" => $standardWidth,
+        ":height" => $standardHeight,
+        ":depth" => $standardDepth,
+    ]);
+
+    $pdo->exec(
+        "INSERT INTO productos (sku, shelf_id, name, category, categoria_id, marca_id, dimension_id, local_x, local_y, local_z)
+         SELECT
+            ranked.sku,
+            CASE MOD(ranked.rn - 1, 5)
+                WHEN 0 THEN 'S01'
+                WHEN 1 THEN 'S02'
+                WHEN 2 THEN 'S03'
+                WHEN 3 THEN 'S04'
+                ELSE 'S05'
+            END AS shelf_id,
+            ranked.name,
+            cat.nombre AS category,
+            cat.id AS categoria_id,
+            marca.id AS marca_id,
+            dimensions.id AS dimension_id,
+            MOD(FLOOR((ranked.rn - 1) / 5), 11) * 0.26 AS local_x,
+            MOD(FLOOR(FLOOR((ranked.rn - 1) / 5) / 66), 4) * 0.75 AS local_y,
+            MOD(FLOOR(FLOOR((ranked.rn - 1) / 5) / 11), 6) * 0.24 AS local_z
+         FROM (
+            SELECT
+                catalogo_productos.*,
+                (@row_number := @row_number + 1) AS rn
+            FROM catalogo_productos
+            CROSS JOIN (SELECT @row_number := 0) vars
+            ORDER BY CAST(catalogo_productos.sku AS UNSIGNED), catalogo_productos.sku
+         ) ranked
+         INNER JOIN categorias cat ON cat.nombre = TRIM(COALESCE(NULLIF(ranked.categoria, ''), 'Sin categoria'))
+         INNER JOIN marcas marca ON marca.nombre = TRIM(COALESCE(NULLIF(ranked.marca, ''), 'Sin marca'))
+         INNER JOIN producto_dimensiones dimensions ON dimensions.producto_sku = ranked.sku
+         ON DUPLICATE KEY UPDATE
+            shelf_id = VALUES(shelf_id),
+            name = VALUES(name),
+            category = VALUES(category),
+            categoria_id = VALUES(categoria_id),
+            marca_id = VALUES(marca_id),
+            dimension_id = VALUES(dimension_id),
+            local_x = VALUES(local_x),
+            local_y = VALUES(local_y),
+            local_z = VALUES(local_z)"
+    );
+
+    $pdo->commit();
+
+    $counts = [
+        "catalogo" => (int)$pdo->query("SELECT COUNT(*) FROM catalogo_productos")->fetchColumn(),
+        "productos" => (int)$pdo->query("SELECT COUNT(*) FROM productos")->fetchColumn(),
+        "categorias" => (int)$pdo->query("SELECT COUNT(*) FROM categorias")->fetchColumn(),
+        "marcas" => (int)$pdo->query("SELECT COUNT(*) FROM marcas")->fetchColumn(),
+        "dimensiones" => (int)$pdo->query("SELECT COUNT(*) FROM producto_dimensiones")->fetchColumn(),
+    ];
 } catch (Throwable $e) {
-    die("<pre style='color:red'>❌ Error de BD: " . $e->getMessage() . "</pre>");
-}
-
-// ── Mapa categoría → estante ───────────────────────────────────────
-$shelfMap = [
-    // S01 — Consumibles de impresión (tintas, cartuchos, tóners)
-    'CONSUMIBLE PARA IMPRESORA'  => 'S01',
-    'CONSUMIBLE DE IMPRESIÓN'    => 'S01',
-    'CARTUCHOS'                  => 'S01',
-    'TONERS'                     => 'S01',
-    'TINTAS'                     => 'S01',
-    'TINTA'                      => 'S01',
-    'CONSUMIBLE DE GRABACIÓN'    => 'S01',
-    'CONSUMIBLE DE ALMACENAMIENTO' => 'S01',
-
-    // S02 — Componentes internos de PC
-    'COMPONENTE DE COMPUTADORA'  => 'S02',
-    'COMPONENTE DE ALMACENAMIENTO' => 'S02',
-    'COMPONENTE PARA SERVIDOR'   => 'S02',
-    'COMPONENTE DE SERVIDOR'     => 'S02',
-    'PROCESADOR'                 => 'S02',
-    'DISCO SOLIDO'               => 'S02',
-    'DISCOS DUROS'               => 'S02',
-    'TARJETA DE EXPANSIÓN'       => 'S02',
-    'TARJETA DE RED'             => 'S02',
-    'TARJETAS DE VIDEO'          => 'S02',
-    'FUENTE DE PODER'            => 'S02',
-    'COOLER'                     => 'S02',
-    'PASTA TERMICA'              => 'S02',
-
-    // S03 — Periféricos y audio
-    'PERIFÉRICO'                 => 'S03',
-    'AUDIO'                      => 'S03',
-    'AURICULAR'                  => 'S03',
-    'TECLADOS'                   => 'S03',
-    'MOUSE'                      => 'S03',
-    'MOUSES'                     => 'S03',
-    'PAD MOUSE'                  => 'S03',
-    'ACCESORIO DE AUDIO'         => 'S03',
-    'ACCESORIO GAMER'            => 'S03',
-
-    // S04 — Redes, cables, energía
-    'ACCESORIO DE RED'           => 'S04',
-    'CABLE Y ADAPTADOR'          => 'S04',
-    'CABLES'                     => 'S04',
-    'CABLE Y CONECTOR'           => 'S04',
-    'CONECTORES'                 => 'S04',
-    'ADAPTADOR'                  => 'S04',
-    'ADAPTADORES INALAMBRICO'    => 'S04',
-    'ACCESORIO ELÉCTRICO'        => 'S04',
-    'ACCESORIO DE ENERGÍA'       => 'S04',
-    'ROUTER'                     => 'S04',
-    'SWITCH'                     => 'S04',
-    'REDES'                      => 'S04',
-    'ACCESORIO DE VIDEOVIGILANCIA' => 'S04',
-    'VIDEOVIGILANCIA'            => 'S04',
-    'ESTABILIZADORES / UPS'      => 'S04',
-    'SUPRESOR DE PICOS'          => 'S04',
-
-    // S05 — Equipos, laptops, impresoras, software
-    'COMPUTADORA'                => 'S05',
-    'COMPUTADORAS'               => 'S05',
-    'LAPTOP'                     => 'S05',
-    'MONITORES'                  => 'S05',
-    'IMPRESORA'                  => 'S05',
-    'IMPRESORAS'                 => 'S05',
-    'ACCESORIO DE COMPUTADORA'   => 'S05',
-    'ACCESORIO PARA COMPUTADORA' => 'S05',
-    'ACCESORIO PARA LAPTOP'      => 'S05',
-    'SOFTWARE'                   => 'S05',
-    'HARDWARE'                   => 'S05',
-    'CARGADORES'                 => 'S05',
-    'CARGADOR'                   => 'S05',
-];
-
-// ── Dimensiones por estante (metros) ──────────────────────────────
-// Tamaños realistas según tipo de producto
-$itemDims = [
-    'S01' => ['w' => 0.12, 'h' => 0.08, 'd' => 0.10], // tintas, cartuchos
-    'S02' => ['w' => 0.15, 'h' => 0.05, 'd' => 0.20], // componentes
-    'S03' => ['w' => 0.20, 'h' => 0.12, 'd' => 0.15], // periféricos, audífonos
-    'S04' => ['w' => 0.10, 'h' => 0.05, 'd' => 0.15], // cables, adaptadores
-    'S05' => ['w' => 0.35, 'h' => 0.25, 'd' => 0.30], // laptops, impresoras
-];
-
-// Dimensiones reales de los estantes en la escena 3D
-$shelfDims = [
-    'S01' => ['w' => 2.0, 'h' => 2.0, 'd' => 0.8, 'sections' => 1],
-    'S02' => ['w' => 5.2, 'h' => 2.0, 'd' => 0.8, 'sections' => 4],
-    'S03' => ['w' => 5.6, 'h' => 2.1, 'd' => 0.8, 'sections' => 4],
-    'S04' => ['w' => 3.0, 'h' => 2.2, 'd' => 0.8, 'sections' => 3],
-    'S05' => ['w' => 2.2, 'h' => 2.0, 'd' => 0.8, 'sections' => 2],
-];
-
-// ── Productos del Excel (generados desde el archivo) ───────────────
-// Solo productos con stock > 0, SKU como string
-$productos = [
-    [':sku'=>'2626',':shelf_id'=>'S05',':name'=>'AC/DC ADAPTOR DC12V 2A',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2562',':shelf_id'=>'S04',':name'=>'ACCES POINT - D-LINK - DAP-1610 - AC1200 WIFI RANGE EXTENDER AMPLIFICADOR DE SEÑAL WI-FI DAP-1610',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1689',':shelf_id'=>'S05',':name'=>'ADAPTADOR AC/DC UNIVERSAL, ENTRADA 100-240VAC 50-60HZ, SALIDA 12VDC 2A - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2673',':shelf_id'=>'S04',':name'=>'ADAPTADOR ALDEEPO 4 PUERTOS HUB TIPO C (AD-KZ01)',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.12,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1980',':shelf_id'=>'S05',':name'=>'ADAPTADOR CON AUDIO DELUXE ER-9 HDMI A VGA, CONEXIÓN DE AUDIO AUXILIAR 3.5MM - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2283',':shelf_id'=>'S05',':name'=>'ADAPTADOR DE CARGA KEKO HOCHI CH-998 ENTRADA 100-240VAC, SALIDAS VARIAS E.G. 5V, 9V, 12V, 19V, 24V), KE-007',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1698',':shelf_id'=>'S05',':name'=>'ADAPTADOR DE CORRIENTE PARA LAPTOP SAMSUNG, SALIDA 14V 3A, CONEXIÓN DC AD-6019',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2478',':shelf_id'=>'S04',':name'=>'ADAPTADOR DE ENCHUFE OPALUX OP-603-A3 3 ESPIGAS A 2 PLANA, 10A 250V - OP-603-A3',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.24,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2339',':shelf_id'=>'S04',':name'=>'ADAPTADOR DE RED USB TP-LINK ARCHER T2UB NANO USB AC600, DOBLE BANDA, BLUETOOTH 4.2 - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.36,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2320',':shelf_id'=>'S04',':name'=>'ADAPTADOR DE RED USB TP-LINK TL-WN822N USB WIRELESS N300 (802.11B/G/N), 2.4GHZ',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2418',':shelf_id'=>'S04',':name'=>'ADAPTADOR DE RED USB XTECH XTC375 USB 3.0 A RJ-45 ETHERNET 10/100/1000 SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.6,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2024',':shelf_id'=>'S03',':name'=>'ADAPTADOR DE SONIDO USB 5.1/3D SOUND, PLUG AND PLAY, SIMULACIÓN SURROUND, COMPATIBLE CON PC/LAPTOP',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2531',':shelf_id'=>'S05',':name'=>'ADAPTADOR DE TIPO USB A USB C SEISA CX-UO1',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2506',':shelf_id'=>'S04',':name'=>'ADAPTADOR DE VIDEO DELUXE COMPUTER CABLE HDMI A VGA, CONVERSIÓN DIGITAL-ANALÓGICA, CONEXIÓN DE AUDIO, ALTA CALIDAD SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.72,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2078',':shelf_id'=>'S05',':name'=>'ADAPTADOR DE VIDEO HP 752661-004 DISPLAYPORT A VGA, RESOLUCIÓN 1920X1200 SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1760',':shelf_id'=>'S05',':name'=>'ADAPTADOR DE VIDEO JETION HDMI A USB 3.0 HEMBRA, CONVERSIÓN CAPTURA, HDCP',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1888',':shelf_id'=>'S04',':name'=>'ADAPTADOR DE VIDEO XTECH XTC-333 HDMI HEMBRA A HEMBRA (COUPLER), FULL HD - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.84,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2561',':shelf_id'=>'S05',':name'=>'ADAPTADOR DE WIFI USB - D-LINK N300 WI-FI 4 ( AN3U )',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2555',':shelf_id'=>'S05',':name'=>'ADAPTADOR MERCUSYS MA530 USB NANO BLUETOOTH 5.4 (0852500054)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2120',':shelf_id'=>'S05',':name'=>'ADAPTADOR XTC550 CON CONECTOR TIPO-C MACHO A VGA HEMBRA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2642',':shelf_id'=>'S05',':name'=>'ADELANTO DE PEDIDO ES :',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2519',':shelf_id'=>'S05',':name'=>'ADELANTO DE SERVICIO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2588',':shelf_id'=>'S05',':name'=>'ALCOHOL ISOPROPILICO BRISOL 99%',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2119',':shelf_id'=>'S05',':name'=>'ANTIVIRUS - ESET - NOD32 MULTIDEVICE - LICENCIA 10 DISPOSITIVOS, 1 AÑO - S11030111',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2611',':shelf_id'=>'S05',':name'=>'ANTIVIRUS - ESET NOD32 WINDOWS/MACOS 1 DISPOSITIVOS 1 AÑO (7754979000990)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2558',':shelf_id'=>'S05',':name'=>'ANTIVIRUS - ESET NOD32 WINDOWS/MACOS 1 DISPOSITIVOS 1 AÑO (7754979001102)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1754',':shelf_id'=>'S05',':name'=>'ANTIVIRUS - KASPERSKY - SMALL OFFICE SECURITY - LICENCIA PARA 10 PCS',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2632',':shelf_id'=>'S05',':name'=>'ANTIVIRUS LICENCIA ESET NOD32',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2635',':shelf_id'=>'S05',':name'=>'ASPIRADORA DE MANO XTECH XTA-810 50KRPM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2451',':shelf_id'=>'S03',':name'=>'AUDIFONO BEHRINGER HPM1100 ESTEREO PROFESIONAL MICROFONO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.22,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2053',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER CORSAIR HS35 CON MICROFONO, CONECTOR 3.5MM',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.44,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2062',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER HALION HA-H850 7.1 CON MICROFONO, ILUMINACION LED, CONECTOR USB',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.66,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2065',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER HALION S5 MICROFONO, ILUMINACION LED RGB, 3.5MM',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.88,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2234',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER HALION XI5 VIPER 7.1 VIRTUAL, MICROFONO, LED ROJO, USB/3.5MM',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.1,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1844',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER HP H100 MICROFONO, DIADEMA AJUSTABLE, CONECTOR 3.5 MM',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2104',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER KINGSTON HYPERX CLOUD MICROFONO , CONECTOR 3.5 MM, COLOR NEGRO/AZUL HX-HSCLS-BL/AM',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.54,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2250',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER KLIP XTREME KHS-620RD BLUETOOTH ON-EAR CON MICROFONO, LED, ROJO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.76,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2301',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER MSI DS501 CONTROL DE VOLUMEN, ALMOHADILLAS SUAVES, COLOR NEGRO/ROJO DS501 GAMING HEADSET',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.98,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1798',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER TEROS TE-8170N 7.1 CON MICROFONO, CONECTOR USB, LUCES RGB, COLOR NEGRO SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.2,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2051',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER XBLADE BANSHEE (GXB-HG8960) RGB MICROFONO, CONECTORES 3.5 MM Y USB GXB-HG8960',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.42,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2126',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER XBLADE SLAYER 7 LIGHT (GXB-HG8935) MICROFONO, CONECTORES 3.5 MM Y USB, COLOR NEGRO GXB-HG8935',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2253',':shelf_id'=>'S03',':name'=>'AUDIFONO GAMER XBLADE VENOM (GXB-HG8311) ESTEREO MICROFONO, COLOR NEGRO/ROJO GXB-HG8311',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.86,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1869',':shelf_id'=>'S03',':name'=>'AUDIFONO HALION HA-S16 HANDSFREE, MICROFONO, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.08,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2335',':shelf_id'=>'S03',':name'=>'AUDIFONO JBL TUNE 125TWS INALAMBRICO WIRELESS IN-EAR, BLUETOOTH, 32H BATERÍA.',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.3,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2221',':shelf_id'=>'S03',':name'=>'AUDIFONO KLIP XTREME KSH-270 CON MICROFONO PARA PC, DIADEMA AJUSTABLE, 3.5MM',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.52,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2031',':shelf_id'=>'S03',':name'=>'AUDIFONO MICROSOFT LIFECHAT LX-3000 CON MICROFONO, CONECTOR USB, DIADEMA AJUSTABLE, VOLUMEN EN LÍNEA, PARA OFICINA JUG-00013',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2040',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHB3075 BASS+ BLUETOOTH CON MICROFONO, REFUERZO DE GRAVES (BASS+), COLOR NEGRO SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.96,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2041',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHB3075 BASS+ COLOR BLANCO BLUETOOTH CON MICROFONO, REFUERZO DE GRAVES (BASS+) COLOR BLANCO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.18,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2123',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHB4405BK COLOR NEGRO BLUETOOTH ULTRALIGERO CON MICROFONO, SUPRAURAL',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.4,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2124',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHB4405WT BLUETOOTH ULTRALIGERO CON MICROFONO COLOR BLANCO, SUPRAURAL, COLOR BLANCO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.62,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1845',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHL3060 DJ SUPRAURAL, SENSIBILIDAD 106 DB, POTENCIA 1000 MW, PARLANTE 32MM, COLOR ROJO, PLEGABLE',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.84,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2407',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHL3075 BASS+ ALAMBRICO MICROFONO, REFUERZO DE GRAVES (BASS+), SUPRAURAL, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.06,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2042',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS SHL5005BK CON MICROFONO, EXTRA BASS, PLEGABLE, CONECTOR 3.5 MM, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.28,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2122',':shelf_id'=>'S03',':name'=>'AUDIFONO PHILIPS TAUT102BK INALAMBRICO WIRELESS BLUETOOTH 5.0, ESTUCHE DE CARGA, COLOR NEGRO SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2370',':shelf_id'=>'S03',':name'=>'AUDIFONO SKILL 46015-BK ESTÉREO INALAMBRICO CON RADIO FM, BANDA PARA CABEZA, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.22,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1727',':shelf_id'=>'S03',':name'=>'AUDIFONO TE-8037N MICROFONO, CONECTOR USB, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.44,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2466',':shelf_id'=>'S03',':name'=>'AUDIFONO TEROS TE-8033N INALAMBRICO, CANCELACIÓN RUIDO (ANC), BLUETOOTH, NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.66,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1803',':shelf_id'=>'S03',':name'=>'AUDIFONO TEROS TE-8039CS MICROFONO, CONECTOR USB, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.88,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1811',':shelf_id'=>'S03',':name'=>'AUDIFONO TEROS TE-8074N INALAMBRICO TRUE WIRELESS (TWS), BLUETOOTH, ESTUCHE DE CARGA, COLOR NEGRO.',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.1,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2492',':shelf_id'=>'S03',':name'=>'AUDIFONO TEROS TE-8078R BLUETOOTH, MICROFONO INTEGRADO NEGRO ROJO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2259',':shelf_id'=>'S03',':name'=>'AUDIFONO TEROS TE-8080 INALAMBRICO BLUETOOTH,CONTROLES INTEGRADOS,CONEXIÓN 3.5 MM,COLOR PLATA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.54,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1900',':shelf_id'=>'S03',':name'=>'AUDIO - AURICULARES - HALION - T50 - AURICULAR CON MICRÓFONO INTEGRADO, CONECTOR 3.5MM - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.76,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2543',':shelf_id'=>'S03',':name'=>'AURICULARES TIPO C EWTOO ET-A1999MC',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.98,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2586',':shelf_id'=>'S04',':name'=>'AV ADAPTER /SLIM STEREO SPLITTER CABLE-3.5MM MALE 4X3.5MM FEMALEE /1',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.96,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2182',':shelf_id'=>'S04',':name'=>'BALUN DE VIDEO FOLKSAFE FS-HDP4100C HD PASIVO, TRANSMITE SEÑAL DE CAMARA HD-TVI/CVI/AHD/CVBS POR CABLE UTP CAT5E/6 HASTA 440M(HD-CVI 720P)',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.08,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2178',':shelf_id'=>'S05',':name'=>'BATERÍA CANON BP-828 DE IONES DE LITIO PARA CAMARAS CANON COMPATIBLES SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1795',':shelf_id'=>'S05',':name'=>'BATERIA COMPATIBLE PARA LAPTOP HP (REEMPLAZA PB995A, PF723A, PM579A), 10.8V, 85800MAH - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1686',':shelf_id'=>'S05',':name'=>'BATERIA COMPATIBLE PARA LAPTOP HP (REEMPLAZA PB995A, PF723A, PM579A), 10.8V, 85800MAH - SIN P/N',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1691',':shelf_id'=>'S05',':name'=>'BATERIA COMPATIBLE PARA LAPTOP HP HSTNN-IB17, 10.8V, CÓDIGO INTERNO 908C3210F - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1687',':shelf_id'=>'S05',':name'=>'BATERIA COMPATIBLE PARA LAPTOP HP HSTNN-OB46, 10.8V, 55WH, - N/P NBP6A4BA2',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2565',':shelf_id'=>'S05',':name'=>'BATERÍA PARA LAPTOP HP OA04 4 CELDAS TYPE B',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2637',':shelf_id'=>'S05',':name'=>'BOCINA RECTANGULAR BLANCA 600W BATBLACK BT-1650',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1911',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T504120AL - NEGRO ORIGINAL EPSON, CAPACIDAD 120ML - T504120AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2263',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T504220AL CYAN ORIGINAL EPSON, CAPACIDAD 120ML T504220AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1914',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T504320AL MAGENTA ORIGINAL EPSON, CAPACIDAD 120ML T504320AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1915',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T504420AL AMARILLO ORIGINAL EPSON, CAPACIDAD 120ML T504420AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1930',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T544120AL NEGRO ORIGINAL EPSON, CAPACIDAD 125ML T544120AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1957',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T544220AL CYAN (CIAN) ORIGINAL EPSON, CAPACIDAD 70ML T544220AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2022',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T544320AL MAGENTA ORIGINAL EPSON, CAPACIDAD 70ML T544320AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1956',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T544420AL AMARILLO ORIGINAL EPSON, CAPACIDAD 70ML T544420AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2168',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T664120 NEGRO (BLACK) ORIGINAL EPSON T664120',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2174',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T664220 CYAN ORIGINAL EPSON, RENDIMIENTO EXTENDIDO T664220',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2191',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T664320 MAGENTA ORIGINAL EPSON T664320',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2184',':shelf_id'=>'S01',':name'=>'BOTELLA DE TINTA EPSON T664420 AMARILLO ORIGINAL EPSON, RENDIMIENTO EXTENDIDO T664420',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2279',':shelf_id'=>'S01',':name'=>'CABEZAL DE IMPRESION CANON KIT BH-10/CH-10 NEGRO(BH-10)+ COLOR (CH-10) PARA G2160/G3160/G5010/G6010',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2046',':shelf_id'=>'S01',':name'=>'CABEZAL DE IMPRESION HP 11 (C4813A) AMARILLO,HP DE INYECCION C4813A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2321',':shelf_id'=>'S01',':name'=>'CABEZAL DE IMPRESION HP KIT 3YP86AL COMBINADO NEGRO/TRICOLOR PARA SERIE ENVY/OFICJET 315/415/5820/5810 3YP86AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2592',':shelf_id'=>'S05',':name'=>'CABLE ADAPTADOR DE AUDIO (2 PLUGS MACHO A 1 JACK HEMBRA)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2678',':shelf_id'=>'S04',':name'=>'CABLE CARGADOR ROMAX TIPO USB A IPHONE CARGA RÁPIDA 1.2 M',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.2,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1746',':shelf_id'=>'S04',':name'=>'CABLE DE CARGA TEROS TE-70212W CABLE DE CARGA TIPO C A LIGHTNING, 3A (20W MÁXIMO)COLOR BLANCO Y PLATEADO SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2114',':shelf_id'=>'S04',':name'=>'CABLE DE CARGA X CABLE 360 CABLE DE CARGA MAGNÉTICO TIPO C, PARA DISPOSITIVOS CON PUERTO USB TIPO C SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.44,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2115',':shelf_id'=>'S04',':name'=>'CABLE DE CARGA Y DATOS - XIAOMI - CABLE USB TIPO C A TIPO C, LONGITUD 1 METRO, CARGA RÁPIDA HASTA 120W (6A), COLOR BLANCO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.56,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2303',':shelf_id'=>'S04',':name'=>'CABLE DE CARGA Y DATOS ROMAX TCD0476 CABLE USB TIPO C A TIPO C, LONGITUD 1 METRO,SOPORTE DE CARGA RÁPIDA HASTA 45W (6A), NEGRO SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.68,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2533',':shelf_id'=>'S05',':name'=>'CABLE DE DATOS Y CARGA V8 KAKUSIGA KSC-982 BLACK',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2392',':shelf_id'=>'S04',':name'=>'CABLE DE EXTENSIÓN USB 2.0 MACHO A HEMBRA, LONGITUD 1 METRO, COLOR NEGRO - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.8,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2306',':shelf_id'=>'S04',':name'=>'CABLE DE EXTENSIÓN XTECH XTC301 CABLE DE EXTENSIÓN USB 2.0 MACHO A HEMBRA, LONGITUD 1.8 METROS SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.92,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1724',':shelf_id'=>'S04',':name'=>'CABLE DE IMPRESORA CABLE IMPRESORA USB 2.0 TIPO A A TIPO B (USB-B), 28/24 AWG, COLOR NEGRO SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.04,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2653',':shelf_id'=>'S04',':name'=>'CABLE DE PODER 3X18 AWG TIPO EUROPEO 1.5MT CP-J52 (KKS-10A)',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.16,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2652',':shelf_id'=>'S04',':name'=>'CABLE DE PODER DE 1.5 METROS PARA PC 110V O 220V',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.28,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1692',':shelf_id'=>'S04',':name'=>'CABLE DE RED SATRA CABLE UTP CAT 6 LSZH CALIBRE 23 AWG VERDE X 1 METRO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.4,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1707',':shelf_id'=>'S04',':name'=>'CABLE DE RED SATRA UTP CAT 6 U/UTP LSZH 4P X 24 AWG, , ALTA VELOCIDAD ROJO X 1 METRO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.52,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2144',':shelf_id'=>'S04',':name'=>'CABLE DE RED SATRA UTP CAT5E, 1 METRO, CONECTORES RJ-45, COLOR AMARILLO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2171',':shelf_id'=>'S04',':name'=>'CABLE DE RED XTECH XTC-220 TP CATEGORÍA 5E X 1 METRO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.76,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2481',':shelf_id'=>'S04',':name'=>'CABLE DE RED XTECH XTC-226 BULK, CAT 6 GRIS, 24 AWG, GRIS X 1 METRO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1725',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO CABLE DISPLAYPORT A DISPLAYPORT (MACHO A MACHO), COLOR NEGRO, PARA MONITOR - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.12,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2067',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO GENERICO VGA MACHO A VGA MACHO, LONGITUD 1.5 METROS, COLOR AZUL, PRESENTACIÓN EN BOLSA SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.24,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2219',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO STARTECH ADAPTADOR DVI-A MACHO A VGA MACHO, LONGITUD 1 METRO, CONEXIÓN ANALÓGICA SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.36,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2052',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO STARTECH MHL (MICRO USB) MACHO A HDMI HEMBRA, LONGITUD 3 METROS, PARA CONEXIÓN DE DISPOSITIVOS MÓVILES SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.48,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1757',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO XTECH XTC-308 VGA DB15 MACHO/DB15 MACHO, LONGITUD 6 PIES (1.8M), SHIELDED XTC-308',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.6,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2482',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO XTECH XTC-383 HDMI A HDMI (TIPO A), LONGITUD APROX. 15.24 METROS (50 PIES), PARA LARGAS DISTANCIAS SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.72,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2380',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO XTECH XTC-425 CABLE HDMI A HDMI PLANO, LONGITUD 7.6 METROS',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.84,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2109',':shelf_id'=>'S04',':name'=>'CABLE DE VIDEO XTECH XTC325 DIVISOR (SPLITTER) VGA MACHO A 2 SALIDAS VGA HEMBRA, PARA MULTIPLICAR SEÑAL DE VIDEO SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.96,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2537',':shelf_id'=>'S04',':name'=>'CABLE HDMI A HDMI HDTV PREMIUM 2.0 1.8 METROS ROJO S/M N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.08,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2538',':shelf_id'=>'S04',':name'=>'CABLE HDMI A HDMI HDTV PREMIUM 2.0 3.0 METROS ROJO S/M N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.2,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2695',':shelf_id'=>'S04',':name'=>'CABLE TREBOL 1.5M GEN',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2107',':shelf_id'=>'S05',':name'=>'CADDY 9.5MM PARA BAHIA OPTICA - CONVERSION SATA, UNIDAD 2.5" - DU-8A5LH',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2197',':shelf_id'=>'S04',':name'=>'CAJA DE CONEXION SATRA 76JM SB-S2 ADOSABLE PARA CONEXIONES DE RED, DIMENSIONES 2.00X4.00X1.89, COLOR BLANCO SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.44,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2647',':shelf_id'=>'S05',':name'=>'CAJA GRANDE PRICIPAL GENWORK',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2612',':shelf_id'=>'S05',':name'=>'CAJA MONITOR 27" KENYA RAITO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2530',':shelf_id'=>'S05',':name'=>'CAJA O DE CUBO DE CARGA TIPO C REDD 45W RD-17PD',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2650',':shelf_id'=>'S05',':name'=>'CAJA RELLENO PARA CABLE DE TECLADO Y CABLE DE PODER GENWORK',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2649',':shelf_id'=>'S05',':name'=>'CAJA RELLENO PARA MOUSE GENWORK',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2613',':shelf_id'=>'S05',':name'=>'CAJA TECLADO KENYA EZENT TE-1035S',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2648',':shelf_id'=>'S05',':name'=>'CAJA TECLADO Y MOUSE GENWORK',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2192',':shelf_id'=>'S04',':name'=>'CAMARA DE SEGURIDAD HIKVISION BULLET ANALOGICA 720P (1 MP), LENTE VARIFOCAL 2.8-12MM, IR HASTA 40M, IP66, SALIDAS TVI/AHD/CVI/CVBS(DS-2CE16C0T-VFIR3F)',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.56,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2181',':shelf_id'=>'S04',':name'=>'CAMARA DE SEGURIDAD HIKVISION DS-2CE16D0T-VFIR3F BULLET ANALÓGICA TURBO HD 1080P (2 MP), LENTE VARIFOCAL 2.8-12MM, IR HASTA 40M, IP66',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.68,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2420',':shelf_id'=>'S04',':name'=>'CAMARA DE SEGURIDAD HIKVISION DS-2CE76K0T-LPFS DOME ANALÓGICA 5MP (APROX. 3 MEGAPÍXELES), LENTE 2.8MM, IR 20M, CON AUDIO SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.8,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2499',':shelf_id'=>'S04',':name'=>'CAMARA DE SEGURIDAD WI-FI INTERIOR TP-LINK TAPO TAPO C120 RESOLUCIÓN HD (VERIFICAR 1080P/2K), VISIÓN NOCTURNA, DETECCIÓN DE MOVIMIENTO/PERSONA, ALMACENAMIENTO EN NUBE',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.92,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2689',':shelf_id'=>'S05',':name'=>'CÁMARA INTELIGENTE TEROS TE-90601W, RESOLUCIÓN 3 MP, WI-FI, COLOR BLANCO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2233',':shelf_id'=>'S05',':name'=>'CAMARA WEB ARGOMTECH CAM20 (ARG-WC-9120BK) RESOLUCION HD 720P, CONECTOR USB 2.0, MICROFONO INTEGRADO, COMPATIBLE CON WINDOWS Y MAC OS, COLOR NEGRO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1866',':shelf_id'=>'S04',':name'=>'CANALETA SATRA 24X14 MM ADHESIVA (AUTOPEGABLE) PARA CABLEADO DE 24X14 MM, COLOR BLANCO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.04,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1929',':shelf_id'=>'S04',':name'=>'CANALETA SATRA ADHESIVA (AUTOPEGABLE) PARA CABLEADO DE 39X19 MM, COLOR BLANCO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.16,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1861',':shelf_id'=>'S04',':name'=>'CANALETA SATRA PARA CABLEADO DE 15X10 MM, COLOR BLANCO, POR METRO O PIEZA',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.28,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2406',':shelf_id'=>'S04',':name'=>'CANALETA WAILEC PARA CABLEADO DE 10X20 MM, LONGITUD 2 METROS, COLOR BLANCO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.4,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1723',':shelf_id'=>'S05',':name'=>'CARCASA EXTERNA GENERICO ET-H25 - PARA DISCO HDD/SSD 2.5", CONEXION USB 3.0, TIPO SATA, DISEÑO PORTATIL - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2310',':shelf_id'=>'S04',':name'=>'CARGADOR DE CELULAR XTECH XTC203 USB DE 3 PUERTOS, SALIDA TOTAL 5V/3.1A, ENTRADA 100-240V, COLOR BLANCO, PARA DISPOSITIVOS MÓVILES',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.52,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1785',':shelf_id'=>'S04',':name'=>'CARGADOR DE CELULAR- SAMSUNG - EP-TA845 - CARGADOR ORIGINAL SAMSUNG 45W SUPER FAST CHARGING 2.0 CON CABLE USB-C INCLUIDO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2006',':shelf_id'=>'S04',':name'=>'CARGADOR DE PILAS SONY BCG-34HH4GN CARGADOR DE PILAS RECARGABLES CON 4 PILAS AA SONY INCLUIDAS, CICLO DE CARGA INTELIGENTE',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.76,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2696',':shelf_id'=>'S05',':name'=>'CARGADOR HP H6Y88AABAC ADAPTADOR 45W ORIGINAL',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2101',':shelf_id'=>'S04',':name'=>'CARGADOR INALAMBRICO SONY CP-WP1/W CARGA INALAMBRICA BLUETOOTH, POTENCIA 5W, COMPATIBLE CON QI, COLOR BLANCO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1786',':shelf_id'=>'S04',':name'=>'CARGADOR ORIGINAL SAMSUNG 15W FAST CHARGE, ADAPTADOR USB-C (CUBO) SIN CABLE, PARA TELEFONOS SAMSUNG',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.12,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2503',':shelf_id'=>'S04',':name'=>'CARGADOR PARA CELULAR TIPO C DE ALTA POTENCIA (85W, 7.2A), CARGA RÁPIDA',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.24,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2514',':shelf_id'=>'S05',':name'=>'CARGADOR TIPO C ONCE 80W OC-838C - COLOR BLANCO, PRESENTACIÓN EN CAJA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1814',':shelf_id'=>'S01',':name'=>'CARTUCHO COMBINADO CIAN/MAGENTA/AMARILLO, 6 ML, PARA HP DESKJET D2600, F4200, D2300, ETC.',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2231',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINT010343943865',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2373',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - BROTHER - BTD60BK - NEGRO ORIGINAL, PARA DCP-T310, DCP-T510W, DCP-T710W - BTD60BK',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2316',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - CANON - GI-10Y -AMARILLO ORIGINAL CANON, PARA LA SERIE PIXMA G - GI-10Y',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1750',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - CANON - GI-16BK - NEGRO (BLACK) ORIGINAL CANON, PARA GX6010, GX7010 - GI-16BK',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2315',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - CANON - GIN, PARA SERIE PIXMA G - GI-10C-10C - CYAN ORIGINAL CANO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2582',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - CANON - GIN, PARA SERIE PIXMA G - GI-10M-10M - MAGRNTA-ORIGINAL CANO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2262',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - EPSON - BK DURABRITE PRO T8871 - NEGRO WF-C17590, IMPRESIÓN DURABLE - T8871',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2298',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - EPSON - T01C320 - MAGENTA ORIGINAL EPSON, PARA WORKFORCE PRO WF-C579R, RENDIMIENTO 5,000 PÁGINAS - T01C320',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1988',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - EPSON - T774120 - NEGRO ORIGINAL, CAPACIDAD 140ML - T774120',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2009',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - HP - 56 NEGRA (C6656AL) - NEGRO, CAPACIDAD 19.5ML - C6656AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1776',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - HP - 57 TRICOLOR (C6657AL) - CAPACIDAD 18ML',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2049',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - HP - 60 CC640WL - NEGRO ORIGINAL HP, CAPACIDAD ESTÁNDAR, PARA HP DESKJET ENVY - CC640WL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2130',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA - PREMIUM - 190C - CYAN (CIAN) PARA CANON, CAPACIDAD 70 ML, FORMULACIÓN COMPATIBLE, NÚMERO REFERENCIA 190C',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2082',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA BROTHER BT5001M MAGENTA ORIGINAL ,PARA DCP-T300, DCP-T500W, DCP-T700W BT5001M',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2083',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA BROTHER BT5001Y AMARILLO ORIGINAL BROTHER, PARA DCP-T300, DCP-T500W, DCP-T700W BT5001Y',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2081',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA BROTHER BT6001BK NEGRO (BLACK) ORIGINAL, PARA DCP-T300, DCP-T500W, DCP-T700W BT6001BK',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1783',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA CIAN, RENDIMIENTO APROX. 300 PÁGINAS, PARA HP DESKJET INK ADVANTAGE 4615, 4625, 5525, ETC.',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1736',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA DE COLOR (CIAN/MAGENTA/AMARILLO) PARA CANON PIXMA DE LA SERIE MG, MX, E',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1732',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA DE COLOR (CIAN/MAGENTA/AMARILLO) PARA CANON PIXMA DE LA SERIE TS, TR, G, ETC.',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2607',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA HP DESIGNJET 711 MAGENTA DE 29 ML/ CZ131A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1939',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA MAGENTA (F9J62A), 40 ML, PARA HP DESIGNJET T730, T830 MFP',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2393',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA MAGENTA PARA PLOTTER, 29 ML, PARA HP DESIGNJET SERIES T (EJ. T120, T520)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1789',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA MAGENTA, RENDIMIENTO APROX. 300 PÁGINAS, PARA HP DESKJET INK ADVANTAGE 4615, 4625, 5525,',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2058',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO ALTO RENDIMIENTO (XL), PARA HP DESKJET 5000, ENVY 6000 SERIES - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2584',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO CANON PG-140',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1884',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO DE ALTO RENDIMIENTO (XL), RENDIMIENTO 120 PÁGINAS, PARA HP DESKJET, ENVY SERIES',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1748',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO DE ALTO RENDIMIENTO PARA CANON MEGATANK G SERIES (EJ. G3110, G4110)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1742',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO ESTANDAR PARA CANON PIXMA DE LA SERIE MG, MX, E, IP, ETC.',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1848',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO, 69 ML DE RENDIMIENTO, PARA HP DESKJET Y OFFICEJET',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2198',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO, PARA BROTHER INKJET (EJ. MFC-J491DW, MFC-J695DW) -',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1779',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO, RENDIMIENTO 120 PÁGINAS, PARA HP DESKJET 1112, 2130, 3630, ETC.',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1801',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA NEGRO, RENDIMIENTO 120 PÁGINAS, PARA HP DESKJET, ENVY, OFFICEJET 4000, 5000 SERIES',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2534',':shelf_id'=>'S05',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 664 TRICOLOR (F6V28AL) - CARTUCHO COMBINADO CIAN/MAGENTA/AMARILLO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1940',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 728 NEGRO MATE (F9J64A) 69 ML, PARA PLOTTERES HP DESIGNJET - F9J64A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1857',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 728 NEGRO MATE (F9J68A) - NEGRO MATE, 300 ML, PARA PLOTTERES HP DESIGNJET - F9J68A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1728',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 95 TRICOLOR (C8766WL) -TRICOLO (CIAN/MAGENTA/AMARILLO) PARA HP OFFICEJET PRO SERIES',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2013',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 950XL (CN045AL) -NEGRO ALTO RENDIMIENTO (XL), APROX. 2300 PÁGINAS, PARA HP OFFICEJET PRO SERIES',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2010',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 951XL (CN048AL) - AMARILLO ALTO RENDIMIENTO (XL), APROX. 1500 PÁGINAS, PARA HP OFFICEJET PRO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2011',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 951XL CIAN (CN046AL) - CARTUCHO DE TINTA CIAN ALTO RENDIMIENTO (XL), APROX. 1500 PÁGINAS, PARA HP OFFICEJET PRO SERIES -',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2105',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL - HP - 98 NEGRO (C9364WL) - NEGRO, HP DESKJET/ENVY, RENDIMIENTO ESTANDAR - C9364WL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2583',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL CANON PG-40 NEGRO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2574',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA ORIGINAL HP 72 CIAN (C9398A) DE 69 ML',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2047',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA TRICOLOR ALTO RENDIMIENTO (62XL), PARA HP ENVY, DESKJET 5000 SERIES - C2P07AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2059',':shelf_id'=>'S01',':name'=>'CARTUCHO DE TINTA TRICOLOR ALTO RENDIMIENTO (XL), PARA HP DESKJET 5000, ENVY 6000 SERIES - SIN',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2570',':shelf_id'=>'S01',':name'=>'CARTUCHO HP 22 ( C9352AL ) TRICOLOR - D1320 / J3640 / 1250 +',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1849',':shelf_id'=>'S01',':name'=>'CARTUCHO TRICOLOR HP 122 CIAN/MAGENTA/AMARILLO (CH562HL)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1804',':shelf_id'=>'S01',':name'=>'CARTUCHO TRICOLOR HP 60 XL CIAN/MAGENTA/AMARILLO - CC644WL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1880',':shelf_id'=>'S01',':name'=>'CARTUCHO TRICOLOR HP 662 CIAN/MAGENTA/AMARILLO (CZ104AL)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2150',':shelf_id'=>'S02',':name'=>'CASE - ANTRYX - EXTREME NEO I (AC-XN01KW-500CP) - CASE CON FUENTE DE PODER DE 500W, CINTA LED INCLUIDA, VENTILACIÓN PARA SISTEMAS DE ESCRITORIO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2402',':shelf_id'=>'S02',':name'=>'CASE - DATAONE - APOLO 431 - GABINETE CON FUENTE DE PODER INCLUIDA, DISEÑO BÁSICO, PARA ENSAMBLAJE DE ESCRITORIO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2448',':shelf_id'=>'S02',':name'=>'CASE - DATAONE - NOVA T22 - GABINETE MICRO-ATX, FUENTE DE 230W INCLUIDA, PERFIL DELGADO, IDEAL PARA USO EN OFICINA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2328',':shelf_id'=>'S02',':name'=>'CASE - DATAONE - ORION 586 - GABINETE MICRO-ATX, FUENTE DE 600W INCLUIDA, COLOR NEGRO, COMPACTO Y CON POTENCIA INTEGRADA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2093',':shelf_id'=>'S02',':name'=>'CASE - DATAONE - STAR 506 - GABINETE MICRO-ATX, FUENTE DE 600W INCLUIDA, VENTILADOR, LECTOR DVD, COLOR NEGRO, TODO EN UNO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2387',':shelf_id'=>'S02',':name'=>'CASE - DATAONE - STAR 509 - GABINETE CON FUENTE DE 600W INCLUIDA, CONECTORES USB 2.0, COLOR NEGRO, ENSAMBLAJE BÁSICO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2248',':shelf_id'=>'S02',':name'=>'CASE - DEEP COOL - MATREXX 30 - GABINETE MICRO-ATX, PANEL LATERAL DE VIDRIO, SIN FUENTE INCLUIDA, COLOR NEGRO, DISEÑO MINIMALISTA - DP-MATX-MATREXX30',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1709',':shelf_id'=>'S02',':name'=>'CASE - SAMA - THANE 1 - GABINETE ATX CON DISEÑO VERTICAL, ESTRUCTURA ÚNICA, PARA SISTEMAS CON VENTILACIÓN OPTIMIZADA - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2477',':shelf_id'=>'S02',':name'=>'CASE - TEROS - TE-1035S - GABINETE MINI TOWER ATX, FUENTE DE 250W, PUERTOS USB 3.0 / 2.0, AUDIO HD, COLOR NEGRO, PERFIL COMPACTO - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2346',':shelf_id'=>'S02',':name'=>'CASE - THERMALTAKE - H350 TG (CA-1R9-00M1WN-00) - GABINETE SIN FUENTE, PANEL LATERAL DE VIDRIO, VENTILADOR RGB, ILUMINACIÓN LED, COLOR NEGRO, DISEÑO MODERNO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2106',':shelf_id'=>'S02',':name'=>'CASE - THERMALTAKE - V100 - GABINETE MID-TOWER ATX, SIN FUENTE, PUERTOS USB 3.0/2.0, AUDIO HD, COLOR NEGRO, DISEÑO BÁSICO - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2070',':shelf_id'=>'S02',':name'=>'CASE - THERMALTAKE - VERSA J22 TG RGB - CASE CON ILUMINACIÓN RGB, PANEL LATERAL DE VIDRIO TEMPLADO (TG), INCLUYE FUENTE DE PODER DE 600W, MODELO CA-3L5 - C',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2318',':shelf_id'=>'S02',':name'=>'CASE - THERMALTAKE - VERSA T25 TG - GABINETE CON PANEL LATERAL DE VIDRIO TEMPLADO (TG), INCLUYE FUENTE DE PODER DE 600W, COLOR NEGRO, MODELO CA-3R5 - CA-3R5-60',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2624',':shelf_id'=>'S05',':name'=>'CASE DE MEMORIA 2.5 HDD USB 3.30',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2220',':shelf_id'=>'S02',':name'=>'CASE GAMER - ANTEC - DF700 FLUX - CASE MID-TOWER ATX, PANEL FRONTAL MESH, ARGB, PANEL LATERAL VIDRIO TEMPLADO, USB 3.0,(0-761345-80070-9)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1886',':shelf_id'=>'S02',':name'=>'CASE GAMER - CORSAIR - CARBIDE SERIES SPEC-04 (CC-9011117-WW) - GABINETE MID-TOWER ATX, VENTILADOR FRONTAL ROJO, PANEL LATERAL ACRÍLICO, USB 3.0, AUDIO HD, COL',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2088',':shelf_id'=>'S02',':name'=>'CASE GAMER - COUGAR - MX330-G - GABINETE MEDIA TORRE ATX, PANEL LATERAL DE VIDRIO TEMPLADO, VENTILACIÓN OPTIMIZADA, SIN FUENTE DE PODER INCLUIDA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1868',':shelf_id'=>'S02',':name'=>'CASE GAMER - GAMEMAX - RAIDER X - GABINETE FULL-TOWER GAMER, GRAN ESPACIO INTERNO, VENTILACIÓN EXTREMA, ILUMINACIÓN RGB, PARA SISTEMAS DE ALTO RENDIMIENTO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1962',':shelf_id'=>'S02',':name'=>'CASE GAMER - THERMALTAKE - V200 - GABINETE MID-TOWER ATX, FUENTE DE 600W INCLUIDA, USB 3.0, AUDIO HD, VENTILADORES CON ILUMINACIÓN, COLOR NEGRO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.89,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1753',':shelf_id'=>'S05',':name'=>'CASE M.2 A USB 3.1, VELOCIDAD 10 GBPS, CONVERSIÓN DE SSD M.2 A UNIDAD EXTERNA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2244',':shelf_id'=>'S02',':name'=>'CASE MICRO-ATX - THERMALTAKE - VERSA H18 TG - GABINETE CON PANEL LATERAL DE VIDRIO TEMPLADO (TG), FORMATO MICRO-ATX, PANEL I/O CON USB 3.0 Y 2.0, CONECTORES DE',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.06,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2347',':shelf_id'=>'S02',':name'=>'CASE MID-TOWER - THERMALTAKE - VERSA T35 RGB - GABINETE MID-TOWER CON ILUMINACIÓN RGB, PANEL LATERAL DE VIDRIO TEMPLADO, SIN FUENTE DE PODER INCLUIDA, COLOR NE',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.23,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2249',':shelf_id'=>'S02',':name'=>'CASE MINI - ANTRYX - EXTREME XS-120 (AC-XS120K-350CP) - GABINETE MINI, FUENTE DE 350W INCLUIDA, COLOR NEGRO, PERFIL COMPACTO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.4,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2245',':shelf_id'=>'S02',':name'=>'CASE MINI TORRE - THERMALTAKE - VERSA H17 - GABINETE MICRO CASE (M-ATX), UN VENTILADOR 120MM PREINSTALADO, PANEL I/O: USB 3.0 X1, USB 2.0 X2, AUDIO HD, SOPORTA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.57,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2403',':shelf_id'=>'S02',':name'=>'CASE PROTOTIPO - KENYA- GABINETE PROTOTIPO CON VIDRIO LATERAL Y SERIGRAFÍA 3D, COMPATIBLE CON TECLADO KENYA, PARA MUESTRAS O PRESENTACIONES - SIN N',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2246',':shelf_id'=>'S02',':name'=>'CASE SLIM - ANTRYX - EXTREME SLIM XS-100 (AC-XS100BC) - GABINETE SLIM, FUENTE DE 300W, CONECTORES USB 3.0 Y USB 2.0, COLOR NEGRO, PERFIL DELGADO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.91,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1791',':shelf_id'=>'S02',':name'=>'CASE SLIM - CYBERTEL - EPICO SLIM CBX C1000 - GABINETE SLIM, FUENTE DE 350W, PERFIL DELGADO, IDEAL PARA OFICINA O SISTEMAS COMPACTOS',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.08,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2187',':shelf_id'=>'S02',':name'=>'CASE SLIM - OFISZU - S331 - GABINETE SLIM, FUENTE 300W 80 PLUS, PUERTOS USB 2.0 X2, USB 3.0 X2, TIPO C, LECTOR SD, PERFIL DELGADO COMPLETO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.25,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2498',':shelf_id'=>'S02',':name'=>'CASE SLIM - TEROS - TE-1032S - GABINETE SLIM, COLOR NEGRO, PERFIL DELGADO, PARA SISTEMAS OFIMÁTICOS O COMPACTOS - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.42,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2447',':shelf_id'=>'S02',':name'=>'CASE SLIM - TEROS - TE-1039S - GABINETE SLIM, FUENTE DE 250W, PUERTOS USB 3.0 / 2.0, AUDIO HD, LECTOR DVD, COLOR NEGRO, TODO EN UNO - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.59,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2365',':shelf_id'=>'S02',':name'=>'CASE SLIM - TEROS - TE-1041N - GABINETE SLIM, FUENTE 250W, FORMATO FLEX-ATX, PUERTOS USB 3.0 X2, AUDIO HD, DISEÑO COMPACTO - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.76,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2679',':shelf_id'=>'S05',':name'=>'CASE V100 THERMALTAKE (SIN MASCARA,SIN BOLSA,SIN TECNOPOR,ABOYADO) F1',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1928',':shelf_id'=>'S02',':name'=>'CASE VASTEC - GABINETE ATX COLOR NEGRO CON FUENTE DE PODER DE 300W INCLUIDA, MODELO 6823',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.93,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1855',':shelf_id'=>'S01',':name'=>'CINTA - EPSON - S015335 - (RIBBON) PARA MATRICIAL EPSON FX-190/LQ-2090, NEGRO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2472',':shelf_id'=>'S01',':name'=>'CINTA - EPSON - S015384 - (RIBBON) NEGRA EPSON DFX-9000',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1719',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - GENIUS - KM-100SE AI COPILOT - KIT TECLADO Y MOUSE ALÁMBRICO USB, FUNCIÓN AI COPILOT, TECLAS MULTIMEDIA, COLOR NEGRO, SERIGRAFÍA - 31310047601',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.2,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2353',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - GENIUS - KM-170 SP - COMBO TECLADO MULTIMEDIA Y MOUSE ÓPTICO CABLEADO USB, COLOR NEGRO, MODELO 31330006402',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.42,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2230',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - HP - SK-2061 - KIT TECLADO Y MOUSE INALAMBRICO, RECEPTOR USB 2.4GHZ, TECLAS SILENCIOSAS, BATERÍAS INCLUIDAS - SK-2061',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2278',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - LOGITECH - MK120 - COMBO TECLADO Y MOUSE CABLEADO USB, DISEÑO ESCRITORIO, ESPAÑOL, COLOR NEGRO, MODELO 920-004428',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.86,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2480',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - LOGITECH - MK120 - COMBO TECLADO Y MOUSE CABLEADO USB, DISEÑO ESCRITORIO, ESPAÑOL, COLOR NEGRO, MODELO 920-004428 - KENYA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.08,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2325',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - MICROSOFT - ERGONOMIC DESKTOP - COMBO TECLADO ERGONÓMICO Y MOUSE CABLEADO USB, DISEÑO DIVIDIDO Y CURVO, ESPAÑOL, COLOR NEGRO - RJU-00003',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.3,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2045',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - TEROS - TE-4031N - COMBO TECLADO Y MOUSE INALAMBRICO 2.4GHZ, RECEPTOR NANO USB, COLOR NEGRO, PARA OFICINA Y HOGAR',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.52,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1896',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - TEROS - TE-4061N - COMBO TECLADO MULTIMEDIA Y MOUSE INALAMBRICO 2.4GHZ, RECEPTOR NANO USB, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.74,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2189',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - TEROS - TE-4063N - KIT INCLUYE TECLADO , MOUSE, AUDIFONO Y MOUSE PAD, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.96,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1808',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - TEROS - TE-5012S - KIT TECLADO 105+8 TECLAS Y MOUSE 1000 DPI, USB, NEGRO, PARA OFICINA - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.18,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2247',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE - TEROS - TE4062N - COMBO TECLADO Y MOUSE CABLEADO USB, ACABADO ELEGANTE, MOUSE ÓPTICO, COLOR NEGRO, DISTRIBUCIÓN ESPAÑOL',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.4,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1991',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE GAMER - GENIUS - GX SCORPION KM-GX6 - TECLADO MECÁNICO K6 SE 19 KEY ANTI-GHOSTING RGB + MOUSE SCORPION-M500 3200 DPI RGB AMBIDIESTRO, BOTÓN AI COPILOT - KM-GX6',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.62,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2458',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE GAMER - GENIUS - GX SCORPION KM-GX6 AI COPILOT - COMBO GAMER RGB, TECLADO ANTI-GHOSTING 19 TECLAS, MOUSE 3200 DPI, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.84,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1774',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE GAMER - KENYA - GX SCORPION KM-GX6 AI COPILOT - KIT GAMER RGB, TECLADO MECÁNICO CON 19 TECLAS ANTIGHOSTING, MOUSE 3200 DPI, IA COPILOT, SERIGRAFÍA "KENYA" -',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.06,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'1720',':shelf_id'=>'S03',':name'=>'COMBO TECLADO Y MOUSE GENIUS - KM-8206S AI COPILOT - KIT INALAMBRICO, TECLADO MULTIMEDIA, MOUSE, FUNCIÓN AI COPILOT, USB RECEPTOR 2.4GHZ, COLOR NEGRO - 31310028501',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.28,':ly'=>0.0,':lz'=>0.17],
-    [':sku'=>'2345',':shelf_id'=>'S02',':name'=>'COMPONENTE DE ALMACENAMIENTO - MEMORIA INTEL OPTANE - INTEL - OPTANE M10 MEMPEK1J016GAH - MÓDULO DE MEMORIA INTEL OPTANE M.2 DE 16GB, 3.3V, ACELERA SISTEMAS CON DISCO DURO, NO ES SSD PRINCIPA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1959',':shelf_id'=>'S02',':name'=>'COMPONENTE DE SERVIDOR - KIT DE MEDIOS - HPE - 826708-B21 - KIT DE MEDIOS UNIVERSAL PARA DL380 GEN10, INCLUYE GUIAS Y RIELES - 826708-B21',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1841',':shelf_id'=>'S02',':name'=>'COMPONENTE DE SERVIDOR - MEMORIA RAM - MICRON - MT18KSF51272PDZ - 4GB DDR3-1333MHZ, DIMM REGISTERED ECC, PC3-10600, 2RX8, 1.35V, PARA SERVIDOR - MT18KSF51272PDZ',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1690',':shelf_id'=>'S02',':name'=>'COMPONENTE DE SERVIDOR - PLACA BASE PARA SERVIDOR - HP - PLACA DE SERVIDOR HP DEFECTUOSA, NÚMERO DE PARTE 591545-001, NÚMERO DE SERIE YJ19MR4467 - 591545-001',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1948',':shelf_id'=>'S02',':name'=>'COMPONENTE DE SERVIDOR - UNIDAD ÓPTICA - DELL - DVD CUS - LECTOR DE DVD SATA, FORMATO 9.5MM, PARA SERVIDOR DELL POWEREDGE R740 - DEC429-ABCV',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2169',':shelf_id'=>'S02',':name'=>'COMPONENTE PARA SERVIDOR - BAHÍA ÓPTICA - HP - 874577-B21 - BAHÍA DE CONVERSIÓN PARA UNIDAD ÓPTICA 9.5 MM, PARA SERVIDOR ML350 GEN10 - 874577-B21',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2274',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ALL-IN-ONE - HP - 200 G4 22 - 21.5" FHD, I5-10210U, 8GB DDR4, 1TB HDD, WINDOWS 10 PRO - 193L6LT#ABM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1898',':shelf_id'=>'S05',':name'=>'COMPUTADORA - COMPUTADORA DE ESCRITORIO - LENOVO - THINKCENTRE M920S (10SKS00P00) - INTEL CORE I7-8700, 8GB DDR4, 1TB HDD, WINDOWS 10 PRO, FACTOR PEQUEÑO - 10SKS00P00',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2349',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ESCRITORIO MINITORRE - HP - S01-PF100BLA - PC MINITORRE: INTEL CORE I3-10100 3.6GHZ, 4GB RAM, 1TB HDD, WINDOWS 10 HOME, INCLUYE MONITOR HP 22HY - 7WT19AA#ABM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2488',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ESCRITORIO SFF - HP - PRO SFF 400 G9 - PC COMPACTO SFF: PROCESADOR INTEL CORE I7-14700 (5.4GHZ), 16GB DDR5-4800 RAM, SISTEMA OPERATIVO INCLUIDO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1839',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ESCRITORIO SFF - LENOVO - THINKCENTRE M75S SFF - PC COMPACTO SFF: PROCESADOR AMD RYZEN 7 PRO 3700, 8GB RAM, 1TB HDD, WINDOWS 10 PRO - 11AWS04L00',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2440',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ESCRITORIO SFF - LENOVO - THINKCENTRE NEO 50S GEN4 - PC COMPACTO SFF: INTEL CORE I7-13700 (5.1GHZ), 16GB DDR4-3200 RAM, 512GB SSD, WINDOWS 11 PRO - 12JES1U000',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1802',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ESCRITORIO SFF - LENOVO - THINKCENTRE NEO 50S GEN5 - PC COMPACTO SFF: INTEL CORE I5-14400 (4.7GHZ), 16GB DDR5-4800 RAM, SISTEMA OPERATIVO INCLUIDO - 12XG0017LD',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2401',':shelf_id'=>'S05',':name'=>'COMPUTADORA - ESTACIÓN DE TRABAJO - LENOVO - THINKSTATION P360 - I7-12700K VPRO, 16GB DDR5, SSD 1TB, NVIDIA T1000 8GB, WINDOWS 11 PRO - 30FNS4NR00',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2074',':shelf_id'=>'S05',':name'=>'COMPUTADORA - MINI PC - GIGABYTE - GB-BX17-4770R - INTEL CORE I7-4770R, INTEGRA GRÁFICOS IRIS PRO 5200, DDR3L, M.2 + 2.5", DUAL LAN, PARA ENTORNOS COMPACTOS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1906',':shelf_id'=>'S05',':name'=>'COMPUTADORA DE ESCRITORIO MINITORRE - HP - M01-F1004BLA - PC MINITORRE: INTEL CORE I5-10400 (4.3GHZ), 4GB RAM, 1TB HDD, WINDOWS 10 HOME, INCLUYE MONITOR HP V22 - 2A5V3AA#ABM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2546',':shelf_id'=>'S05',':name'=>'COMPUTADORA HP PRODESK 4 SFF G1I-CU7-32GB-1TB-V4GB-F INGRAM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1827',':shelf_id'=>'S05',':name'=>'CONCENTRADOR DE VOYAGE MICROSOFT USB-C CON PUERTOS RJ45, HDMI, USB-A, VGA, COMPACTO - 1941',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2590',':shelf_id'=>'S04',':name'=>'CONCENTRADOR O HUB USB 3.0 XTECH XTC390 DE 4 PUERTOS',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.36,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2535',':shelf_id'=>'S04',':name'=>'CONECTO PLUG RJ-45 CAT 5E SATRA - X 1 UNIDAD PARA ETHERNET',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.48,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2002',':shelf_id'=>'S04',':name'=>'CONECTOR JACK - SATRA - CATEGORIA 6 PARA CABLE DE 22 A 26 AWG, COLOR BLANCO, PARA TERMINACIÓN DE CABLEADO ESTRUCTURADO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.6,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1859',':shelf_id'=>'S04',':name'=>'CONECTOR MODULAR - SATRA - RJ45 CAT 5E, WIRING STANDARD T568A/B, COLOR ROJO/BLANCO - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.72,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2238',':shelf_id'=>'S04',':name'=>'CONECTORES RJ45 - SATRA - 1101040001 - CAT 5E, CAJA CON 100 UNIDADES, ANSI/TIA 568-C.2',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.84,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1893',':shelf_id'=>'S01',':name'=>'CONSUMIBLE DE ALMACENAMIENTO - CD GRABABLE - PRINCO - DISCO ÓPTICO CD-R CAPACIDAD 700MB (80 MINUTOS), GRABABLE UNA VEZ, PARA ALMACENAMIENTO DE DATOS Y MÚSICA',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1693',':shelf_id'=>'S01',':name'=>'CONSUMIBLE DE GRABACIÓN - DISCO DVD-R - SONY - DMR47FB - DISCO DVD-R 4.7 GB, VELOCIDAD 1X-16X, PIEZA INDIVIDUAL - 50DMR47FB',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2166',':shelf_id'=>'S03',':name'=>'CONTROLADOR DE JUEGO - K21 - CONTROLADOR MÓVIL (GAME CONTROLLER) PARA IPHONE Y ANDROID, COMPATIBLE CON PANTALLAS DE 4.7 A 6.5 PULGADAS, CONEXIÓN BLUETOOTH',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2337',':shelf_id'=>'S05',':name'=>'CONVERSOR SMART TV - AMAZON - FIRE TV STICK - DISPOSITIVO DE TRANSMISIÓN DE MEDIOS, CONECTIVIDAD FULL HD, 8GB ALMACENAMIENTO, 1GB RAM, CONTROL DE VOZ ALEXA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2151',':shelf_id'=>'S02',':name'=>'COOLER DE CPU - DEEPCOOL - GAMMAXX 400S (DP-MCH4-GMX400S) - DISIPADOR DE AIRE PARA PROCESADOR, COMPATIBLE CON SOCKETS AMD E INTEL, 4 HEATPIPES DE COBRE, VENTILADOR',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2585',':shelf_id'=>'S02',':name'=>'COOLER PARA CPU TEROS TE-7050N, ARGB, 12CM',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2421',':shelf_id'=>'S05',':name'=>'COOLER PARA LAPTOP - TEROS - TE-7132N - HASTA 15.6 PULGADAS, 1 VENTILADOR DE 11 CM, SUPERFICIE DE ALUMINIO Y SILICONA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2366',':shelf_id'=>'S05',':name'=>'COOLER PARA LAPTOP - XTECH - XTA150 - DE 14 PULGADAS, VENTILADOR DE 160MM, CABLE USB CON 2 PUERTOS USB EXTRA, COLOR NEGRO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2381',':shelf_id'=>'S05',':name'=>'COOLER PARA PLAYSTATION - DOBE - TP4-831 - PARA PLAYSTATION 4 PRO, INCORPORA 5 VENTILADORES, CONEXIÓN USB',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2593',':shelf_id'=>'S05',':name'=>'DELUXE COMPUTER CABLE / CABLE O ADAPTADOR HDMI A VGA EN PERÚ',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2405',':shelf_id'=>'S04',':name'=>'DETECTOR DE TEMPERATURA - HAGROY - HG-DT503 - PIRÓMETRO O TERMÓMETRO INFRARROJO PARA MEDICIÓN DE TEMPERATURA SIN CONTACTO, PUNTERO LÁSER',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.96,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1694',':shelf_id'=>'S01',':name'=>'DISCO CD-R - IMATION - DISCO CD-R 700MB 80 MINUTOS, VELOCIDAD 52X, PIEZA INDIVIDUAL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2375',':shelf_id'=>'S02',':name'=>'DISCO DURO - SEAGATE - BARRACUDA ST1000DM014 - DISCO DE 1TB, 7200 RPM, 256MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 3.5", PARA DESKTOP',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2441',':shelf_id'=>'S02',':name'=>'DISCO DURO - SEAGATE - BARRACUDA ST3000DM007 - DISCO DE 3TB, 5400 RPM, 256MB CACHE (APROX.), INTERFAZ SATA 6GB/S, FORMATO 3.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2016',':shelf_id'=>'S02',':name'=>'DISCO DURO - SEAGATE - ST1000DM003 - DISCO DE 1TB, 5400 RPM, 64MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 3.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2374',':shelf_id'=>'S02',':name'=>'DISCO DURO - SEAGATE - ST1000LM035 - DISCO DE 1TB, 5400 RPM, 128MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 2.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2139',':shelf_id'=>'S02',':name'=>'DISCO DURO - SEAGATE - ST500VT000 - DISCO DE 500GB, 5400 RPM, 32MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 2.5" (7MM DE ESPESOR)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2076',':shelf_id'=>'S02',':name'=>'DISCO DURO - SEAGATE - ST500VT001 - DISCO DE 500GB, 5400RPM, 32MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 2.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2509',':shelf_id'=>'S02',':name'=>'DISCO DURO - TOSHIBA - MQ01ABD075 - HDD 750GB, 2.5", SATA, 5400 RPM, 8MB CACHE, FACTOR DE FORMA 9.5MM - HDKBB97T3A02 T AAT AA21/AX0A4M',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2299',':shelf_id'=>'S02',':name'=>'DISCO DURO - TOSHIBA - MQ04ABF100 - DISCO DE 1TB, 5400 RPM, 128MB CACHE, INTERFAZ SATA III (6GB/S), FORMATO 2.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2465',':shelf_id'=>'S02',':name'=>'DISCO DURO - TOSHIBA -- HDD 1TB 7200RPM 3.5", INTERFAZ SATA 6GB/S, CACHÉ 64MB - SHD1B83703',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1824',':shelf_id'=>'S02',':name'=>'DISCO DURO - WESTERN DIGITAL - BLUE WD10EZEX - DISCO DE 1TB, 7200 RPM, 64MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 3.5", PARA DESKTOP',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.89,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1894',':shelf_id'=>'S02',':name'=>'DISCO DURO - WESTERN DIGITAL - BLUE WD10SPZX - DISCO DE 1TB, 5400 RPM, 128MB CACHE, INTERFAZ SATA 6GB/S, FORMATO 2.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.06,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1805',':shelf_id'=>'S02',':name'=>'DISCO DURO HDD SATA 2.5 HP SERVIDOR 500GB 7200RPM SATA 614829-002',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.23,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2410',':shelf_id'=>'S02',':name'=>'DISCO DURO SERVIDOR - HP - 655708-B21 - DISCO SATA DE 500GB, 7200 RPM, 2.5" SFF (SMALL FORM FACTOR), INTERFAZ 6GB/S, HOT-PLUG',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.4,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1700',':shelf_id'=>'S02',':name'=>'DISCO DURO SERVIDOR - HP - 655710-B21 - DISCO SATA DE 1TB, 7200 RPM, 2.5" SFF, PARA SERVIDORES HP PROLIANT, HOT-PLUG',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.57,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2170',':shelf_id'=>'S02',':name'=>'DISCO DURO SERVIDOR - HPE - 832514-B21 - DISCO SAS DE 1TB, 12 GBPS, 7200 RPM, 2.5" SFF, HOT-SWAP, 512N (SECTOR NATIVO), PARA G9 Y POSTERIOR',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.74,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2017',':shelf_id'=>'S02',':name'=>'DISCO DURO SERVIDOR - IBM - 90Y8957 - DISCO SAS DE 500GB, 7.2K RPM, 2.5" SFF, HOT-SWAP, COMPATIBLE CON SERVIDORES IBM/LENOVO SERIE SYSTEM X GEN2',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.91,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2027',':shelf_id'=>'S02',':name'=>'DISCO HP 614829-003 1TB 6G SATA 7.2K 2.5 SC MDL HDD G7/G8 - MODELO MM1000GBKAL',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.08,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2117',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO - GIGABYTE - GP-GSTFS31120GNTD - SSD DE 120GB, INTERFAZ SATA 6GB/S, FORMATO 2.5"',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.25,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2277',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO - INTEL - 660P - SSD NVME M.2 DE 1TB, PCIE 3.0 X4, TECNOLOGÍA 3D QLC SSDPEKNW010T8',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.42,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2460',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO - MSI - SPATIUM S270 - SSD SATA 2.5", CAPACIDAD 960GB, VELOCIDAD LECTURA/ESCRITURA HASTA 560/510 MB/S - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.59,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2376',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME - LENOVO - LN860 512GB - SSD M.2 2280 PCIE GEN 3 X4 NVME 1.4, VELOCIDADES DE LECTURA/ESC - (5SD1N53083)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.76,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'2408',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME - MICRON - 2400 1TB - SSD M.2 NVME GEN 4 X4, VELOCIDADES ALTA LECTURA/ESCRITURA, 3.3V 2.5A, PARA WORKSTATI (MTFDKBA1T0QFM-1BD1AABGB)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.93,':ly'=>0.0,':lz'=>0.22],
-    [':sku'=>'1836',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME - SAMSUNG - 1TB - 1024 GB - SSD M.2 NVME OEM SAMSUNG, VELOCIDAD PCIE 4.0, PM9C1B - (MZAL81T0HFLB-00BL2)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2491',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME - WESTERN DIGITAL - PC SN740 1024GB - SSD M.2 NVME OEM, VELOCIDAD PCIE 4.0, SN740',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2378',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME - WESTERN DIGITAL - SN530 256GB - SSD M.2 2280 NVME PCIE OEM, MODELO SDBPNPZ-256G-1114',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1835',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME - WESTERN DIGITAL - WD PC SN7100S 1TB - 1024 GB - SSD M.2 NVME, VELOCIDAD PCIE, DISEÑO PARA SISTEMAS PORTÁTILES',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2388',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME KINGSTON NV3 1TB SSD M.2 2280 PCIE 4.0 X4 NVME, VELOCIDAD LECTURA HASTA 6000 MB/S, ESCRITURA HASTA 4000 MB/S, 3D (SNV3S/1000G)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2331',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME WESTERN DIGITAL GREEN SN350 1TB SSD M.2 NVME PCIE, VELOCIDAD LECTURA HASTA 2400 MB/S, PARA USO GENERAL, E (WDS100T2G0C-00CDH0)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1822',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO NVME WESTERN DIGITAL GREEN SN350 250GB SSD M.2 2280 NVME PCIE, (WDS250G2G0C-00CDH0)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2502',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO SATA - ADATA - SU650 1TB - SSD 2.5" SATA III, COMPATIBLE CON SISTEMAS PC Y PORTÁTILES - (ASU650SS-1TTR)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2271',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO SATA - KINGSTON - 350DE S3 128GB - SSD M.2 2280 SATA III, COMPATIBLE CON PLACAS BASE SATA M.2, (SNS8350DES3/128GP)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2000',':shelf_id'=>'S02',':name'=>'DISCO SOLIDO SATA KINGSTON A400 480GB (SA400S37/480G) SSD 2.5" 7MM SATA III 6GB/S, TECNOLOGÍA TLC, - (SA400S37/480G)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2121',':shelf_id'=>'S05',':name'=>'DISTRIBUIDOR DE VIDEO - XTECH - XHA410 - MULTIPLICADOR HDMI 1 ENTRADA A 4 SALIDAS (HEMBRA), DISTRIBUCIÓN DE SEÑAL FULL HD, SIN AMPLIFICACIÓN - XHA410',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1941',':shelf_id'=>'S05',':name'=>'DOCKING CON TECLADO Y TOUCHPAD PARA TABLET ASUS TF300T, COLOR AZUL, CONVIERTE TABLET EN LAPTOP, CONECTIVIDAD: USB, RAN',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1984',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO - ADAPTADOR DE TV DIGITAL - ADVANCE - DG5050 - USB MINI TV CON ANTENA DIGITAL, SINTONIZADOR DVB-T, PARA PC - DG5050',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2141',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO - TABLET - ALCATEL - 3T8 9032T - TABLET 8", ANDROID, 4G LTE, QUAD-CORE 2.0GHZ, 2GB RAM, 32GB ALMACENAMIENTO, COMPATIBLE CON CHIP SIM - 9032T',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2032',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO - TABLET - LENOVO - YOGA 8" - TABLET 8" ANDROID 5.0, 2GB RAM, ALMACENAMIENTO INTERNO, PANTALLA TÁCTIL IPS, DISEÑO CON SOPORTE INTEGRADO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2474',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO - TELÉFONO FIJO - FONOWIN - KX-T504 - TELÉFONO FIJO ALÁMBRICO, DISEÑO BÁSICO, PANTALLA DIGITAL, TONO DE MARCACIÓN, CONECTOR RJ11 - KX-T504',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1788',':shelf_id'=>'S05',':name'=>'ELECTRONICO - TELEFONO INALAMBRICO VTECH - VT405 - TELEFONO INALAMBRICO DIGITAL, IDENTIFICADOR DE LLAMADAS, ALTAVOZ, BASE CON CARGADOR, PANTALLA ILUMINADA - VT405',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1944',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO - TELEVISOR PORTÁTIL - PROLINK - TV-2107DA - TELEVISOR PORTÁTIL 7" LCD, SINTONIZADOR TV ANALÓGICO/DIGITAL, ENTRADA AV/VGA/USB, ALTAVOZ INTEGRADO, ALIMENTACIÓN DC/ADAPTADOR - TV-21',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2500',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO INTELIGENTE - FOCO LED - TEROS - TE-9103RGB - FOCO LED INTELIGENTE 9W, RGB, SOCKET E27, CONTROL POR APP WI-FI - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2340',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO INTELIGENTE - SENSOR DE CONTACTO - TP-LINK - TAPO T110 - SENSOR DE CONTACTO/PUERTA/VIDRIO INTELIGENTE, WI-FI, APP TAPO, BATERÍA, NOTIFICACIONES - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2089',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO INTELIGENTE - SENSOR DE MOVIMIENTO - D-LINK - DCH-S150 - SENSOR DE MOVIMIENTO WI-FI, 2.4GHZ, ALIMENTACIÓN 110-125V, 50/60 HZ, PARA CASA INTELIGENTE - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2505',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO INTELIGENTE - TOMA CORRIENTE INTELIGENTE - TEROS - TE-9102W - TOMA CORRIENTE INTELIGENTE WI-FI, 2 TOMAS AC + 2 PUERTOS USB, CONTROL POR APP, PROGRAMACIÓN, COLOR BLANCO - TE-9102W',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2145',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO PARA EL HOGAR - BALANZA INTELIGENTE - HUAWEI - CH100 - BALANZA DE GRASA CORPORAL, CONEXIÓN BLUETOOTH, APP HUAWEI HEALTH, COLOR BLANCO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2080',':shelf_id'=>'S05',':name'=>'ELECTRÓNICO PARA EL HOGAR - LÁMPARA LED INTELIGENTE - VOLKSCOMM - SP35W - LÁMPARA LED 35W, BLUETOOTH, ALTAVOZ 5W, LUZ NEUTRA, CONTROL POR APP - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1702',':shelf_id'=>'S04',':name'=>'ENCHUFE INTELIGENTE - TEROS - TE-9101W - TOMACORRIENTE INTELIGENTE (SMART PLUG), CONTROL REMOTO VIA APLICACIÓN O ASISTENTE DE VOZ, PROGRAMABLE',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.08,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2382',':shelf_id'=>'S05',':name'=>'EQUIPO DE OFICINA - GUILLOTINA - TWINS - AR-00470 - GUILLOTINA METÁLICA PESADA FORMATO A3, CORTE APROX. 12 HOJAS 70GR, SEGURIDAD - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2057',':shelf_id'=>'S05',':name'=>'EQUIPO DE PROTECCIÓN PERSONAL - MASCARILLA - KN95/FFP2 - MASCARILLA DE PROTECCIÓN RESPIRATORIA, CERTIFICACIÓN CE FFP2, FILTRACIÓN 95%, X UNIDAD - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2361',':shelf_id'=>'S05',':name'=>'EQUIPO DE SEGURIDAD PARA HOGAR - SIRENA DE ALARMA - D-LINK - DCH-S220 - SIRENA DE ALARMA INTELIGENTE, CONECTIVIDAD WI-FI, INTEGRACIÓN CON E-COSISTEMA D-LINK - DCH-S220',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2282',':shelf_id'=>'S05',':name'=>'ESCANER DE DOCUMENTOS - EPSON - DS-770 II - ESCANER DE ALTA VELOCIDAD USB 3.0, SENSOR OPTICO CIS A COLOR, ALIMENTADOR AUTOMATICO (ADF) - B11B262201',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1809',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR - CDP - R2C-AVR1008I - REGULADOR DE VOLTAJE AVR, CAPACIDAD 1000VA/500W, RANGO DE ENTRADA 170-270VAC, PROTECCIÓN PARA EQUIPOS - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.2,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1899',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR DE VOLTAJE - CDP - R-AVR 3008I - ESTABILIZADOR 3000VA, 220V, 8 TOMACORRIENTES, PARA PROTEGER EQUIPOS DE CONSUMO MEDIO/ALTO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1784',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR DE VOLTAJE - ELISE - LCR20 - ESTABILIZADOR 2000VA, 220V, PARA PROTECCIÓN BÁSICA DE EQUIPOS ELECTRÓNICOS',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.44,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1949',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR DE VOLTAJE - ELISE IEDA - PODER LCR-30 - ESTABILIZADOR DE ESTADO SÓLIDO, 3.0KVA, 220V, 6 CONECTORES DE SALIDA, PARA EQUIPOS CRÍTICOS',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.56,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2275',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR DE VOLTAJE - ELISE IEDA - PODER SAFE LCR10-4.5% - ESTABILIZADOR DE ESTADO SÓLIDO, 1KVA (1000VA), 220V, REGULACIÓN ±4.5%',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.68,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2159',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR DE VOLTAJE - FORZA - 1200VA FVR-1222USB - ESTABILIZADOR 1200VA (600W), 220V, 8 TOMAS, 2 PUERTOS USB DE CARGA',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.8,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2061',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR DE VOLTAJE - FORZA - 900VA FVR-902 - ESTABILIZADOR 900VA (450W), 220V, 8 TOMAS, PROTECCIÓN CONTRA SOBRETENSIONES',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.92,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2557',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR FORZA FVR-1012 1000VA 500W 4 TOMAS 220V REGULADOR',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.04,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2556',':shelf_id'=>'S04',':name'=>'ESTABILIZADOR FORZA FVR-902 900VA/450W PROTECTION LEVEL 4',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.16,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2112',':shelf_id'=>'S05',':name'=>'ESTERILIZADOR - MULTIFUNCIONAL CON LAMPARA ULTRAVIOLETA (UVC), PARA DESINFECTAR OBJETOS PEQUEÑOS COMO TELEFONOS',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2043',':shelf_id'=>'S04',':name'=>'EXTENSOR DE RED - TP-LINK - RE305 - WI-FI AC1200, DOBLE BANDA (2.4/5GHZ), 2 PUERTOS LAN, REPETIDOR, WPS - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.28,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2005',':shelf_id'=>'S04',':name'=>'FACE PLATES - SATRA - FPA-W01 - PLACA DE 1 PUERTO (BLANCO), PLACA PARA PARED',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.4,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2004',':shelf_id'=>'S04',':name'=>'FACE PLATES - SATRA - WP-S2 - PLACA DE 2 PUERTOS (BLANCO), PLACA PARA PARED',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.52,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2071',':shelf_id'=>'S05',':name'=>'FOTOGRAFÍA Y VIDEO - CAMARA BRIDGE - SONY - CYBER-SHOT DSC-HX400V - SUPERZOOM DE 50X (EQUIV. 24-1200MM), SENSOR DE 20.4 MP, FOTOS Y VIDEO FULL HD, PANORÁMICA, ESTABILIZADOR ÓPTICO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1946',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - ADVANCE - 350W ATX, ALIMENTACIÓN ESTANDAR, CONECTOR 24+4 PINES, VENTILADOR 80MM - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1820',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - ANTEC - G850 - 850W, ATX, 80 PLUS GOLD, SEMI-MODULAR, VENTILADOR 135MM - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2305',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - ANTRYX - AP-B500V2 - 500W, ATX V2.3, VENTILADOR 120MM, CONECTOR PCI-E 6+2 PINES - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2155',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - COOLER MASTER - MWE 450 WHITE - 450W, ATX, 80 PLUS WHITE, RANGO COMPLETO 100-240V, VENTILADOR 120MM - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2412',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - DATAONE - ATX-600W-P8 - 600W, ATX, NO MODULAR, CONECTOR P8, VENTILADOR 120MM, GRIS - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2419',':shelf_id'=>'S05',':name'=>'FUENTE DE PODER - FOLKSAFE - KAS-12D2000-A - FUENTE 12VDC 2A PARA CAMARA, CONECTOR DC, ENTRADA 100-240VAC - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1777',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - GIGABYTE - GP-P550SS - FUENTE ATX 550W, CERTIFICACIÓN 80 PLUS SILVER, NEGRO - GP-P550SS',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2199',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - MICRONICS - 250W/650 (MODELO SX), MICROATX, PARA SISTEMAS BÁSICOS - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2411',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - TEROS - TE-PSUATX350W - 350W, ATX, ENTRADA 115V/230V, CONECTORES SATA Y MOLEX - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.89,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2297',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - TEROS - TE-PSUMATX600W - 600W, MICRO ATX, ENTRADA 115V/230V, VENTILADOR 80MM - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.06,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1853',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - THERMALTAKE - 350 NL2NK - FUENTE ATX 350W, STANDARD, CONECTOR 20+4 PINES, VENTILADOR 80MM - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.23,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2224',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - THERMALTAKE - TT-450NL2NK - 450W, ATX, FORMATO OEM, VENTILADOR 80MM, CONECTORES ESTÁNDAR - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.4,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2225',':shelf_id'=>'S02',':name'=>'FUENTE DE PODER - VASTEC - 300W, ATX, CONECTOR 20+4 PINES',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.57,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1968',':shelf_id'=>'S05',':name'=>'FUNDA - LENOVO - FUNDA TRASERA Y PROTECTOR DE PANTALLA PARA LENOVO PHAB 2, COLOR GRIS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2430',':shelf_id'=>'S05',':name'=>'FUNDA BOOK COVER - FUNDA TIPO BOOK COVER PARA SAMSUNG GALAXY TAB A6 10.1 PULGADAS, PROTECCIÓN INTEGRAL',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2211',':shelf_id'=>'S05',':name'=>'FUNDA PARA DISCO DURO EXTERNO MY PASSPORT, NEGRO, PROTECCIÓN - WDBABK0000NBK-WRSN',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1954',':shelf_id'=>'S05',':name'=>'FUNDA PARA DISCO DURO EXTERNO, TELA, COLOR AZUL/NEGRO, PROTECCIÓN - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2167',':shelf_id'=>'S05',':name'=>'FUNDA PARA LAPTOP 7", PROTECCIÓN BÁSICA, TELA O MATERIAL SIMILAR - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1955',':shelf_id'=>'S05',':name'=>'FUNDA PARA LAPTOP CON TEMA BARBY, DISEÑO DECORATIVO, TELA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1987',':shelf_id'=>'S05',':name'=>'FUNDA PROTECTORA - FUNDA PARA TABLET DE 10", DISEÑO UNIVERSAL, PROTECCION BÁSICA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1889',':shelf_id'=>'S05',':name'=>'FUNDA PROTECTORA - HALION - FUNDA PARA MONITOR LCD DE 19", TELA, PROTECCIÓN CONTRA POLVO Y RAYADURAS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2622',':shelf_id'=>'S05',':name'=>'GENUINO PREMIUM P-190 BK BLACK',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2620',':shelf_id'=>'S05',':name'=>'GENUINO PREMIUM P-190 C CIAN',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2621',':shelf_id'=>'S01',':name'=>'GENUINO PREMIUM P-190 Y YELLOW',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2215',':shelf_id'=>'S04',':name'=>'GRABADOR DE VIDEO DIGITAL - HIKVISION - IDS-7216HQHI-M2/S - DVR ACUSENSE 16 CANALES PARA CAMARAS ANALÓGICAS HIKVISION, PROCESAMIENTO INTELIGENTE, DISCO DURO NO INCLUIDO',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2229',':shelf_id'=>'S02',':name'=>'GRABADORA DE DVD - ASUS - DRW-24F1ST - INTERNA DVD±RW SATA, 24X, BUFFER 1.5 MB, VERSIÓN SIN LOGO - DRW-24F1ST',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.74,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2336',':shelf_id'=>'S02',':name'=>'GRABADORA DE DVD - LG - GH24NSD1 - INTERNA DVD±RW SATA, 24X, BUFFER 1.5 MB, COMPATIBLE CON M-DISC - GH24NSD1',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.91,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2545',':shelf_id'=>'S05',':name'=>'GRAPAS PARA CABLES UTP GENERICO S/M N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2217',':shelf_id'=>'S01',':name'=>'HOJA DE LIMPIEZA - KONICA MINOLTA - 19D13 - DE TAMBOR (PAQUETE X5) PARA BIZHUB 162/163/210/211 - 19D13',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2659',':shelf_id'=>'S03',':name'=>'HP 235 SLIM WIRELESS MOUSE',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.22,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1706',':shelf_id'=>'S04',':name'=>'HUB CARGADOR USB - MAXELL - 347630 HUSB-4 - HUB USB CON 4 PUERTOS DE CARGA, COMPACTO, PARA CARGAR MÚLTIPLES DISPOSITIVOS SIMULTÁNEAMENTE',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>2.76,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2355',':shelf_id'=>'S05',':name'=>'HUB CON ENTRADA USB Y USB-C A 4 PUERTOS USB 3.0, ALIMENTACIÓN 5V-2A, TRANSFERENCIA 5 GBPS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2090',':shelf_id'=>'S05',':name'=>'HUB USB 2.0 DE 4 PUERTOS (HI-SPEED), FORMA DE MANZANA, PLUG AND PLAY',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2417',':shelf_id'=>'S05',':name'=>'HUB USB 3.0 CON ENTRADA TIPO C Y USB-A, DISEÑO DE EXTENSIÓN, ADICIONA PUERTOS USB - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2371',':shelf_id'=>'S05',':name'=>'HUB USB 3.0 DE 4 PUERTOS, CABLE 30CM, VELOCIDAD 5 GBPS (SUPER SPEED) - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1818',':shelf_id'=>'S05',':name'=>'HUB USB-C CON 2 PUERTOS USB-C Y 2 PUERTOS USB-A, 5 GBPS, COLOR NEGRO - 0819DJ',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2579',':shelf_id'=>'S01',':name'=>'IMAGEN TINTA BROTHER LC509BK BLACK DCPJ100 / 105 / 200',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2203',':shelf_id'=>'S05',':name'=>'IMPRESORA DE MATRIZ DE PUNTOS - EPSON - TM-U220A - IMPRESORA MATRIZ 9 PINES, VELOCIDAD 4.7-6.0 LPS, INTERFAZ CENTRÓNICAS/PARALELO - C31C513A8901',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1812',':shelf_id'=>'S05',':name'=>'IMPRESORA DE TARJETAS - ZEBRA - SERIE ZC300 - IMPRESORA DE TARJETAS PLASTIFICADAS, MONOCROMÁTICA O COLOR, RESOLUCIÓN 300 DPI - ZC32-000CQ00LA00',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2087',':shelf_id'=>'S05',':name'=>'IMPRESORA LASER COLOR - XEROX - PHASER 7100V_NP - IMPRESION COLOR A3, 30 PPM, CONECTIVIDAD DE RED, ALTO VOLUMEN - 7100V_NP',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2132',':shelf_id'=>'S05',':name'=>'IMPRESORA LASER MONOFUNCION - HP - LASER NEVERSTOP 1000A - IMPRESION B/N, ALTO RENDIMIENTO DE TONER, CONEXIÓN USB - 4RY22A',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2131',':shelf_id'=>'S05',':name'=>'IMPRESORA LASER MONOFUNCION - HP - LASER NEVERSTOP 1000W - IMPRESIÓN B/N, ALTO RENDIMIENTO TONER, USB Y CONEXIÓN WI-FI - 4RY23A',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2429',':shelf_id'=>'S05',':name'=>'IMPRESORA LASER MONOFUNCION - HP - LASERJET M111W - IMPRESION B/N , COMPACTA, 19 PPM, CONEXION USB/WI-FI - 7MD68A',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2242',':shelf_id'=>'S05',':name'=>'IMPRESORA LÁSER MONOFUNCIÓN - HP - LASERJET PRO M404DW - IMPRESIÓN B/N 38 PPM, 1200X1200 DPI, LAN/USB 2.0/WI-FI, DUPLEX - W1A56A',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1877',':shelf_id'=>'S05',':name'=>'IMPRESORA LASER MONOFUNCION - XEROX - PHASER 3020V/BI - IMPRESION B/N 20 PPM, 1200X1200 DPI, USB 2.0, CONEXIÓN WI-FI - 106R01221',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2610',':shelf_id'=>'S05',':name'=>'IMPRESORA MULTIFUNCIONAL TINTA CONTINUA EPSON L15150 A3 WIFI ETHETNET',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1852',':shelf_id'=>'S05',':name'=>'IMPRESORA MULTIFUNCIONAL TINTA EPSON ECOTANK L300, IMPRIME/ESCANEA/COPIA SISTEMA CONTINUO C11CJ67101',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1881',':shelf_id'=>'S05',':name'=>'IMPRESORA MULTIFUNCIONAL TINTA EPSON ECOTANK L3250 IMPRIME/ESCANEA/COPIA, SISTEMA CONTINUO, CONEXIÓN USB/WI-FI - C11CJ67304',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2286',':shelf_id'=>'S05',':name'=>'IMPRESORA MULTIFUNCIONAL TINTA EPSON ECOTANK L4260 IMPRIME/ESCANEA/COPIA, SISTEMA CONTINUO, USB/WIFFI, DUPLEX - C11CJ63301 N/S: X8RX363574',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2332',':shelf_id'=>'S05',':name'=>'IMPRESORA MULTIFUNCIONAL TINTA EPSON ECOTANK L5590 IMPRIME/ESCANEA/COPIA/FAX, SISTEMA CONTINUO, USB/LAN/WI-FI, PANEL TÁCTIL - C11CK57303',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2425',':shelf_id'=>'S05',':name'=>'IMPRESORA TERMICA DE RECIBOS - EPSON - TM-T20IIIL - IMPRESION TERMICA DIRECTA, INTERFAZ USB+SERIAL (RS-232), 80MM - C31CH26001',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2137',':shelf_id'=>'S05',':name'=>'JUGUETE - TRACTOR DE JUGUETE - CAAE - 9208A - TRACTOR DE JUGUETE, DISEÑO INFANTIL, PLASTICO, COLORES VARIADOS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2409',':shelf_id'=>'S02',':name'=>'KINGSTON - FURY KF432C16BB/16 - 16GB DDR4-3200MHZ, DIMM, CL16, 1.35V, NON-ECC, XMP 2.0 - KF432C16BB/16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.08,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2113',':shelf_id'=>'S05',':name'=>'KIT ARO LED TIK TOK (26CM) + TRIPODE 2.0M, USB 5V - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2272',':shelf_id'=>'S05',':name'=>'KIT DE EXPANSIÓN DE TORRES RGB, COMPATIBLE CON ICUE, 4 BARRAS LED - CD-9010003-WW',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1953',':shelf_id'=>'S04',':name'=>'KIT DE INSTALACION - SATRA - HERRAMIENTAS Y COMPONENTES PARA INSTALACION DE CABLEADO ESTRUCTURADO - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1913',':shelf_id'=>'S01',':name'=>'KIT DE LIMPIEZA - FARGO - DTC 510338 -PARA IMPRESORAS, INCLUYE LÍQUIDO Y PAÑOS - DTC 510338',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2634',':shelf_id'=>'S05',':name'=>'KIT DE LIMPIEZA XTECH 20 EN 1 MULTIFUNCIONAL CLEANING KIT (XTA-910)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2348',':shelf_id'=>'S01',':name'=>'KIT DE MANTENIMIENTO - XEROX - 109R00732 - PARA PHASER 5500/5550, RENDIMIENTO 300,000 PÁGINAS - 109R00732',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2633',':shelf_id'=>'S05',':name'=>'KX CAR CHARGER 60W MAX KCC-060 2XUSB-C PD30W + USB-A QC 3.0',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2269',':shelf_id'=>'S05',':name'=>'LAPTOP - LENOVO - CHROMEBOOK 300E 2ND GEN - INTEL CELERON N4000, 4GB RAM, 32GB EMMC, PANTALLA 11.6" HD, GOOGLE CHROME OS - 81MB000FPD',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2292',':shelf_id'=>'S05',':name'=>'LAPTOP - LENOVO - THINKPAD T14 - INTEL CORE I7-1165G7, 16GB DDR4, 1TB NVME SSD, 14" FHD, WINDOWS 10 PRO - 20W1SB3G00',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2522',':shelf_id'=>'S05',':name'=>'LAPTOP ASUS EXPERTBOOK B3604CVF-Q90910X 16" CORE I7-1355U 1.7/32GB DDR5/M.2 1TB SSD/VGA RTX 2050 4GB GDDR6',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2138',':shelf_id'=>'S05',':name'=>'LAPTOP CONVERTIBLE - HP - PAVILION X360 14-DW0004LA - INTEL CORE I7-1065G7, 12GB RAM, 256GB SSD + 16GB OPTANE, PANTALLA TÁCTIL 14" FHD, WINDOWS 10 HOME - 8VV68LA#ABM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2490',':shelf_id'=>'S05',':name'=>'LAPTOP GAMER - ACER - NITRO 5 V - INTEL CORE I7-13620H, 16GB RAM, 512GB SSD, NVIDIA RTX 4050 6GB, 15.6" FHD - ANV15-51-7285-PE',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2449',':shelf_id'=>'S05',':name'=>'LAPTOP GAMER - LENOVO - LOQ 15IRX9 - INTEL CORE I7-13650HX 2.6/4.9GHZ, 12GB DDR5, 512GB SSD, NVIDIA RTX 3050 6GB, 15.6" FHD IPS, WINDOWS 11 HOME - 83DV00FHLM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1771',':shelf_id'=>'S05',':name'=>'LAPTOP GAMER - MSI - THIN 15 B13UC - 15.6" FHD IPS, INTEL CORE I7-13620H HASTA 4.9GHZ, 16GB DDR4, - N/P ( 9S7-16R831-3075)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2657',':shelf_id'=>'S05',':name'=>'LAPTOP HP 15-FC0275LA, 15.6" FHD, AMD RYZEN 7 7730U 2.0 / 4.5GHZ, 16GB DDR4-3200MHZ',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2542',':shelf_id'=>'S05',':name'=>'LAPTOP LENOVO V15 G4 AMN 15.6" FHD TN, AMD RYZEN 5 7520U 2 2.8 /4.3GHZ, 8GB LPDDR5-4800/ 82YU00X6LM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2540',':shelf_id'=>'S05',':name'=>'LAPTOP LENOVO V15 G4 IRU, 15.6" FHD TN, CORE I3-1315U 1.2 / 4.5GHZ, 8GB DDR4-3200MHZ (83A100ELLM)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2523',':shelf_id'=>'S05',':name'=>'LAPTOP PARA EMPRESA - ASUS - EXPERTBOOK B1503CVA-S74331X - 15.6" FHD IPS, INTEL CORE I7-13620H HASTA 4.9GHZ, 16GB DDR5, 512GB SSD NVME, WINDOWS 11 PRO - 90NX0801-M04T00',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2073',':shelf_id'=>'S05',':name'=>'LECTOR DE DNIE - EVO - MINILECTOR DE DNI ELECTRÓNICO CON CHIP EMV, CONEXION USB.',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2333',':shelf_id'=>'S05',':name'=>'LICENCIA DE WINDOWS SERVER 2022 USER CAL - VERSIÓN ESPAÑOL, 1 PAQUETE DSP OEI, 1 CLIENT USER CAL - R18-06458',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2434',':shelf_id'=>'S05',':name'=>'LICENCIA WINDOWS HOME 11, 64 BITS, ESPAÑOL, 1PK, DSP OEM DVD FISICO ( KW9-00657 )',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2050',':shelf_id'=>'S05',':name'=>'MALETÍN - HP - 2SC66AA - MALETÍN BUSINESS TOP LOAD PARA LAPTOP 15.6", DISEÑO EJECUTIVO, PROTECCIÓN - 2SC66AA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1967',':shelf_id'=>'S05',':name'=>'MALETIN - HP - H2W17AA#ABA - MALETÍN ESSENTIAL TOP LOAD PARA LAPTOP, PROTECCIÓN BÁSICA, TRANSPORTE - H2W17AA#ABA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2594',':shelf_id'=>'S05',':name'=>'MASTER PRINT GALON DE TINTA UV MYM DE 1000 ML (1 LITRO)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2342',':shelf_id'=>'S05',':name'=>'MATERIAL DE OFICINA / PAPELERÍA - COLORES TRIANGULARES - ARTESCO - COLORES TRIANGULARES SUPER INTENSOS, CAJA CON 12 UNIDADES',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2343',':shelf_id'=>'S05',':name'=>'MATERIAL DE OFICINA / PAPELERÍA - PLUMÓN DELGADO - VINIFAN - HAPPY 45 - PLUMÓN DELGADO TIPO ESTILOGRÁFICO, COLOR VARIADO, ESTUCHE ZIPPER, PAQUETE X 12 UNIDADES - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2459',':shelf_id'=>'S03',':name'=>'MEGÁFONO - BATBLACK - BT-MF40 - MEGAFONO RECARGABLE 40W, BLUETOOTH, USB, SD, CON FUNCION DE GRABACIÓN',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.44,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2084',':shelf_id'=>'S03',':name'=>'MEGÁFONO - MAXTRON - TEACHER MX400BT - SISTEMA DE AUDIO PORTÁTIL CON ALTAVOZ, BLUETOOTH, MICROFONO INALAMBRICO, PARA PRESENTACIONES - MX400BT',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.66,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2614',':shelf_id'=>'S05',':name'=>'MEMORIA MICRO SD 128GB KINGSTON CANVAS SELECT PLUS CLASS 10 150 MB/S (SDCS3/128GB)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1711',':shelf_id'=>'S02',':name'=>'MEMORIA MICROSD - KINGSTON - SDCG3/512GB - MICRO SDXC 512GB, LECT. 170MB/S, ESCRIT. 70MB/S, CLASE 10, U3, V30 - SDCG3/512GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.25,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1764',':shelf_id'=>'S02',':name'=>'MEMORIA MICROSD 64GB, UHS-I, CLASE 10, VELOCIDAD HASTA 100MB/S - SDCS3/64GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.42,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1765',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - ADATA - XPG AX4U2400W4G16-SBG - 4GB DDR4-2400MHZ, UDIMM, CON DISIPADOR, CL16, 1.2V, DISEÑO NEGRO - AX4U2400W4G16-SBG',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.59,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1745',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - CORSAIR - VENGEANCE LPX - 8GB DDR4-3200MHZ, UDIMM, PC4-25600, CL16, 1.35V, PARA PC DE ESCRITORIO - CMK8GX4M1Z3200C16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.76,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'2285',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - CRUCIAL - CB8GU2666 - 8GB DDR4-2666MHZ, UDIMM, PC4-21300, CL19, 1.2V, PARA PC DE ESCRITORIO - CB8GU2666',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.93,':ly'=>0.0,':lz'=>0.44],
-    [':sku'=>'1840',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - CRUCIAL - CT4G4DFS824A - 4GB DDR4-2400MHZ, UDIMM 288-PIN, PC4-19200, NON-ECC UNBUFFERED, CL17, 1.2V',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1838',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - CRUCIAL - CT8G48C40U5.M4A1 - 8GB DDR5-4800MHZ, SODIMM, CL40, 1.1V, NON-ECC UNBUFFERED, PARA LAPTOP - CT8G48C40U5.M4A1',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1815',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - HIKSEMI - HSC516U56D2-16 - 16GB DDR5 UDIMM 5600MHZ, CHASIS ARMOR, DISIPACIÓN DE CALOR, NON-ECC - HSC516U56D2-16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1743',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - HP - V6 SERIES 7EH67AA#ABB - 8GB DDR4-3200MHZ, UDIMM, CL16, 1.35V, PARA PC DE ESCRITORIO HP - 7EH67AA#ABB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2293',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - HP - V6 SERIES 7EH68AA#ABB - 16GB DDR4-3200MHZ, UDIMM, PARA PC DE ESCRITORIO HP, DISEÑO OEM - 7EH68AA#ABB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2312',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - HYPERX - HX316C10FB/4 - MEMORIA RAM 4GB, DDR3-1600MHZ, CL10, DIMM, 1.5V, MODULO DE UN SOLO RANGO - HX316C10FB/4',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1897',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - HYPERX - PREDATOR RGB HX429C15PB3AK4/32 - 8GB DDR4-2933MHZ, UDIMM, CL15, ILUMINACIÓN RGB, MÓDULO INDIVIDUAL - HX429C15PB3AK4/32',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1826',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - FURY BEAST BLACK KF552C40BB-32 - 32GB DDR5-5200MT/S, DIMM, CL40, 1.25V, DISEÑO NEGRO, XMP 3.0, NON-ECC - KF552C40BB-32',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2317',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - FURY BEAST KF548C38BB-16 - 16GB DDR5-4800MHZ, DIMM, CL38, 1.1V, 288-PIN, NON-ECC, XMP 3.0 - KF548C38BB-16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1740',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - FURY BEAST KF552C40BB-8 - 8GB DDR5-5200MT/S, DIMM, CL40, 1.25V, 288-PIN, XMP 3.0, NON-ECC - KF552C40BB-8',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1775',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - FURY BEAST KF552C40BBA-32 - 32GB DDR5-5200MT/S, DIMM, CL40, 1.25V, 288-PIN, NON-ECC, XMP 3.0 - KF552C40BBA-32',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1792',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - FURY BEAST KF556C40BB-16 - 16GB DDR5-5600MT/S, DIMM, CL40, 1.25V, 288-PIN, NON-ECC, XMP 3.0 - KF556C40BB-16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1813',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - FURY BEAST RGB KF556C40BBA-16 - 16GB DDR5-5600MHZ, DIMM, CL40, 1.25V, ILUMINACIÓN RGB, XMP 3.0 - KF556C40BBA-16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2256',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - HYPERX PREDATOR RGB HX432C16PB3A/16 - 16GB DDR4-3200MHZ, UDIMM, CL16, 1.35V, ILUMINACIÓN RGB, XMP, NEGRO - HX432C16PB3A/16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1778',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - KCP556UD8-32 - MEMORIA RAM 32GB, DDR5-5600 MT/S, UDIMM, NON-ECC - KCP556UD8-32',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1825',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - KCP556US8-16 - 16GB DDR5-5600MT/S, UDIMM, CL46, 1.1V, 288-PIN, 1RX8, NON-ECC, PARA PC DE ESCRITORIO - KCP556US8-16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2462',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - KVR16LS11/8WP - 8GB DDR3L-1600MHZ, SODIMM, CL11, 1.35V, PARA LAPTOP, LOW VOLTAGE - KVR16LS11/8WP',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2096',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - KVR16N11S8/4 - 4GB DDR3-1600MHZ, UDIMM, CL11, 1.5V, 240-PIN, NON-ECC - KVR16N11S8/4',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.89,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1819',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - KVR56S46BD8-32 - 32GB DDR5-5600MT/S, SODIMM, CL46, 1.1V, 262-PIN, NON-ECC, PARA LAPTOP - KVR56S46BD8-32',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.06,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1741',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - KVR56S46BS8-16 - 16GB DDR5-5600MHZ, SODIMM, CL46, 1.1V, PARA LAPTOP, NON-ECC - KVR56S46BS8-16',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.23,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1817',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - KINGSTON - VALUERAM KVR32N22S8/8WP - 8GB DDR4-3200MHZ, DIMM, CL22, 1.2V, 288-PIN, NON-ECC, PROFILE STANDARD - KVR32N22S8/8WP',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.4,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2377',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - MICRON - MTA4ATF1G64AZ-3G2F1 - 8GB DDR4-3200MT/S, DIMM, PC4-25600, 1RX4, NON-ECC, PARA PC DE ESCRITORIO - MTA4ATF1G64AZ-3G2F1',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.57,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1739',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - PATRIOT - PSD58G480041S - 8GB DDR5-4800MHZ, SODIMM, PARA LAPTOP, NON-ECC UNBUFFERED - PSD58G480041S',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.74,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2176',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - RAMAXEL - 4GB DDR4-2666MHZ, DIMM, PC4-2666V, CL19, 1.2V, STANDARD PROFILE - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.91,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1842',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - RAMAXEL - 4GB DDR4-3200MHZ, DIMM, PC4-3200AA, CL22, 1.2V, STANDARD PROFILE, NON-ECC - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.08,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1833',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - SAMSUNG - M323R2GA3PB0-CWM0L - 16GB DDR5-5600MHZ, UDIMM 288-PIN, NON-ECC UNBUFFERED, CL46, 1.1V - M323R2GA3PB0-CWM0L',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.25,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1744',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - SAMSUNG - M391B5273CH0-CH9 - 4GB DDR3-1333MHZ, UDIMM, ECC, PC3L-10600E, DUAL RANK X8 - M391B5273CH0-CH9',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.42,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1704',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - SAMSUNG - M393A1G40DB0 - 8GB DDR4-2133MHZ, RDIMM, PC4-2133P, REGISTERED ECC, 1RX4, PARA SERVIDOR - M393A1G40DB0',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.59,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1832',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - SAMSUNG - M425R1GB4PB0-CWM0D - 8GB DDR5-5600MHZ, SODIMM, 1RX16, PC5-5600B, PARA LAPTOP, NON-ECC - M425R1GB4PB0-CWM0D',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.76,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'2280',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - SK HYNIX - HMA851S6DJR6N-XN - 4GB DDR4-3200MHZ, SODIMM, PC4-25600, CL22, 1.2V, PARA LAPTOP, NON-ECC - HMA851S6DJR6N-XN',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.93,':ly'=>0.5,':lz'=>0.0],
-    [':sku'=>'1766',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - TEAM GROUP - ELITE PLUS TPD34G1600HC1101 - 4GB DDR3-1600MHZ, DIMM, PC3-12800, CL11, 1.5V, 240-PIN - TPD34G1600HC1101',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'1767',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - TEAM GROUP - ELITE TED432G3200C22 - 32GB DDR4-3200MHZ, SODIMM, CL22, 1.2V, PARA LAPTOP, NON-ECC - TED432G3200C22',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2116',':shelf_id'=>'S02',':name'=>'MEMORIA RAM - TEAMGROUP - T-FORCE VULCANZ TLZGD48G3200HC16FBK - 32GB DDR4-3200MHZ, SODIMM, CL16, 1.2V, GRIS, PARA LAPTOP - TLZGD48G3200HC16FBK',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'1837',':shelf_id'=>'S02',':name'=>'MEMORIA RAM LENOVO MTC8C1084S1VC64BD1 16GB DDR5-6400MT/S, SODIMM, PARA LAPTOP LENOVO, ALTA FRECUENCIA, OEM - MTC8C1084S1VC64BD1',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'1997',':shelf_id'=>'S02',':name'=>'MEMORIA SD - SANDISK - ULTRA SDSDUN-008G-G46 - SDHC 8GB, CLASE 10, UHS-I, VELOCIDAD HASTA 80MB/S - SDSDUN-008G-G46',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'1872',':shelf_id'=>'S02',':name'=>'MEMORIA USB - KINGSTON - DATATRAVELER 70 DT70/64GB-64GB, USB-C 3.2 GEN1, CONECTOR REVERSIBLE - DT70/64GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2415',':shelf_id'=>'S02',':name'=>'MEMORIA USB - KINGSTON - DATATRAVELER KYSON DTKN/128GB - 128GB, USB 3.2 GEN 1, COLOR PLATA - DTKN/128GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2162',':shelf_id'=>'S02',':name'=>'MEMORIA USB - KINGSTON - DTV DUO 3.0 DTDU03/32GB - 32GB, USB 3.0 + - DTDU03/32GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2551',':shelf_id'=>'S05',':name'=>'MEMORIA USB ACER 256GB UP200 2.0 NEGRO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2456',':shelf_id'=>'S02',':name'=>'MEMORIA USB HP - X306W HPFD306W-256 -256GB, USB 3.2, CARCASA METÁLICA PLATEADA - HPFD306W-256',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2548',':shelf_id'=>'S05',':name'=>'MEMORIA USB HP 2.0 V222W 32GB SILVER (HPFD222W-32)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2549',':shelf_id'=>'S05',':name'=>'MEMORIA USB HP 2.0 V222W 64GB SILVER (HPFD222W-64)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2550',':shelf_id'=>'S05',':name'=>'MEMORIA USB KINGSTON CELESTE KC-U2L64-7LB EXODIA M 3.2 64GB',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2344',':shelf_id'=>'S02',':name'=>'MEMORIA USB KINGSTON NEGRO/MENTA DATATRAVELER EXODIA DTXM/256GB - MEMORIA USB 256GB, USB 3.2 GEN 1, COLOR AZUL - DTXM/256GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2307',':shelf_id'=>'S02',':name'=>'MEMORIA USB KINGSTON NEGRO/ROJO DATATRAVELER EXODIA DTXM/128GB -128GB, USB 3.2 GEN 1, COLOR ROJO - DTXM/128GB',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2394',':shelf_id'=>'S05',':name'=>'MERCHANDISING - TOMATODO - DELTRON - TOMATODO (DISPENSADOR DE AGUA) MARCA DELTRON, CAPACIDAD VARIABLE, DISEÑO PARA MESA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2395',':shelf_id'=>'S05',':name'=>'MERCHANDISING - TOMATODO - MIRAY - TOMATODO (DISPENSADOR DE AGUA) MARCA MIRAY, CAPACIDAD VARIABLE, DISEÑO PARA MESA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2023',':shelf_id'=>'S03',':name'=>'MICROFONO DIRECCIONAL DE CAÑÓN PARA CAMARAS SGC-598, CONECTOR 3.5MM, PARA GRABACION DE VÍDEO, COLOR NEGRO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.88,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2379',':shelf_id'=>'S05',':name'=>'MOCHILA - ADVANCE - ADV-IDS2055 - MOCHILA PARA LAPTOP 15.6", COLOR AZUL, COMPARTIMENTO ACOLCHADO, BOLSILLOS MULTIPLES - ADV-IDS2055',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1966',':shelf_id'=>'S05',':name'=>'MOCHILA - HP - C3R65LA#ABM - MOCHILA HP CON FRANJA PLOMA ORIGINAL, DISEÑO EJECUTIVO, PARA LAPTOP Y ACCESORIOS - C3R65LA#ABM',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2251',':shelf_id'=>'S05',':name'=>'MOCHILA - KLIP XTREME - KFB-001PK - MOCHILA DE NYLON, TELA FABRIC, COLOR NEON ROSA, DISEÑO JUVENIL - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2383',':shelf_id'=>'S05',':name'=>'MOCHILA - TEROS - TE-ACS9021 - MOCHILA DE POLIESTER, PARA LAPTOP HASTA 15.6", COLOR VERDE MILITAR/MARRÓN, CORREAS AJUSTABLES - TE-ACS9021',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2424',':shelf_id'=>'S05',':name'=>'MOCHILA - TEROS - WORK GREY TE-IDS18560 - MOCHILA WORK GREY, POLIESTER, PARA USO LABORAL, COLOR GRIS, COMPARTIMENTOS ESPACIOSOS - TE-IDS18560',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2055',':shelf_id'=>'S05',':name'=>'MOCHILA GAMER - DELL - GM-BP-BK-17-19 - MOCHILA GAMER PARA LAPTOP HASTA 17", COLOR NEGRO, ESTILO AGGRESIVO, BOLSILLOS PARA ACCESORIOS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2060',':shelf_id'=>'S05',':name'=>'MOCHILA GAMER - HP - 3EJ61LA - MOCHILA GAMER PARA LAPTOP 15.6", DISEÑO ERGONÓMICO, BOLSILLOS PARA ACCESORIOS, ESTILO GAMER - 3EJ61LA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2698',':shelf_id'=>'S05',':name'=>'MOCHILA TEROS TE-IDS18590 POLIÉSTERK HASTA 17? CORREA TRASERA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2177',':shelf_id'=>'S03',':name'=>'MONITOR - HP - 22YH - PANTALLA DE 21.5" FHD, 60HZ, HDMI, VGA, PANEL LED, DISEÑO SIN BORDES - 1CR018165J',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.1,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1927',':shelf_id'=>'S03',':name'=>'MONITOR - LG - 19M38A - PANTALLA DE 18.5" HD, RESOLUCIÓN 1366X768, VGA, PANEL LED, DISEÑO BÁSICO - 19M38A',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2140',':shelf_id'=>'S03',':name'=>'MONITOR - LG - 22MN430M-B - MONITOR 21.5" FHD IPS, HDMI X2, VGA, PANEL IPS, DISEÑO SIN BORDES - 22MN430M',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.54,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2389',':shelf_id'=>'S03',':name'=>'MONITOR - LG - 24MS500-B - MONITOR 23.8" FHD IPS, HDMI X2, SALIDA DE AUDIFONO, DISEÑO SIN BORDES - 24MS500-B',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.76,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2372',':shelf_id'=>'S03',':name'=>'MONITOR - LG - 27MQ400-B - MONITOR 27" FHD IPS, 75HZ, HDMI, VGA, DISEÑO SIN BORDES TRES LADOS, SOPORTE VESA - 27MQ400-B',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.98,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2559',':shelf_id'=>'S05',':name'=>'MONITOR CURVO - TEROS TE-2732S 27" FHD VA 100HZ 1MS HDMI DP NEGRO (TE2732S)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2294',':shelf_id'=>'S03',':name'=>'MONITOR DE OFICINA - DELL - P2722H - MONITOR 27" FHD IPS, HDMI, VGA, USB, AJUSTE ERGONÓMICO COMPLETO, GARANTÍA 36 MESES ON-SITE - P2722H',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.2,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2129',':shelf_id'=>'S03',':name'=>'MONITOR DE OFICINA - HP - ELITEDISPLAY E233 - MONITOR 23" FHD IPS, HDMI, DISPLAYPORT, VGA, 3 PUERTOS USB 3.0, AJUSTE DE ALTURA - 1FH46AA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.42,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2391',':shelf_id'=>'S03',':name'=>'MONITOR DE OFICINA - HP - P27G5 - MONITOR 27" FHD IPS, 75HZ, DISPLAYPORT, HDMI, VGA, SOPORTE VESA, AJUSTE DE INCLINACIÓN - 64X69AA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1733',':shelf_id'=>'S03',':name'=>'MONITOR DE OFICINA - LG - 24BA550-B - MONITOR 23.8" FHD IPS, 100HZ, HDMI, DISPLAYPORT, VGA, 4 PUERTOS USB, SALIDA DE AUDIO - 24BA550-B',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.86,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1790',':shelf_id'=>'S03',':name'=>'MONITOR DE OFICINA - LG - 27BA550-B - MONITOR 27" FHD IPS, 100HZ, HDMI, DISPLAYPORT, VGA, 4 PUERTOS USB, AJUSTE ERGONÓMICO - 8806096108710',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.08,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2179',':shelf_id'=>'S03',':name'=>'MONITOR DE OFICINA - SAMSUNG - T35F LF27T350FHLXPE - MONITOR 27" FHD IPS, 75HZ, HDMI, VGA, DISEÑO SIN BORDES TRES LADOS, SOPORTE VESA - LF27T350FHLXPE',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.3,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1989',':shelf_id'=>'S03',':name'=>'MONITOR GAMER - AOC - G2460PQU - MONITOR GAMER 24" FHD, 144HZ, 1MS, HDMI, VGA, DISPLAYPORT, PIVOT, SOPORTE VESA - G2460PQU',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.52,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2216',':shelf_id'=>'S03',':name'=>'MONITOR GAMER CURVO - GIGABYTE - G27FC - MONITOR CURVO 27" FHD VA, 165HZ, 1MS, HDMI X2, DISPLAYPORT, USB 3.0 X2, PARLANTES 2W, CURVATURA 1500R - G27FC',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.74,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2651',':shelf_id'=>'S05',':name'=>'MONITOR HP E24MV G4, 23.8" FHD (1920X1080) IPS, HDMI/VGA/DP/USB-A 3.1 GEN 1',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2281',':shelf_id'=>'S03',':name'=>'MONITOR LENOVO THINKVISION T24I-20 23.8" FHD IPS, HDMI, DISPLAYPORT, VGA, USB 3.2 GEN1, AJUSTE ERGONÓMICO - 61F7MAR1LA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.96,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2623',':shelf_id'=>'S05',':name'=>'MONITOR PLANO GAMING KENYA G275L E14 , 27" FHD IPS, 144 HZ, 1 MS, HDMI, DP, COLOR NEGRO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2560',':shelf_id'=>'S05',':name'=>'MONITOR PLANO TEROS TE-2419CS 24" WUXGA IPS 75HZ 5MS HDMI VGA (TE2419CS)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1943',':shelf_id'=>'S03',':name'=>'MONITOR ULTRAWIDE - LG - 25UM58 - MONITOR ULTRAWIDE 25" WFHD IPS, RESOLUCIÓN 2560X1080, HDMI, RELACIÓN 21:9, PANEL IPS - 25UM58',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.18,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2143',':shelf_id'=>'S05',':name'=>'MONOPIE PARA CAMARA - WT1006, DISEÑO PORTÁTIL, PLEGABLE - WT1006',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1978',':shelf_id'=>'S03',':name'=>'MOUSE - ADVANCE - ADV5020N - MOUSE ALÁMBRICO, 3 BOTONES, 1000 DPI, CONEXIÓN USB, NEGRO, DISEÑO BÁSICO - ADV5020N',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.4,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2463',':shelf_id'=>'S03',':name'=>'MOUSE - GENIUS - AMMOX X1-600 - RATON ALAMBRICO, RGB 7 COLORES, 6 BOTONES, 2400 DPI, DISEÑO ERGONOMICO NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.62,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2034',':shelf_id'=>'S03',':name'=>'MOUSE - GENIUS - DX-110 - MOUSE ÓPTICO ALÁMBRICO, 1000 DPI, 3 BOTONES, CONEXIÓN USB, COLOR BLANCO, DISEÑO BÁSICO - 31010102301',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.84,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2019',':shelf_id'=>'S03',':name'=>'MOUSE - GENIUS - MICRO TRAVELER V2 - MOUSE ÓPTICO RETRÁCTIL, CABLE RETRÁCTIL, DISEÑO COMPACTO, CONEXIÓN USB, COLOR BLANCO - 31010125104',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.06,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'1831',':shelf_id'=>'S03',':name'=>'MOUSE - GENIUS - MICRO TRAVELER V2 - MOUSE OPTICO RETRACTIL, CABLE RETRACTIL, DISEÑO COMPACTO, CONEXIÓN USB, COLOR NEGRO - 31010125100',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.28,':ly'=>0.0,':lz'=>0.34],
-    [':sku'=>'2266',':shelf_id'=>'S03',':name'=>'MOUSE - HP - DX-110 - MOUSE ÓPTICO ALAMBRICO, 1000 DPI, CONEXON USB, 2 BOTONES + RUEDA DE DESPLAZAMIENTO, COLOR NEGRO - 31010102301',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.0,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2226',':shelf_id'=>'S03',':name'=>'MOUSE - KLIP XTREME - KMO-104 - MOUSE OPTICO ALAMBRICO, CONEXION USB 2.0, DISEÑO EBONY, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.22,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2039',':shelf_id'=>'S03',':name'=>'MOUSE - LOGITECH - M90 - MOUSE OPTICO ALAMBRICO, 1000 DPI, 3 BOTONES, CONEXIÓN USB, COLOR NEGRO DARK MIDNIGHT - 910-001790',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.44,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2276',':shelf_id'=>'S03',':name'=>'MOUSE - XTECH - XTM195 - MOUSE ÓPTICO ALAMBRICO, 1000 DPI, CONEXION USB, DISEÑO AMBIDIESTRO, COLOR NEGRO - XTM195',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.66,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2513',':shelf_id'=>'S03',':name'=>'MOUSE ALAMBRICO - HAIER - M1 - MOUSE OPTICO ALAMBRICO, CONEXIÓN USB, DISEÑO BÁSICO, MODELO M1',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.88,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1862',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - ASUS - ROG SICA P301 GLACIER WHITE - MOUSE OPTICO PARA JUEGOS CON CABLE USB, SENSOR 5000 DPI, VELOCIDAD 130 IPS, TASA DE SONDAJE 1000HZ, DISEÑO AMBIDIESTRO, COLOR B',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.1,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1714',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - GENIUS - SCORPION M700 - MOUSE GAMER ALAMBRICO, SENSOR OPTICO, 7 BOTONES, RGB, 6400 DPI AJUSTABLE - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2334',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - HP - M100 7QV23AA#ABM - MOUSE GAMER ALAMBRICO, DPI 1000/1600, 4 BOTONES, CONEXIÓN USB, COLOR NEGRO - 7QV23AA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.54,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2209',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - HP - M100S 4QM87AA#UUF - MOUSE GAMER ALAMBRICO, DPI 1000/1600/2000/3200, 6 BOTONES, COLOR BLANCO - 4QM87AA',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.76,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2207',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - HP - M150 BK - MOUSE GAMER ALAMBRICO, OPTICO, DISEÑO ERGONÓMICO, CONEXIÓN USB, COLOR NEGRO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.98,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2210',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - HP - M160 - MOUSE GAMER ALÁMBRICO, CABLE 1.3M, DISEÑO ERGONÓMICO, CONEXIÓN USB, COLOR NEGRO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.2,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2223',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - HP - M280 - MOUSE GAMER ALAMBRICO RGB, DPI 800-2400, 6 BOTONES, CONEXIÓN USB, DISEÑO ORIGINAL - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.42,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1823',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - KENYA - GX - SCORPION M300 - MOUSE GAMER ÓPTICO, RGB, ILUMINACIÓN LED, DISEÑO ERGONÓMICO, COLOR NEGRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.64,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2398',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - SIKA - P301 GAMING UV2.0 - MOUSE GAMER, DISEÑO UV2.0, RGB, SENSOR DE ALTA PRECISIÓN, CONEXIÓN USB - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.86,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2443',':shelf_id'=>'S03',':name'=>'MOUSE GAMER - TEROS - TE-1216G - MOUSE GAMER RGB ALAMBRICO, 2 BOTONES, DISEÑO TRANSPARENTE, ILUMINACIÓN LED - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.08,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1876',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - GENIUS - 9000R MINI MICRO TRAVELER - MOUSE INALAMBRICO COMPACTO, 2.4GHZ, NANO RECEPTOR USB, COLOR NEGRO/AZUL - 31030020401',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.3,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1846',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - GENIUS - 9000R MINI MICRO TRAVELER - MOUSE INALAMBRICO COMPACTO, 2.4GHZ, NANO RECEPTOR USB, COLOR ROSA/NEGRO - 31030020400',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.52,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2252',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - GENIUS - ECO-8015 - MOUSE INALAMBRICO RECARGABLE, 2.4GHZ, CONEXION USB NANO RECEPTOR, COLOR CHOCOLATE - 31030162701',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.74,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1903',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M170 - MOUSE INALAMBRICO, 1000 DPI, 2.4GHZ, RECEPTOR USB, COLOR AZUL/GRIS, DURACION BATERIA 12 MESES - 910-006863',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.96,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2232',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M187 MINI - MOUSE INALAMBRICO COMPACTO, 1000 DPI, 2.4GHZ, RECEPTOR USB, COLOR ROSADO REFRESH - 910-007136',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.18,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2147',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M190 - MOUSE INALAMBRICO FULL SIZE, 1000 DPI, 2.4GHZ, RECEPTOR USB, COLOR AZUL, BATERÍA 18 MESES - 910-007164',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.4,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2146',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M190 - MOUSE INALAMBRICO FULL SIZE, 1000 DPI, 2.4GHZ, RECEPTOR USB, COLOR CARBON, BATERÍA 18 MESES - 910-007162',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.62,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2457',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M196 - MOUSE INALAMBRICO BLUETOOTH, 1800 DPI, CONEXIÓN BLUETOOTH, COLOR BLANCO, BATERÍA 24 MESES - 910-007457',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.84,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2455',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M196 - MOUSE INALAMBRICO BLUETOOTH, 1800 DPI, CONEXIÓN BLUETOOTH, COLOR NEGRO, BATERÍA 24 MESES - 910-007456',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.06,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2606',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - LOGITECH - M196 - MOUSE INALAMBRICO BLUETOOTH, 1800 DPI, CONEXIÓN BLUETOOTH, COLOR ROSADO, BATERÍA 24 MESES - 910-007456',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.28,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2257',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - MICROSOFT - ARC TOUCH - MOUSE INALAMBRICO PLEGABLE, TECNOLOGÍA ARC, AMBIDIESTRO, 2.4GHZ, RECEPTOR USB, COLOR NEGRO - 1428',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.0,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2258',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - MICROSOFT - BLUETOOTH MODERN MOBILE - MOTF-0002USE INALAMBRICO BLUETOOTH, COLOR AZUL PASTEL - K8',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.22,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2098',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - MICROSOFT - BLUETOOTH MOUSE 1929 1000 DPI, CONEXION BLUETOOTH 4.0, COLOR NEGRO, DISEÑO MODERNO - 1929',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.44,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2287',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - MICROSOFT - MOBILE MOUSE 1850 1000 DPI, 2.4GHZ, RECEPTOR USB, COLOR ROJO, DISEÑO DELGADO - 1850',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.66,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2020',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - MICROSOFT - MOBILE MOUSE 1850 1000 DPI, 2.4GHZ, RECEPTOR USB, COLOR ROSADO, DISEÑO DELGADO - 1850',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.88,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1901',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - PHILIPS - M634 SPK7634/00 - MOUSE INALAMBRICO DUAL (BLUETOOTH 5.0 + 2.4GHZ), 2400 DPI, COLOR NEGRO, DISEÑO AMBIDIESTRO - SPK7634/00',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.1,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2385',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - TEROS - TE-1217S - MOUSE OPTICO INALAMBRICO, 1000 DPI, RECEPTOR USB, 3 BOTONES, COLOR NEGRO, DISEÑO BÁSICO - TE-1217S',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.32,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2386',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - TEROS - TE-1218S - MOUSE OPTICO INALAMBRICO, 1000 DPI, RECEPTOR USB, 3 BOTONES, COLOR ROSADO, DISEÑO BÁSICO - TE-1218S',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.54,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2422',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO - TEROS - TE-1219S - MOUSE OPTICO INALAMBRICO, 1000 DPI, RECEPTOR USB, 3 BOTONES, COLOR MORADO, DISEÑO BASICO - TE-1219S',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.76,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1794',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO ADVANCE - ADV-1238S, CONEXION USB, 3 BOTONES, COLOR AZUL, DISEÑO BASICO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.98,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2541',':shelf_id'=>'S02',':name'=>'MOUSE INALAMBRICO ENKORE URBAN EKM 203K 2.4GHZ',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'1717',':shelf_id'=>'S03',':name'=>'MOUSE INALAMBRICO TEROS - TE-1230CS - MOUSE INALAMBRICO DUAL, 1200 DPI, 3 BOTONES, CONEXION 2.4GHZ USB, DISEÑO AMBIDIESTRO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.2,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2684',':shelf_id'=>'S03',':name'=>'MOUSE MENTA INALAMBRICO MICROSOFT BLUETOOTH MODERN MOBILE - INALAMBRICO BLUETOOTH, COLOR MENTA - MODEL 1679/1679C - KTF-00016',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.42,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2399',':shelf_id'=>'S05',':name'=>'MOUSE PAD - VASTEC , SUPERFICIE BASICA, DISEÑO BASICO, COLOR NEGRO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1793',':shelf_id'=>'S05',':name'=>'MOUSE PAD CON DISEÑO IMPRESO, SUPERFICIE TELA, BORDE COSTURADO - TE-3019S',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2475',':shelf_id'=>'S05',':name'=>'MOUSE PAD GAMER ASROCK TAICHI PHILOSOPHY XXXL, DISEÑO TAICHI, SUPERFICIE TELA, BORDE COSTURADO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2517',':shelf_id'=>'S03',':name'=>'MOUSE PAD GAMER TIPO ANIME 18 X 45 CM YT-402 GENERICO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.64,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1708',':shelf_id'=>'S05',':name'=>'MOUSE PAD GAMER, SUPERFICIE TELA, BORDE COSTURADO, ILUMINACIÓN MULTICOLOR - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2103',':shelf_id'=>'S05',':name'=>'MOUSE PAD GENIUS - CON ALMOHADILLA DE GEL, SUPERFICIE TELA, COLOR NEGRO, ERGONÓMICA - G-WMP 100',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2427',':shelf_id'=>'S05',':name'=>'MOUSE PAD NEGRO LISO SIN MARCA, SUPERFICIE BÁSICA, DISEÑO MINIMALISTA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2563',':shelf_id'=>'S03',':name'=>'MOUSE PAD TEROS TE-3018S, DISEÑO IMPRESO (TE3018S)',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.86,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2400',':shelf_id'=>'S05',':name'=>'MOUSE PAD, SUPERFICIE LISA , DISEÑO BASICO, COLOR NEGRO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2426',':shelf_id'=>'S05',':name'=>'MOUSE PAD, SUPERFICIE TELA, DISEÑO SIMPLE, COLORES VARIADOS - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2188',':shelf_id'=>'S04',':name'=>'MULTITOMA - TOMA CORRIENTE MULTIFUNCIONAL VERTICAL, CAPACIDAD 10A, DISEÑO COMPACTO, PARA MÚLTIPLES CONEXIONES - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.12,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2639',':shelf_id'=>'S03',':name'=>'PAD MOUSE KENYA G-WMP 100 CON DESCANSADOR',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.08,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2654',':shelf_id'=>'S03',':name'=>'PAD MOUSE TEROS TE-3014S, NEGRO CON DISEÑO',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.3,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1716',':shelf_id'=>'S01',':name'=>'PAPEL FOTOGRAFICO A4, GRAMAGE 180G, SUPERFICIE BRILHANTE, PARA IMPRESORAS DE INKJET (AR-00823)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1699',':shelf_id'=>'S01',':name'=>'PAPEL TERMICO ROLLO PARA IMPRESORAS DE PUNTO DE VENTA (P.P), TAMAÑO 6X4 CM, ROLLO X 250 HOJAS, COLOR LILA - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1895',':shelf_id'=>'S05',':name'=>'PAQUETE DE 100 FUNDAS INDIVIDUALES PARA CD, PROTECCIÓN BÁSICA - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2416',':shelf_id'=>'S03',':name'=>'PARLANTE BLUETOOTH - GENIUS - SP-915BT - BLUETOOTH 5.3, 5W, MICROFONO AI COPILOT, ILUMINACION RGB, 6 HORAS BATERÍA, COLOR AZUL - SP-915BT',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.52,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2110',':shelf_id'=>'S03',':name'=>'PARLANTE BLUETOOTH - GENIUS - SP-915BT - BLUETOOTH 5.3, 5W, MICROFONO AI COPILOT, ILUMINACION RGB, 6 HORAS BATERIA, COLOR NEGRO+GRIS - SP-915BT',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.74,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2111',':shelf_id'=>'S03',':name'=>'PARLANTE BLUETOOTH - GENIUS - SP-915BT - BLUETOOTH 5.3, 5W, MICROFONO AI COPILOT, ILUMINACION RGB, 6 HORAS BATERIA, COLOR ROJO - SP-915BT',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.96,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2205',':shelf_id'=>'S03',':name'=>'PARLANTE BLUETOOTH - SKILL - B-1 BURGER - BLUETOOTH 3W, FORMA DE HAMBURGUESA, COLOR ROSADO, MICROFONO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.18,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1705',':shelf_id'=>'S03',':name'=>'PARLANTE BLUETOOTH - TEROS - TE-6032N - BLUETOOTH 5W, BATERÍA 400MAH, ALIMENTACIÓN MICRO-USB, DISEÑO CILÍNDRICO, NEGRO - TE-6032N',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.4,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1770',':shelf_id'=>'S03',':name'=>'PARLANTE BLUETOOTH 60W, BATERÍA DE LARGA DURACIÓN, RADIO FM, ENTRADAS AUX/USB, COLOR NEGRO - TE-6045N',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.62,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2564',':shelf_id'=>'S03',':name'=>'PARLANTE INALAMBRICO TEROS - TE-6018R - BLUETOOTH 5W RMS /3W DISENO MERY CHRISMAS',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.84,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2164',':shelf_id'=>'S03',':name'=>'PARLANTE MINI - ENTRADA 3.5MM, ALIMENTACIÓN POR BATERÍA/USB, DISEÑO COMPACTO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.06,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'1975',':shelf_id'=>'S03',':name'=>'PARLANTE PORTATIL - HALION - HA-77BT - 80W RMS, DRIVER 6.5", BLUETOOTH, BATERIA, LUZ LED, MICROFONO, FORMA DE MURCIELAGO, NEGRO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.28,':ly'=>0.525,':lz'=>0.0],
-    [':sku'=>'2236',':shelf_id'=>'S03',':name'=>'PARLANTE PORTATIL - HALION - HA-R23 - 60W, BLUETOOTH, BATERIA RECARGABLE, RADIO FM, LECTOR SD/USB - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.0,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1982',':shelf_id'=>'S03',':name'=>'PARLANTE PORTÁTIL - MICRONICS - S7001BT - VINTAGE 100W RMS, BLUETOOTH, LECTOR SD/USB, RADIO FM, DISEÑO RETRO, MADERA - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.22,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2352',':shelf_id'=>'S03',':name'=>'PARLANTE USB - GENIUS - SP-HF180 - USB 6W, ALIMENTACIÓN POR USB, CONECTOR 3.5MM, CARCASA DE MADERA, DISEÑO CLÁSICO - 31731065500',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.44,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2206',':shelf_id'=>'S03',':name'=>'PARLANTE USB - GENIUS - SP-Q160 - USB 6W, ALIMENTACIÓN POR USB, CONECTOR 3.5MM, COLOR IRON GREY (GRIS HIERRO), DISEÑO CÚBICO - 31731065600',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.66,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2296',':shelf_id'=>'S03',':name'=>'PARLANTES MICRONICS PSICOTIC S7005KTV, 110W RMS, BLUETOOTH, LED, LECTOR SD/USB, ENTRADAS PARA PC - MIC S7005 BT',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>0.88,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2035',':shelf_id'=>'S03',':name'=>'PARLANTES PARA AUTO - SONY - XS-GF1622X XPLOD - 16CM (6.5"), POTENCIA MÁXIMA 240W, IMPEDANCIA 4 OHMS, CONO DE POLIETILENO - XS-GF1622X',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.1,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2686',':shelf_id'=>'S02',':name'=>'PASTA TERMICA COOLER MASTER CRYOFUZE 7 (MGZ-NDSG-N04G-R1)',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2149',':shelf_id'=>'S03',':name'=>'PERIFERICO - MOUSE INALAMBRICO - LOGITECH - M190 - MOUSE INALAMB2028LZ0BN7L9',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.32,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1829',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASROCK - H610M-HDV/M.2+D5 - PLACA BASE MICRO-ATX, CHIPSET INTEL H610, SOCKET LGA1700, SOPORTE DDR5, CONEXIÓN M.2 - 90-MXBM50-A0UAYAZ',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'1703',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASROCK - H610M/AC - PLACA BASE MICRO-ATX, CHIPSET INTEL H610, SOCKET LGA1700, WIFI INTEGRADO, DDR4 - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2289',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASROCK - X570 PRO4 - PLACA BASE ATX, CHIPSET AMD X570, SOCKET AM4, DDR4, PCIE 4.0, USB 3.2 GEN2 - 90-MXBAT0-A0UAYZ',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2261',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASUS - PRIME A320M-K - PLACA BASE MICRO-ATX, CHIPSET AMD A320, SOCKET AM4, DDR4, HDMI, VGA - 90MB0YF0-M0EAY0',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2204',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASUS - PRIME B460M-A - PLACA BASE MICRO-ATX, CHIPSET INTEL B460, SOCKET LGA1200, DDR4, USB 3.2 GEN1 - 90MB13E0-M0EAY0',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.89,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2351',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASUS - PRIME B660M-A AC D4 - PLACA BASE MICRO-ATX, CHIPSET INTEL B660, SOCKET LGA1700, WIFI, DDR4, PCIE 4.0 - 90MB19M0-MVAAY0',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.06,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2497',':shelf_id'=>'S02',':name'=>'PLACA MADRE - ASUS - PRIME B760M-A D4 - PLACA BASE MICRO-ATX, CHIPSET INTEL B760, SOCKET LGA1700, DDR4, HDMI, DP, USB 3.2 - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.23,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2241',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - A520M S2H (REV 1.X) - PLACA BASE MICRO-ATX, CHIPSET AMD A520, SOCKET AM4, DDR4, HDMI, VGA, DVI-D - A520M S2H',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.4,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2218',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - B450M DS3H V2 - PLACA BASE MICRO-ATX, CHIPSET AMD B450, SOCKET AM4, DDR4, HDMI, DVI-D, VGA - B450M DS3H V2',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.57,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2445',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - B760M D3HP WIFI6 - PLACA BASE MICRO-ATX, CHIPSET INTEL B760, SOCKET LGA1700, WIFI 6, DDR4, PCIE 4.0 - B760M D3HP WIFI6',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.74,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2467',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - B760M K V2 DDR4 - PLACA BASE MICRO-ATX, CHIPSET INTEL B760, SOCKET LGA1700, DDR4, HDMI, VGA - B760M K V2 DDR4',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.91,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2356',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - GA-B85M-D2V - PLACA BASE MICRO-ATX, CHIPSET INTEL B85, SOCKET LGA1150, DDR3, VGA, DVI, USB 3.0 - GA-B85M-D2V',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.08,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2075',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - GA-H110M-DS2V DDR3 - PLACA BASE MICRO-ATX, CHIPSET INTEL H110, SOCKET LGA1151, DDR3, VGA, DVI-D - MBGBH110MDS2VD3',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.25,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2158',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - Z390 GAMING X - PLACA BASE ATX, CHIPSET INTEL Z390, SOCKET LGA1151, DDR4, RGB, PCIE 3.0, USB 3.1 GEN2 - Z390 GAMING X',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.42,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2326',':shelf_id'=>'S02',':name'=>'PLACA MADRE - GIGABYTE - Z690 UD (REV. 1.0) - PLACA BASE ATX, CHIPSET INTEL Z690, SOCKET LGA1700, DDR5, USB 3.2, TIPO C, DP, HDMI - Z690 UD DDR5',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.59,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2364',':shelf_id'=>'S02',':name'=>'PLACA MADRE - INTEL - DESKTOP BOARD 02 21B6E1E2 - PLACA BASE OEM, FORMATO MICRO-ATX, CONECTORES BÁSICOS, VGA, PUERTO PARALELO, PARA SISTEMAS DE 2DA GEN - 02 21B6E1E',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.76,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2359',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - A55M-E33 - PLACA BASE MICRO-ATX, CHIPSET AMD A55, SOCKET FM2/FM2+, DDR3, HDMI, VGA, USB 2.0 - A55M-E33',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.93,':ly'=>0.5,':lz'=>0.22],
-    [':sku'=>'2222',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - B450M PRO VDH MAX - PLACA BASE MICRO-ATX, CHIPSET AMD B450, SOCKET AM4, DDR4, HDMI, VGA, USB 3.2 GEN1 - B450M PRO-VDH MAX',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2175',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - B460M PRO-VDH - PLACA BASE MICRO-ATX, CHIPSET INTEL B460, SOCKET LGA1200, DDR4, HDMI, DVI-D, USB 3.2 GEN1 - B460M PRO-VDH',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2270',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - B460M-A PRO - PLACA BASE MICRO-ATX, CHIPSET INTEL B460, SOCKET LGA1200, DDR4, HDMI, DVI-D, USB 3.2 GEN1 - B460M-A PRO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1828',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - PRO B760M-A WIFI - PLACA BASE MICRO-ATX, CHIPSET INTEL B760, SOCKET LGA1700, WIFI 6, DDR5, HDMI X2, DP X2 - PRO B760M-A WIFI',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1816',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - PRO B760M-E DDR4 - PLACA BASE MICRO-ATX, CHIPSET INTEL B760, SOCKET LGA1700, DDR4, PCIE 4.0 - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1834',':shelf_id'=>'S02',':name'=>'PLACA MADRE - MSI - PRO H610M-G DDR4 - MICRO-ATX, CHIPSET INTEL H610, SOCKET LGA1700, DDR4, HDMI, VGA, USB 3.2 - PRO H610M-G DDR4',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2357',':shelf_id'=>'S02',':name'=>'PLACA MADRE -ECS - H81H3-M4 - PLACA BASE MICRO-ATX, CHIPSET INTEL H81, SOCKET LGA1150, DDR3, HDMI, VGA, USB 3.0 - H81H3-M4',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2363',':shelf_id'=>'S02',':name'=>'PLACA MADRE- ECS - A970M-A DELUXE V1.0 - PLACA BASE ATX, CHIPSET AMD 970, SOCKET AM3+, DDR3, USB 3.0, SATA 6GB/S - A970M-A DELUXE V1.0',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2327',':shelf_id'=>'S02',':name'=>'PLACA MADRE- ECS - ELITEGROUP GRH310CH5-M2 - PLACA BASE MICRO-ATX, CHIPSET INTEL H310, SOCKET LGA1151, DDR4, HDMI, VGA - GRH310CH5-M2',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2072',':shelf_id'=>'S05',':name'=>'POWER BANK - SONY - BATERÍA EXTERNA (POWER BANK) 10000MAH, PUERTO USB, COLOR NEGRO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2627',':shelf_id'=>'S05',':name'=>'PRESENTADOR LASER BASEUS INALAMBRICO USB+TIPO C NEGRO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2300',':shelf_id'=>'S05',':name'=>'PROBADOR DE FUENTES - THERMALTAKE - DR. POWER II - PROBADOR DE FUENTES DE ALIMENTACIÓN CON PANTALLA LCD, PRUEBA VOLTAJES DE RAÍL 3.3V, 5V, 12V,',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2094',':shelf_id'=>'S02',':name'=>'PROCESADOR - AMD - RYZEN 3 3200G - PROCESADOR 4 NÚCLEOS/4 HILOS, 3.6 GHZ, GRÁFICOS INTEGRADOS VEGA 8, SOCKET AM4, 65W TDP - YD3200C5FHBOX',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2056',':shelf_id'=>'S02',':name'=>'PROCESADOR - AMD - RYZEN 7 3700X - PROCESADOR 8 NÚCLEOS/16 HILOS, 3.6 GHZ (HASTA 4.4 GHZ), 32 MB L3 CACHE, SOCKET AM4, 65W TDP - 100-100000071BOX',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1882',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CELERON G1820 - PROCESADOR DUAL CORE, 2.7 GHZ, 2 MB CACHE, SOCKET LGA1150, 4TA GENERACIÓN, 54W TDP - CM8064601484015',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2201',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I3-10100 - PROCESADOR 4 NÚCLEOS/8 HILOS, 3.6 GHZ (HASTA 4.3 GHZ), 6 MB SMART CACHE, SOCKET LGA1200, 65W TDP - BX8070110100',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2254',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I3-10100F - PROCESADOR 4 NÚCLEOS 8 HILOS, 3.6 GHZ (TURBO 4.3 GHZ), 6 MB SMART CACHE, SOCKET LGA1200, 65W TDP, SIN GRÁFICOS INTEGRADOS - B',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2423',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I3-13100 - PROCESADOR 4 NÚCLEOS 8 HILOS, 3.4 GHZ (TURBO 4.5 GHZ), 12 MB SMART CACHE, SOCKET LGA1700, 60W TDP - BX8071513100',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1947',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I3-9100 - PROCESADOR 4 NÚCLEOS, 3.6 GHZ, 6 MB CACHE L3, SOCKET LGA1151, 65W TDP - BX80684I39100',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2079',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I5-10400F - PROCESADOR 6 NÚCLEOS 12 HILOS, 2.9 GHZ (TURBO 4.3 GHZ), 12 MB SMART CACHE, SOCKET LGA1200, 65W TDP - BX8070110400F',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2436',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I5-11400 - PROCESADOR 6 NÚCLEOS 12 HILOS, 2.6 GHZ (TURBO 4.4 GHZ), 12 MB SMART CACHE, SOCKET LGA1200, 65W TDP - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.89,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2442',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I5-14400 - PROCESADOR 6 NÚCLEOS 12 HILOS, 2.5 GHZ (TURBO 4.7 GHZ), 20 MB SMART CACHE, SOCKET LGA1700, 65W/148W TDP - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.06,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1688',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I5-14500 - PROCESADOR 6+8 NÚCLEOS (14C/20H), 2.6 GHZ (TURBO 5.0 GHZ), 24 MB SMART CACHE, SOCKET LGA1700, 65W/154W TDP - BX8071514500',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.23,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1756',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I5-2310 - PROCESADOR 4 NÚCLEOS, 3.20 GHZ (TURBO), 6 MB CACHE, SOCKET LGA1155 - CM8062301011800',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.4,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2127',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I5-9400F- PROCESADOR 6 NÚCLEOS, 2.9 GHZ (TURBO 4.1 GHZ), 9 MB CACHE L3, SOCKET LGA1151, 65W TDP, SIN GRÁFICOS INTEGRADOS - BX80684I59400F',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.57,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2227',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I7-11700 - PROCESADOR 8 NÚCLEOS 16 HILOS, 2.5 GHZ (TURBO 4.9 GHZ), 16 MB CACHE L3, SOCKET LGA1200, 65W TDP - BX8070811700',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.74,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2228',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I7-11700KF - PROCESADOR 8 NÚCLEOS 16 HILOS, 3.6 GHZ (TURBO 5.0 GHZ), 16 MB CACHE L3, SOCKET LGA1200, 125W TDP, SIN BLOQUEO MULTIPLICADOR',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>3.91,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2330',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I7-12700K - PROCESADOR 8+4 NÚCLEOS (12C/20H), 3.6 GHZ (TURBO 5.0 GHZ), 25 MB CACHE L3, SOCKET LGA1700, 125W TDP, SIN BLOQUEO MULTIPLICADO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.08,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1749',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I7-14700 - PROCESADOR 8+12 NÚCLEOS (20C/28H), 2.1 GHZ (TURBO 5.4 GHZ), 33 MB SMART CACHE, SOCKET LGA1700, 65W/219W TDP - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.25,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2018',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I7-8700K - PROCESADOR 6 NÚCLEOS 12 HILOS, 3.7 GHZ (TURBO 4.7 GHZ), 12 MB CACHE L3, SOCKET LGA1151, 95W TDP, SIN BLOQUEO MULTIPLICADOR - B',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.42,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2329',':shelf_id'=>'S02',':name'=>'PROCESADOR - INTEL - CORE I9-12900K - PROCESADOR 8+8 NÚCLEOS (16C/24H), 3.2 GHZ (TURBO 5.1 GHZ), 30 MB CACHE L3, SOCKET LGA1700, 125W TDP, SIN BLOQUEO MULTIPLICADO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.59,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2569',':shelf_id'=>'S05',':name'=>'PRODUCTO POR GARANTIA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1697',':shelf_id'=>'S05',':name'=>'PROTECTOR DE PANTALLA PARA LAPTOP 10.1", DISEÑO DE PROTECCIÓN - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2100',':shelf_id'=>'S05',':name'=>'PROTECTOR DE PANTALLA TEMPLADO DE 9H, PARA SAMSUNG GALAXY TAB 2 10.1", P5100, P5110 - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2025',':shelf_id'=>'S05',':name'=>'PROTECTOR DE TECLADO KEYBOARD - GALES - PROTECTOR DE TECLADO PARA LAPTOP DE 15.6" A 17.1", SILICONA O PLÁSTICO, PROTECCIÓN CONTRA POLVO Y LÍQUIDOS',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2186',':shelf_id'=>'S04',':name'=>'PROTECTOR PARA CONECTOR - DIXON - CAPUCHA DE PLÁSTICO (BOOT) PARA CONECTOR JACK RJ45, PAQUETE DE 10 UNIDADES',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.24,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2240',':shelf_id'=>'S05',':name'=>'PROYECTOR - EPSON - POWERLITE E20 - PROYECTOR XGA, 3400 LÚMENES, RESOLUCIÓN 1024X768, CONECTORES VGA Y OTROS, USO EDUCATIVO/COMERCIAL - V11H981020',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2493',':shelf_id'=>'S05',':name'=>'PUNTERO LASER - PUNTERO LASER TIPO LÁPIZ 4 EN 1 (LÁSER, LUZ LED, ETC.), COLOR PLATEADO.',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2066',':shelf_id'=>'S03',':name'=>'RADIO PORTÁTIL - HALION - AT-7500 - BLUETOOTH, USB, BANDA AM/FM, BATERÍA RECARGABLE, DISEÑO RETRO - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.54,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2237',':shelf_id'=>'S03',':name'=>'RADIO PORTÁTIL - HALION - AT-8350 - BLUETOOTH, BATERÍA RECARGABLE, USB, ENTRADA AUXILIAR, PANEL DIGITAL - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.76,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2319',':shelf_id'=>'S02',':name'=>'REFRIGERACION LIQUIDA - GAMEMAX - ICEBERG 120 RAINBOW - KIT AIO 120MM, VENTILADOR RGB, COMPATIBLE INTEL/AMD, DISEÑO RAINBOW - GAFXPSMHZLTCYDI',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.76,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'1734',':shelf_id'=>'S02',':name'=>'REFRIGERACION LIQUIDA - MSI - MAG CORELIQUID A13 240 - KIT DE REFRIGERACION LÍQUIDA AIO 240MM, 2 VENTILADORES, COMPATIBILIDAD CON SOCKETS PRINCIPALES, COLOR NEGRO',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>4.93,':ly'=>0.5,':lz'=>0.44],
-    [':sku'=>'2295',':shelf_id'=>'S02',':name'=>'REFRIGERACION LIQUIDA - NZXT - KRAKEN M22 - KIT AIO 120MM, LUZ LED RGB, COMPATIBLE INTEL/AMD, DISEÑO COMPACTO - RL-KRM22-01',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2666',':shelf_id'=>'S05',':name'=>'REFRIGERADOR LÍQUIDO DE CPU MSI MAG CORELIQUID A13 360',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1762',':shelf_id'=>'S04',':name'=>'REGLETA - FORZA - FPS-005B - REGLETA DE 6 TOMACORRIENTES CON SUPERVISIÓN DE PICOS, PROTECCIÓN - FPS-005B',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.36,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1858',':shelf_id'=>'S05',':name'=>'RELOJ BIOMETRICO - ZKTECO - K14 - RELOJ DE CONTROL DE ASISTENCIA BIOMÉTRICO (HUELLA), REGISTRO DE ENTRADA/SALIDA',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2092',':shelf_id'=>'S05',':name'=>'RELOJ DE PARED O ESCRITORIO, FUNCIÓN DE ALARMA,LY CLOCK - LY1144 DISEÑO BÁSICO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1891',':shelf_id'=>'S01',':name'=>'RODILLO DE TRANSFERENCIA - XEROX - 008R13178 - PARA XEROX WC 5945/WC 5955, COMPONENTE DE MANTENIMIENTO - 008R13178',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1905',':shelf_id'=>'S04',':name'=>'ROSETA - SATRA - PARA JACK RJ45, 1 PUERTO, COLOR BLANCO, INSTALACIÓN EN PARED - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.48,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1867',':shelf_id'=>'S04',':name'=>'ROSETA - SATRA - PARA JACK RJ45, 2 PUERTOS, COLOR BLANCO, INSTALACIÓN EN PARED - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.6,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2044',':shelf_id'=>'S04',':name'=>'ROUTER 3G/4G - TP-LINK - TL-MR3020 - INALAMBRICO 3G/4G PORTÁTIL, COMPARTIR CONEXIÓN USB, WIFI N300, MICRO USB - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.72,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2341',':shelf_id'=>'S04',':name'=>'ROUTER 4G - TENDA - 4G06V2.1 - VOLTE, WIFI N300, COMPARTIR DATOS MÓVILES, VOZ LTE, PUERTOS LAN - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.84,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2068',':shelf_id'=>'S04',':name'=>'ROUTER ADSL - D-LINK - DSL-2740E - ADSL2+ INALAMBRICO N300, 4 PUERTOS LAN 10/100, WIFI 802.11N - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>0.96,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2431',':shelf_id'=>'S04',':name'=>'ROUTER WI-FI - TP-LINK - ARCHER AX12 - WI-FI 6 AX1500, DOBLE BANDA (2.4/5 GHZ), 4 ANTENAS, 4 PUERTOS GIGABIT LAN - SIN N/P',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.08,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2591',':shelf_id'=>'S05',':name'=>'SECOND HDD CADDY (ADAPTADOR PARA SEGUNDO DISCO DURO)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2160',':shelf_id'=>'S03',':name'=>'SENNHEISER - XS 1 - MICROFONO CONDENSADOR CARDIOIDE, CONECTOR XLR-3, PATRÓN DE CAPTACIÓN UNIDIRECCIONAL, COLOR NEGRO - 507487',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>1.98,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2518',':shelf_id'=>'S05',':name'=>'SERVICIO TECNICO GENERAL',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2544',':shelf_id'=>'S05',':name'=>'SILLA GAMER GAMING TEROS TE-8122 NEGRO ERGONOMICO',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1843',':shelf_id'=>'S03',':name'=>'SISTEMA DE MICROFONO LAVALIER INALAMBRICO UHF, RECEPTOR Y TRANSMISOR, PROFESIONAL - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.2,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2235',':shelf_id'=>'S03',':name'=>'SISTEMA DE PARLANTES 2.1 - HALION - YORK HA-K39 - 2.1 CON SUBWOOFER, 80W, BLUETOOTH, USB, SD, RADIO FM, ILUMINACIÓN LED - SIN N/P',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.42,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2200',':shelf_id'=>'S05',':name'=>'SOFTWARE - SISTEMA OPERATIVO - MICROSOFT - WINDOWS 11 PRO - LICENCIA DSP OEI ESPAÑOL LATAM, 64-BIT, VERSIÓN 21H2, DVD, 1 PAQUETE, PARA 1 PC - FQC-10553',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1780',':shelf_id'=>'S05',':name'=>'SOPORTE DE LENTE - CANON - LENS HOOD - PARASOL/CAÑÓN DE LENTE 55MM, PARA CANON FD (II), COLOR NEGRO -',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2638',':shelf_id'=>'S05',':name'=>'SOPORTE TRIPODE OCTUBUS FLEXIBLE MINI ESPONJA PARA TELEFONO MOVIL (ROJO)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2304',':shelf_id'=>'S05',':name'=>'SOPORTE UNIVERSAL - TCH - TCH059 - SOPORTE PARA ESPEJO RETROVISOR, AJUSTABLE - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2268',':shelf_id'=>'S04',':name'=>'SUPRESOR - FORZA - FSP-806 - SUPRESOR DE PICOS CON 6 TOMAS, PROTECCIÓN 1200 JOULES, CAPACIDAD 2200W, ENTRADA 110V/220V, CON ENCHUFE NEMA 5-15P - FSP-806',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.2,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2668',':shelf_id'=>'S05',':name'=>'SUPRESOR DE PICO OMEGA 492423BK - 6 SALIDAS',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'1761',':shelf_id'=>'S04',':name'=>'SUPRESOR DE PICOS - FORZA - FPS-005B - 6 TOMACORRIENTES, PROTECCIÓN CONTRA SOBRETENSIONES - FPS-005B',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.32,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2362',':shelf_id'=>'S04',':name'=>'SWITCH - D-LINK - DES-1008C - SWITCH DE 8 PUERTOS RJ-45 10/100 MBPS, AUTO MDI/MDIX, ALIMENTACIÓN EXTERNA - DES-1008C',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.44,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2273',':shelf_id'=>'S04',':name'=>'SWITCH - D-LINK - DES-1024D - SWITCH NO ADMINISTRADO DE 24 PUERTOS, 10/100 MBPS, AUTO-MDIX, HAZ DE CABLES INCORPORADO, DISEÑO DE RACK - DES-1024D',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.56,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2554',':shelf_id'=>'S04',':name'=>'SWITCH TP-LINK TL-SG1024D 24 PUERTOS DESKTOP/RACKMOUNT (1730502267)',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.68,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'1726',':shelf_id'=>'S04',':name'=>'SWITCH TP-LINK TL-SG116 V1.2 SWITCH NO ADMINISTRADO GIGABIT DE 16 PUERTOS, AUTO-NEGOCIACIÓN, AUTO-MDIX, FORMATO RACK-MOUNT - 1730502243',':width'=>0.1,':height'=>0.05,':depth'=>0.15,':lx'=>1.8,':ly'=>0.0,':lz'=>0.51],
-    [':sku'=>'2135',':shelf_id'=>'S03',':name'=>'TABLERO GRÁFICO DIGITAL - GENIUS - EASYPEN I405X - TABLETA GRAFICA 4" X 5.5", LÁPIZ SIN BATERIA, RESOLUCION 4000 LPI, 1024 NIVELES DE PRESIÓN - I405X',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.64,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2136',':shelf_id'=>'S03',':name'=>'TABLERO GRÁFICO DIGITAL - GENIUS - MOUSEPEN I608X - TABLETA GRAFICA 8" X 6.5", LÁPIZ SIN BATERÍA, 2048 NIVELES DE PRESION, FUNCIÓN DE MOUSE - I608X',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>2.86,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2656',':shelf_id'=>'S05',':name'=>'TABLET ADVANCE SMARTPAD SP3703 WIFI 10.1" WXGA IPS A333 1.75GHZ 4GB 64GB ANDROID 15 GRIS',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2099',':shelf_id'=>'S01',':name'=>'TAMBOR DE FOTOCONDUCTOR - KONICA MINOLTA - DR312 - PARA BIZHUB 227/287/367, VIDA ÚTIL 45K PÁGINAS, COLOR NEGRO - A7Y00RD',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2350',':shelf_id'=>'S01',':name'=>'TAMBOR DE IMAGEN - HP - 19A (CF219A) - ORIGINAL PARA IMPRESORAS LÁSER HP PRO M102W, M134A, M130FW',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2439',':shelf_id'=>'S01',':name'=>'TAMBOR DE IMAGEN - HP - 332A (W1332A) - ORIGINAL PARA IMPRESORA LÁSER HP 408DN, RENDIMIENTO 30,000 PÁGINAS, MONOCROMÁTICO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2483',':shelf_id'=>'S01',':name'=>'TAMBOR DE IMAGEN - TOPJET W1332A - UNIDAD DE IMAGEN O DRUM COMPATIBLE CON HP 332A (W1332A), PARA IMPRESORAS LÁSER',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1890',':shelf_id'=>'S01',':name'=>'TAMBOR DE IMAGEN - XEROX - 013R00675 - CARTUCHO DE TAMBOR PARA ALTALINK B8045/B8055/B8065/B8075/B8090, - 013R00675',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2508',':shelf_id'=>'S02',':name'=>'TARJETA DE EXPANSION -ADAPTADOR PCI A PUERTO PARALELO DB25, PARA CONEXIÓN DE IMPRESORAS ANTIGUAS - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.17,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2452',':shelf_id'=>'S02',':name'=>'TARJETA DE PUERTOS USB - ENCORE - TARJETA PCI, 4 PUERTOS USB 3.0, CONEXIÓN INTERNA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.34,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2510',':shelf_id'=>'S02',':name'=>'TARJETA DE RED ETHERNET - ETHERLINK - MODELO 3CS0H0100-TX, CONECTOR RJ45, PARA PC ANTIGUA - 3CS0H0100-TX',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.51,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2384',':shelf_id'=>'S02',':name'=>'TARJETA DE RED INALAMBRICA - TP-LINK - TL-WN951N - PCI WIRELESS N, 300 MBPS, BANDA 2.4GHZ, 3 ANTENAS EXTERNAS, SEGURIDAD WPA/WPA2 - TL-WN951N',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.68,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2291',':shelf_id'=>'S02',':name'=>'TARJETA DE SONIDO - CREATIVE - AUDIGY FX 5.1 - TARJETA DE SONIDO PCIE 5.1 CANALES (SURROUND), 24-BIT/192KHZ, DRIVERS CUSTOMIZABLES, AMPLIFICADOR HEADPHONE - SB1570',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>0.85,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2413',':shelf_id'=>'S02',':name'=>'TARJETA DE VIDEO - MSI - NVIDIA GEFORCE 210 - TARJETA GRÁFICA GEFORCE 210, 1GB DDR3, 64-BIT, PUERTOS HDMI/DVI/VGA, PCI-E 2.0 X16, PASIVA COOLING - N210-MD1G/D3',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.02,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2446',':shelf_id'=>'S02',':name'=>'TARJETA DE VIDEO - XFX - SPEEDSTER SWFT 210 RADEON RX 7800 XT - TARJETA GRÁFICA AMD RX 7800 XT, 16GB GDDR6, PCI-E 4.0, DISEÑO SPEEDSTER SWFT TRIPLE FAN - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.19,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1850',':shelf_id'=>'S02',':name'=>'TARJETA INALAMBRICA - D-LINK - DWA-525 - PCI WIRELESS N 150, 150 MBPS (802.11B/G/N), BANDA 2.4GHZ, ANTENA INTERNA - DWA-525',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.36,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2468',':shelf_id'=>'S02',':name'=>'TARJETA INALAMBRICA - TP-LINK - ARCHER T4E - PCI-EXPRESS AC1200 (802.11AC), DOBLE BANDA (2.4/5GHZ), BLUETOOTH, 2 ANTENAS - 0152502565',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.53,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2432',':shelf_id'=>'S02',':name'=>'TARJETA INALAMBRICA - TP-LINK - ARCHER T4E - PCIE WI-FI AC1200, DOBLE BANDA (2.4/5 GHZ), DOS ANTENAS, DRIVERS WINDOWS - 0152502293',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.7,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2260',':shelf_id'=>'S02',':name'=>'TARJETA INALAMBRICA - TP-LINK - ARCHER TX3000E - PCIE WI-FI 6 AX3000, BLUETOOTH 5.0',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>1.87,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2495',':shelf_id'=>'S02',':name'=>'TARJETA INALAMBRICA - TP-LINK - TL-WN781ND - PCI-EXPRESS WIRELESS N 150, 150 MBPS, BANDA 2.4GHZ, ANTENA INTERNA BAJA PERFIL - TL-WN781ND',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.04,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'1964',':shelf_id'=>'S02',':name'=>'TARJETA INALAMBRICA - TP-LINK - TL-WN851ND - PCI WIRELESS N, 300 MBPS (802.11N), BANDA 2.4GHZ, ANTENA EXTERNA DESMONTABLE - TL-WN851ND',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.21,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2390',':shelf_id'=>'S03',':name'=>'TECLADO - GENIUS - KB-100 - TECLADO ALAMBRICO USB, DISTRIBUCION ESPAÑOL, TECLAS SILENCIOSAS, DISEÑO DELGADO, COLOR NEGRO - 31300005401',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.08,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2037',':shelf_id'=>'S03',':name'=>'TECLADO - GENIUS - KB-118 - TECLADO ALAMBRICO USB, DISTRIBUCION ESPAÑOL, TECLAS SILENCIOSAS, DISEÑO ERGONOMICO, COLOR NEGRO - 31300005501',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.3,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1883',':shelf_id'=>'S03',':name'=>'TECLADO - LOGITECH - K120 - TECLADO ALAMBRICO USB, RESISTENTE A SALPICADURAS, TECLAS SILENCIOSAS, COLOR NEGRO - 920-002478',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.52,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2302',':shelf_id'=>'S03',':name'=>'TECLADO BLUETOOTH - TARGUS - COMPACT MULTI-DEVICE AKB862ES - TECLADO COMPACTO MULTI-DISPOSITIVO BLUETOOTH CONMUTADOR DE 3 DISPOSITIVOS - AKB862ES',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.74,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1797',':shelf_id'=>'S03',':name'=>'TECLADO GAMER - GENIUS - GX SCORPION K12 - TECLADO GAMER MECANICO RGB, INTERRUPTORES BROWN, IA BROWSER, 100% ANTIGHOSTING, USB, COLOR NEGRO, SERIGRAFIA "KENYA" - 31310057401',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>3.96,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1799',':shelf_id'=>'S03',':name'=>'TECLADO GAMER - TEROS - TE-4074G - TECLADO GAMER RGB, CONEXIÓN USB 2.0, COLOR NEGRO, TECLAS ESPECIALES PARA GAMING - TE-4074G',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.18,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1731',':shelf_id'=>'S03',':name'=>'TECLADO INALAMBRICO TEROS TE-4064N DUAL (2.4GHZ + BLUETOOTH 3.0/5.2), 80 TECLAS, COMPACTO, RECEPTOR USB INCLUIDO, COLOR NEGRO - TE-4064N',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.4,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'1772',':shelf_id'=>'S03',':name'=>'TECLADO MULTIMEDIA INALAMBRICO - GENIUS - SLIMSTAR 7230 -, IA COPILOT, RECEPTOR USB, TECLAS SILENCIOSAS, DISEÑO DELGADO, COLOR NEGRO - 31310021401',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.62,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2267',':shelf_id'=>'S03',':name'=>'TECLADO MULTIMEDIA INALAMBRICO - LOGITECH - K400 PLUS - CON TOUCHPAD, CONEXION UNIFYING 2.4GHZ, RANGO 10M, COLOR NEGRO - 920-007100',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>4.84,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2036',':shelf_id'=>'S03',':name'=>'TECLADO NUMERICO - GENIUS - NUMPAD 110 - USB COMPACTO, 19 TECLAS, TIPO "CHOCOLATE", INCLINACION AJUSTABLE, PLUG AND PLAY, COLOR NEGRO - NUMPAD 110',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.06,':ly'=>0.525,':lz'=>0.17],
-    [':sku'=>'2322',':shelf_id'=>'S01',':name'=>'TINTA - CANON - GI-10PGBK - NEGRO ORIGINAL CANON, PARA LA SERIE PIXMA G - GI-10PGBK',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1715',':shelf_id'=>'S01',':name'=>'TINTA - COMPATIBLE - PREMIUM AMARILLA COMPATIBLE CON HP GT52, 70 ML, EN CAJA',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1985',':shelf_id'=>'S01',':name'=>'TINTA - PREMIUM - AMARILLA, 500 ML, GRAN CAPACIDAD -COPATIBLE EPSON Y CANON',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1990',':shelf_id'=>'S01',':name'=>'TINTA A GRANEL - COMPATIBLE - PREMIUM - TINTA AMARILLA, BOTELLA 250 ML, PARA SISTEMAS CONTINUOS O RECARGA DE CARTUCHOS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1981',':shelf_id'=>'S01',':name'=>'TINTA A GRANEL - COMPTAIBLE- UV PREMIUM - TINTA NEGRA UV PREMIUM, BOTELLA 1 LITRO, MARCA EPN TINTAS, PARA SISTEMAS CISS, IMPRESIÓN UV - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2453',':shelf_id'=>'S01',':name'=>'TINTA A GRANEL - JET LIFE SUPER PREMIUM - COMPATIBLE - TINTA NEGRA UV COMPATIBLE, BOTELLA 1 LITRO, PARA IMPRESIÓN ESPECIALIZADA - SIN N/',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2433',':shelf_id'=>'S01',':name'=>'TINTA A GRANEL - MASTER PRINT - TINTA NEGRA PARA EPSON 664, BOTELLA 1 LITRO, PARA SISTEMAS CONTINUOS DE TINTA (SCT)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2454',':shelf_id'=>'S01',':name'=>'TINTA A GRANEL - QUAD COLOR - COMPATIBLE - NEGRA, BOTELLA 1 LITRO, MARCA QUAD COLOR, COMPATIBLE CON IMPRESORAS EPSON - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2552',':shelf_id'=>'S01',':name'=>'TINTA CANON GI-190BK P/G3100/G2100 NEGRO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2600',':shelf_id'=>'S05',':name'=>'TINTA COMPATIBLE UV – 250 ML PREMIUM INK JET-MAGENTA-M CISS',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2597',':shelf_id'=>'S05',':name'=>'TINTA COMPATIBLE UV – 500 ML PREMIUM INK JET-CELESTE',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>0.0,':lz'=>0.32],
-    [':sku'=>'2599',':shelf_id'=>'S01',':name'=>'TINTA COMPATIBLE UV – 500 ML PREMIUM INK JET-MAGENTA-',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2596',':shelf_id'=>'S01',':name'=>'TINTA COMPATIBLE UV – 500 ML PREMIUM INK JET-NEGRO',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2598',':shelf_id'=>'S01',':name'=>'TINTA COMPATIBLE UV – 500 ML PREMIUM INK JET-YELLOW',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2669',':shelf_id'=>'S05',':name'=>'TINTA EPSON T11A220-AL CYAN P/WF C5810',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2670',':shelf_id'=>'S05',':name'=>'TINTA EPSON T11B120-AL BLACK P/WF C5810/C5310/C5390/C5890',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2573',':shelf_id'=>'S05',':name'=>'TINTA HP 72 ORIGINAL C9373A YELLOW',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2571',':shelf_id'=>'S01',':name'=>'TINTA HP C2P05AL (62XL) NEGRO (OJM 200) (600 PAG)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2609',':shelf_id'=>'S01',':name'=>'TINTA HP C4844A 10 NEGRO OFFICEJET 2000C/2500C 2.200 PAGINAS',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2572',':shelf_id'=>'S01',':name'=>'TINTA HP CC641WL (60XL) NEGRO (600 PAG)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2575',':shelf_id'=>'S01',':name'=>'TINTA HP CZ103AL (662) NEGRO (120 PAG)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2578',':shelf_id'=>'S01',':name'=>'TINTA HP CZ114AL (670) CYAN (300 PAG)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2577',':shelf_id'=>'S01',':name'=>'TINTA HP CZ115AL (670) MAGENTA (300 PAG)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2576',':shelf_id'=>'S01',':name'=>'TINTA HP CZ116AL (670) YELLOW (300 PAG)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1758',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - CANON - GI-190C - TINTA CIAN PARA IMPRESORAS MEGATANK, 70 ML, PARA PIXMA G1100/G2100/G3100/G4100',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1755',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - CANON - GI-190M - TINTA MAGENTA PARA IMPRESORAS MEGATANK, 70 ML, PARA PIXMA G1100/G2100/G3100/G4100 - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1763',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - CANON - GI-190Y - AMARILLA PARA IMPRESORAS MEGATANK, 70 ML, PARA PIXMA G1100/G2100/G3100/G4100 - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1701',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - EPSON - T673120 - NEGRA PARA IMPRESORAS DE TANQUE, 70 ML, MODELO 673 - T673120',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1863',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - EPSON - T673220 - CIAN, 70 ML, MODELO 673 - T673220',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1864',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - EPSON - T673320 - MAGENTA PARA IMPRESORAS DE TANQUE, 70 ML, MODELO 673 - T673320',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2501',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - EPSON - T673420 - AMARILLO, 70 ML, MODELO 673 - T673420',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2496',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - EPSON - T673520 - CIAN CLARO (LIGHT CYAN) , 70 ML - T673520',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1865',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - EPSON - T673620 - MAGENTA CLARO (LIGHT MAGENTA) , 70 ML - T673620',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2007',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - HP - GT52 (M0H55AL) - TINTA MAGENTA, 70 ML, HP SMART-TANK - M0H55AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2212',':shelf_id'=>'S01',':name'=>'TINTA ORIGINAL - HP - GT53 (1VV22AL) - NEGRA, 70 ML, HP SMART-TANK - 1VV22AL',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2064',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM CIAN PARA SISTEMA CISS O RECARGA CANON Y EPSON, 100 ML',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1993',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM CIAN REFERENCIA 664, 70 ML, EN CAJA',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1983',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM CIAN, 500 ML,COMPATIBLE CON EPSON Y CANON',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2602',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM INK GT52 TINTA CYAN -70 ML',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2619',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM INK JET GG5 BLACK, COMPATIBLE CON EPSON T504/T544 (EP7PREBK1925)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2618',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM INK JET GG5 CYAN, COMPATIBLE CON EPSON T504/T544 (EP4PRECI1922)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2617',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM INK JET GG5 MAGENTA, COMPATIBLE CON EPSON T504/T544 (EP5PREMA1923)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2616',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM INK JET GG5 YELLOW, COMPATIBLE CON EPSON T504/T544 (EP6PREYE1924)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1721',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM MAGENTA COMPATIBLE CON HP GT52, 70 ML, EN CAJA -',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1994',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM MAGENTA REFERENCIA 664, 70 ML, EN CAJA',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1986',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM MAGENTA, 500 ML, COMPATIBLE EPSON Y CANON GRAN CAPACIDAD',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1995',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM NEGRA REFERENCIA 664, 70 ML, EN CAJA',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1992',':shelf_id'=>'S01',':name'=>'TINTA PREMIUM ROSADA PARA SISTEMA CISS O RECARGA EPSON Y CANON , 250 ML - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2595',':shelf_id'=>'S05',':name'=>'TINTA QUADCOLOR QC-211 (NEGRO, 1 LITRO PARA EPSON)',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2288',':shelf_id'=>'S05',':name'=>'TOKEN DE SEGURIDAD LONGMAI USB (HARDWARE TOKEN) LONGMAI, GENERACIÓN DE CÓDIGOS OTP, AUTENTICACIÓN DE DOS FACTORES (2FA) - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2012',':shelf_id'=>'S01',':name'=>'TONER (REMATE) - CANON - GP200 NEGRO - GP200, NEGRO, PARA IMPRESORAS LASER CANON, RENDIMIENTO ESTANDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1851',':shelf_id'=>'S01',':name'=>'TONER (REMATE) - HP - 05X (CE505X) - HP 05X LASERJET NEGRO, ALTO RENDIMIENTO APROX. 6,500 PÁGINAS - CE505X',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1854',':shelf_id'=>'S01',':name'=>'TONER - HP - CE505X - NEGRO PARA HP LASERJET, MODELO REFERENCIA CE505X (HP 05X), RENDIMIENTO APROX. 6,500 PÁGINAS - SI',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1921',':shelf_id'=>'S01',':name'=>'TONER - HP - CF351A - CYAN PARA LASERJET , MODELO REFERENCIA CF351A (HP 130A CYAN), RENDIMIENTO APROX. 1,000 PÁGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2428',':shelf_id'=>'S01',':name'=>'TONER - HP - CF402A - AMARILLO PARA HP LASERJET COLOR, MODELO REFERENCIA CF402A (HP 201A AMARILLO), RENDIMIENTO ESTÁNDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1923',':shelf_id'=>'S01',':name'=>'TONER - HP - CF403A - MAGENTA PARA HP LASERJET , MODELO REFERENCIA CF403A, RENDIMIENTO ESTÁNDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2547',':shelf_id'=>'S01',':name'=>'TONER - KONICA MINOLTA - AAJ7090 - NEGRO BIZHUB 558E/658E TN516',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2323',':shelf_id'=>'S01',':name'=>'TONER - KYOCERA - TK-6727 - NEGRO P, MODELO REFERENCIA TK-6727, RENDIMIENTO ESTÁNDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2173',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CB436A - NEGRO COMPATIBLE PARA HP, MODELO REFERENCIA CB436A (HP 36A), RENDIMIENTO APROX. 2,000 PAGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2358',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CE278A - TONER NEGRO COMPATIBLE PARA HP, MODELO CE278A (HP 78A)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1918',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CE285A - NEGRO COMPATIBLE PARA HP, MODELO REFERENCIA CE285A (HP 85A)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1917',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CF217A - TONER NEGRO COMPATIBLE CON CHIP PARA HP, MODELO REFERENCIA CF217A (HP 17A)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1950',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CF279A - NEGRO COMPATIBLE PARA HP, MODELO REFERENCIA CF279A (HP 79A)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1979',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CF283A - TONER NEGRO COMPATIBLE PARA HP, MODELO REFERENCIA CF283A (HP 83A), RENDIMIENTO ESTÁNDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2469',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - CF363X-508 - TONER MAGENTA COMPATIBLE PARA HP, MODELO REFERENCIA CF363X (HP 363X), ALTO RENDIMIENTO - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1933',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - AMIDA - Q2612A - TONER NEGRO COMPATIBLE PARA HP, MODELO REFERENCIA Q2612A (HP 12A), RENDIMIENTO ESTÁNDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2077',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - CANON - 108 - TONER NEGRO COMPATIBLE PARA CANON LBP3300/LBP3360, RENDIMIENTO APROX. 2,500 PÁGINAS, TIPO 108 - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2450',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - CANON - 128 - TONER NEGRO COMPATIBLE PARA CANON, MODELO REFERENCIA 128, RENDIMIENTO ESTANDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2484',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE - TOPJET - W1330X (330X) - TONER COMPATIBLE CON CHIP PARA HP, MODELO REFERENCIA W1330X/CF333X (HP 1330X/330X), RENDIMIENTO ALTO - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1729',':shelf_id'=>'S01',':name'=>'TONER COMPATIBLE- TOPJET - CF226X - TONER COMPATIBLE PARA HP, MODELO REFERENCIA CF226X (HP 226X), RENDIMIENTO ALTO, PARA IMPRESORAS HP COLOR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2629',':shelf_id'=>'S01',':name'=>'TONER HP W1330X (330X) L.J. 408DN NEGRO 15,000 PGS ID 100888945297 NS CNB1T1DJ1N',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2690',':shelf_id'=>'S01',':name'=>'TONER KONICA MINOLTA TN-513 BIZHUB 454E, 554E. (A33K091)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2183',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - HP - 36A LASERJET - TONER NEGRO, RENDIMIENTO APROX. 2,000 PÁGINAS, PARA IMPRESORAS HP LASERJET P1505/P1505N SERIES - CB436A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2213',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - HP - 80A LASERJET - TONER NEGRO, RENDIMIENTO APROX. 2,700 PAGINAS, PARA IMPRESORAS LÁSER HP - CF280A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1963',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - HP - 92A LASERJET - TONER NEGRO, RENDIMIENTO APROX. 2,500 PÁGINAS, PARA IMPRESORAS LASER HP - C4092A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1945',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - HP - C9700A LASERJET - TONER NEGRO, EDICIÓN ANTIGUA, ALTO RENDIMIENTO (APROX. 5,000 PÁGINAS), PARA IMPRESORAS LÁSER HP - C9700A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1935',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - KONICA MINOLTA - TN-321M - TONER MAGENTA (MAGENTA), PARA IMPRESORAS KONICA MINOLTA, MODELOS COMPATIBLES - A33K350',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2142',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - KONICA MINOLTA - TN321C - TONER CIAN (CYAN), PARA IMPRESORAS KONICA MINOLTA, MODELOS COMPATIBLES - A33K490',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2148',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - KONICA MINOLTA - TN321Y - AMARILLO (YELLOW), MODELOS COMPATIBLES - A33K290',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1937',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - KONICA MINOLTA - TN512C - TONER CIAN (CYAN), , MODELOS COMPATIBLES - A33K492',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2015',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - KONICA MINOLTA - TN512M - MAGENTA (MAGENTA), PARA IMPRESORAS KONICA MINOLTA, MODELOS COMPATIBLES - A33K392',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1934',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - RICOH - 841918 - NEGRO, PARA RICOH MP C2503, RENDIMIENTO ESTÁNDAR - 841918',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1996',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - RICOH - 841919 - AMARILLO, RENDIMIENTO APROX. 9,500 PAGINAS, PARA RICOH MP C2503 - 841919',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1952',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - RICOH - 841921 - CIAN, RENDIMIENTO APROX. 9,500 PAGINAS, PARA RICOH MP C2503 - 841921',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2163',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - XEROX - 106R01400 - CIAN (CYAN), PARA XEROX PHASER 6280, MODELO OFICIAL - 106R01400',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1951',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - XEROX - 106R01401 - MAGENTA (MAGENTA), RENDIMIENTO APROX. 5,900 PAGINAS, PARA XEROX PHASER 6280 - 106R01401',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1965',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - XEROX - 106R01402 - AMARILLO (YELLOW), PARA XEROX PHASER 6280, MODELO OFICIAL - 106R01402',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2180',':shelf_id'=>'S01',':name'=>'TONER LÁSER (REMATE) - XEROX - 106R01403 - NEGRO, PARA XEROX PHASER 6280, MODELO OFICIAL - 106R01403',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2435',':shelf_id'=>'S01',':name'=>'TONER LASER (REMATE) - XEROX - 106R02182 - TONER PARA XEROX PHASER 3040, RENDIMIENTO APROX. 2,200 PÁGINAS, NEGRO - 106R02182',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2470',':shelf_id'=>'S01',':name'=>'TONER LASER - CF363A - TONER COMPATIBLE MAGENTA, PARA IMPRESORAS HP (MODELOS COMPATIBLES CON TONER CF363A), RENDIMIENTO VARIABLE - CF363A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1782',':shelf_id'=>'S01',':name'=>'TONER LASER - HP - CE285A - TONER PACK DE 2 UNIDADES NEGRO, APROX. 3,200 PÁGINAS, PARA HP LASERJET P1102 - CE285A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2194',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - CE505A - NEGRO PARA HP LASERJET, MODELO REFERENCIA CE505A (HP 05A), RENDIMIENTO APROX. 2,300 PÁGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1912',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - CF350A - NEGRO PARA HP LASERJET COLOR, MODELO REFERENCIA CF350A (HP 130A NEGRO), RENDIMIENTO APROX. 1,300 PÁGINAS - SIN N/',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1925',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - CF352A - AMARILLO PARA HP LASERJET COLOR, MODELO REFERENCIA CF352A (HP 130A AMARILLO), RENDIMIENTO APROX. 1,000 PÁGINAS -',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1936',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - CF353A - MAGENTA PARA HP LASERJET COLOR, MODELO REFERENCIA CF353A (HP 130A MAGENTA), RENDIMIENTO APROX. 1,000 PÁGINAS - SI',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1922',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - CF401A - CYAN PARA HP LASERJET COLOR, MODELO REFERENCIA CF401A (HP 201A CYAN), RENDIMIENTO ESTÁNDAR - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2152',':shelf_id'=>'S01',':name'=>'TONER LASER - HP - CF510A (204A NEGRO) - TONER ORIGINAL HP NEGRO, RENDIMIENTO ESTÁNDAR, PARA HP LASERJET PRO 400 COLOR M451NW/M476NW, SERIE MFP 400 - CF510A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2153',':shelf_id'=>'S01',':name'=>'TONER LASER - HP - CF511A (204A CYAN) - TONER ORIGINAL HP CYAN, RENDIMIENTO ESTÁNDAR, PARA HP LASERJET PRO 400 COLOR M451NW/M476NW, SERIE MFP 400 - CF511A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2154',':shelf_id'=>'S01',':name'=>'TONER LASER - HP - CF513A (204A MAGENTA) - TONER ORIGINAL HP MAGENTA, RENDIMIENTO ESTÁNDAR, PARA HP LASERJET PRO 400 COLOR M451NW/M476NW, SERIE MFP 400 - CF513A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1887',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - Q2612A - NEGRO PARA HP LASERJET, MODELO REFERENCIA Q2612A (HP 12A), RENDIMIENTO APROX. 2,000 PÁGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2069',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - Q2613A - NEGRO PARA HP LASERJET, MODELO REFERENCIA Q2613A (HP 13A), RENDIMIENTO APROX. 2,500 PÁGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2063',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - Q6000A - NEGRO PARA HP LASERJET, MODELO REFERENCIA Q6000A (HP 124A), RENDIMIENTO APROX. 2,500 PÁGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1807',':shelf_id'=>'S01',':name'=>'TONER LÁSER - HP - W1470A - NEGRO ALTO RENDIMIENTO PARA HP, MODELO REFERENCIA W1470A (HP 147A), RENDIMIENTO APROX. 10,500 PÁGINAS - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2487',':shelf_id'=>'S01',':name'=>'TONER LASER - KENYA IRO - CE285A - TONER NEGRO, PARA IMPRESORAS HP - CE285A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2485',':shelf_id'=>'S01',':name'=>'TONER LASER - KENYA IRO - CF283A - TONER COMPATIBLE NEGRO, PARA IMPRESORAS HP (MODELOS COMPATIBLES CON TONER CF283A), RENDIMIENTO VARIABLE - CF283A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2397',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN-324K - TONER ORIGINAL NEGRO, PARA MODELOS ESPECÍFICOS KONICA MINOLTA (E.G., BIZHUB), RENDIMIENTO ESTÁNDAR - TN-324K',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'2313',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN-626AK - TONER ORIGINAL NEGRO, PARA KONICA MINOLTA BIZHUB C450I/C550I/C650I, RENDIMIENTO ESTÁNDAR - ACV119A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1856',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN114 - TONER ORIGINAL NEGRO, PARA KONICA MINOLTA BIZHUB 162/163/211, RENDIMIENTO ESTÁNDAR - 8937782',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1972',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN311 - TONER ORIGINAL NEGRO, PARA MODELOS ESPECÍFICOS KONICA MINOLTA (E.G., BIZHUB), RENDIMIENTO ESTÁNDAR - 8938404',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1924',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN323 - TONER ORIGINAL NEGRO, PARA KONICA MINOLTA BIZHUB 367, RENDIMIENTO ESTÁNDAR - A87M090',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2156',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN512Y - TONER ORIGINAL AMARILLO, PARA MODELOS ESPECÍFICOS KONICA MINOLTA, RENDIMIENTO ESTÁNDAR - A33K292',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1938',':shelf_id'=>'S01',':name'=>'TONER LASER - KONICA MINOLTA - TN712 - TONER ORIGINAL DE ALTO RENDIMIENTO NEGRO (APROX. 40,800 PÁGINAS), PARA MODELOS ESPECÍFICOS KONICA MINOLTA - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1910',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-1122 - TONER ORIGINAL NEGRO, PARA MODELOS ESPECÍFICOS KYOCERA (E.G., TASKALFA 250CI), RENDIMIENTO ESTÁNDAR - TK-1122',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1926',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-1147 - TONER ORIGINAL NEGRO, PARA MODELOS ESPECÍFICOS KYOCERA (E.G., TASKALFA 300I/400I/500I), RENDIMIENTO ESTÁNDAR - TK-1147',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2185',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-137 - TONER ORIGINAL NEGRO, RENDIMIENTO APROX. 7,000 PÁGINAS, PARA MODELOS ESPECÍFICOS KYOCERA - TK-137',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2486',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-3102 - TONER ORIGINAL NEGRO, PARA MODELOS ESPECÍFICOS KYOCERA (E.G., FS-1030MFP/1130MFP), RENDIMIENTO ESTÁNDAR - TK-3102',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2464',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-352 - TONER ORIGINAL NEGRO, PARA MODELOS ESPECÍFICOS KYOCERA (E.G., FS-1370DN), RENDIMIENTO ESTÁNDAR - TK-352',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2102',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-477 - TONER ORIGINAL NEGRO, RENDIMIENTO APROX. 15,000 PÁGINAS, PARA KYOCERA TASKALFA 255CI/305CI - TK-477',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1909',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-5142C - TONER ORIGINAL CYAN (5,000 PÁGINAS), PARA MODELOS ESPECÍFICOS KYOCERA COLOR (E.G., TASKALFA 4002I/5002I) - TK-5142C',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1908',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-5142M - TONER ORIGINAL MAGENTA (5,000 PÁGINAS), PARA MODELOS ESPECÍFICOS KYOCERA COLOR (E.G., TASKALFA 4002I/5002I) - TK-5142M',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1907',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-5142Y - TONER ORIGINAL AMARILLO (5,000 PÁGINAS), PARA MODELOS ESPECÍFICOS KYOCERA COLOR (E.G., TASKALFA 4002I/5002I) - TK-5142Y',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'2308',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-6327K - TONER ORIGINAL DE ALTO RENDIMIENTO NEGRO (35,000 PÁGINAS), PARA KYOCERA TASKALFA 6002I - TK-6327K',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.12],
-    [':sku'=>'1860',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-712 - TONER ORIGINAL DE ALTO RENDIMIENTO NEGRO (40,000 PÁGINAS), PARA MODELOS ESPECÍFICOS KYOCERA (E.G., TASKALFA 8002I) - TK-712',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2003',':shelf_id'=>'S01',':name'=>'TONER LASER - KYOCERA - TK-897K - TONER ORIGINAL NEGRO, RENDIMIENTO APROX. 12,000 PÁGINAS, PARA KYOCERA ECOSYS M2050DN/3050DN - TK-897K',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2265',':shelf_id'=>'S01',':name'=>'TONER LASER - PREMIUM - CE255A - TONER COMPATIBLE DE ALTO RENDIMIENTO NEGRO (6,000 PÁGINAS), PARA HP LASERJET PRO 400 M401N/M425DN, SERIE MFP 400 - CE255A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2001',':shelf_id'=>'S01',':name'=>'TONER LASER - RICOH - 841332 - TONER ORIGINAL NEGRO, PARA RICOH MP 6000/6002, RENDIMIENTO ESTÁNDAR - 841332',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1970',':shelf_id'=>'S01',':name'=>'TONER LASER - RICOH - 841813 - TONER ORIGINAL NEGRO, RENDIMIENTO APROX. 29,500 PÁGINAS, PARA RICOH MP C3003/C3503 - 841813',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2014',':shelf_id'=>'S01',':name'=>'TONER LASER - RICOH - 841920 - TONER ORIGINAL MAGENTA, PARA RICOH MP C2503/C3003, RENDIMIENTO ESTÁNDAR - 841920',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2396',':shelf_id'=>'S01',':name'=>'TONER LASER - RICOH - 842091 - TONER ORIGINAL NEGRO, RENDIMIENTO APROX. 17,000 PÁGINAS, PARA RICOH MP C406 - 842091',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2444',':shelf_id'=>'S01',':name'=>'TONER LASER - SAMSUNG - MLT-D104X - TONER ORIGINAL NEGRO, RENDIMIENTO APROX. 700 PÁGINAS, PARA SAMSUNG MULTIFUNCIONALES LÁSER (E.G., SCX-3405FW) - MLT-D104X',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2404',':shelf_id'=>'S01',':name'=>'TONER LASER - SINDOH - N410T20KH - TONER NEGRO, PARA MODELOS ESPECÍFICOS SINDOH (E.G., D40X SERIES), RENDIMIENTO ESTÁNDAR - N410T20KH',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1971',':shelf_id'=>'S01',':name'=>'TONER LASER - XEROX - 006R01160 - TONER ORIGINAL DE ALTO RENDIMIENTO NEGRO (30,000 PÁGINAS), PARA XEROX WORKCENTRE 5325/5330 - 006R01160',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1892',':shelf_id'=>'S01',':name'=>'TONER LASER - XEROX - 006R01683 - TONER ORIGINAL NEGRO, PARA XEROX ALTALINK B8045/55/65/75/90, RENDIMIENTO ESTÁNDAR - 006R01683',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1998',':shelf_id'=>'S01',':name'=>'TONER LASER - XEROX - 106R01373 - TONER ORIGINAL (OEM) NEGRO, RENDIMIENTO 3,500 PÁGINAS (ISO), PARA XEROX PHASER 3250/3250DN - 106R01373',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'2133',':shelf_id'=>'S01',':name'=>'TONER LASER - XEROX - 106R01487 - TONER ORIGINAL (OEM) NEGRO, ALTO RENDIMIENTO, PARA XEROX PHASER 3220/3210 - 106R01487',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1973',':shelf_id'=>'S01',':name'=>'TONER LASER - XEROX - 106R01536 - TONER ORIGINAL (OEM) NEGRO, RENDIMIENTO 30,000 PÁGINAS, PARA XEROX PHASER 4600/4620 - 106R01536',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.24],
-    [':sku'=>'1974',':shelf_id'=>'S01',':name'=>'TONER LASER - XEROX - 106R02312 - TONER ORIGINAL (OEM) NEGRO, RENDIMIENTO 11,000 PÁGINAS, PARA XEROX PHASER 3325 - 106R02312',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2193',':shelf_id'=>'S01',':name'=>'TONER LASER COMPATIBLE - HP - 36A NEGRO (CB436A) - TONER COMPATIBLE HP 36A NEGRO, RENDIMIENTO 2,000 PÁGINAS, MODELO DE REFERENCIA CB436A - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2195',':shelf_id'=>'S01',':name'=>'TONER LASER COMPATIBLE - HP - 49A NEGRO (Q5949A) - TONER COMPATIBLE HP 49A NEGRO, RENDIMIENTO 2,500 PÁGINAS, MODELO DE REFERENCIA Q5949A - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2196',':shelf_id'=>'S01',':name'=>'TONER LASER COMPATIBLE - HP - 53A NEGRO (Q7553A) - TONER COMPATIBLE HP 53A NEGRO, RENDIMIENTO 3,000 PÁGINAS, MODELO DE REFERENCIA Q7553A - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2494',':shelf_id'=>'S01',':name'=>'TONER LASER COMPATIBLE - HP - 58A NEGRO (CF258A) - TONER COMPATIBLE HP 58A NEGRO, MARCA AMIDA, MODELO DE REFERENCIA CF258A - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1730',':shelf_id'=>'S01',':name'=>'TONER LASER COMPATIBLE TOPJET - CF230X - TONER PREMIUM COMPATIBLE NEGRO (CF230A/CF230X), PARA HP LASERJET PRO M203/M227 SERIES - CF230X',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1696',':shelf_id'=>'S01',':name'=>'TONER LASER HP - Q2613A - TONER ORIGINAL NEGRO (PRESENTACIÓN ALTERNATIVA), RENDIMIENTO ESTÁNDAR - Q2613A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2125',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 05A NEGRO (CE505A) - TONER ORIGINAL HP 05A NEGRO, RENDIMIENTO 2,300 PÁGINAS, PARA HP LASERJET - CE505A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1873',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 126A CYAN (CE311A) - TONER ORIGINAL HP 126A CYAN, RENDIMIENTO 1,000 PÁGINAS, PARA HP LASERJET COLOR - CE311A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1875',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 126A MAGENTA (CE313A) - TONER ORIGINAL HP 126A MAGENTA, RENDIMIENTO 1,000 PÁGINAS, PARA HP LASERJET COLOR - CE313A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1961',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 126A NEGRO (CE310A) - TONER ORIGINAL HP 126A NEGRO, PARA HP LASERJET COLOR - CE310A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1874',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 126A YELLOW (CE312A) - TONER ORIGINAL HP 126A AMARILLO, RENDIMIENTO 1,000 PÁGINAS, PARA HP LASERJET COLOR - CE312A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1958',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 128A CYAN (CE321A) - TONER ORIGINAL HP 128A CYAN, RENDIMIENTO 1,300 PÁGINAS, PARA HP LASERJET COLOR - CE321A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'1960',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 128A YELLOW (CE322A) - TONER ORIGINAL HP 128A AMARILLO, RENDIMIENTO 1,300 PÁGINAS, PARA HP LASERJET COLOR - CE322A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.36],
-    [':sku'=>'2134',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 131A CYAN (CF211A) - TONER ORIGINAL HP 131A CYAN, RENDIMIENTO 1,800 PÁGINAS, PARA HP LASERJET COLOR - CF211A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1879',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 131A MAGENTA (CF213A) - TONER ORIGINAL HP 131A MAGENTA, RENDIMIENTO 1,800 PÁGINAS, PARA HP LASERJET COLOR - CF213A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1871',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 131A NEGRO (CF210A) - TONER ORIGINAL HP 131A NEGRO, RENDIMIENTO 1,600 PÁGINAS, PARA HP LASERJET COLOR - CF210A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2255',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 131A YELLOW (CF212A) - TONER ORIGINAL HP 131A AMARILLO, RENDIMIENTO 1,800 PÁGINAS, PARA HP LASERJET COLOR - CF212A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1920',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 201X MAGENTA (CF403X) - TONER ORIGINAL HP 201X MAGENTA, RENDIMIENTO 2,300 PÁGINAS, PARA HP LASERJET PRO COLOR MFP M277DW/M252DW SERIES',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2479',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 35A NEGRO (CB435A) - TONER ORIGINAL HP 35A NEGRO, RENDIMIENTO 1,500 PÁGINAS, PARA HP LASERJET - CB435A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1932',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 42A NEGRO (Q5942A) - TONER ORIGINAL HP 42A NEGRO, PARA HP LASERJET - Q5942A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2243',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 48A NEGRO (CF248A) - TONER ORIGINAL HP 48A NEGRO, PARA HP LASERJET - CF248A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1969',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 49A NEGRO (Q5949A) - TONER ORIGINAL HP 49A NEGRO, RENDIMIENTO 2,500 PÁGINAS, PARA HP LASERJET - Q5949A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2091',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 504A CYAN (CE251A) - TONER ORIGINAL HP 504A CYAN, RENDIMIENTO 7,000 PÁGINAS, PARA HP LASERJET COLOR - CE251A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2097',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 504A MAGENTA (CE253A) - TONER ORIGINAL HP 504A MAGENTA, RENDIMIENTO 7,000 PÁGINAS, PARA HP LASERJET COLOR - CE253A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1931',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 504A NEGRO (CE250A) - TONER ORIGINAL HP 504A NEGRO, PARA HP LASERJET COLOR - CE250A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'2085',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 504A YELLOW (CE252A) - TONER ORIGINAL HP 504A AMARILLO, RENDIMIENTO 7,000 PÁGINAS, PARA HP LASERJET COLOR - CE252A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1847',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 644A NEGRO (Q6460A) - TONER ORIGINAL HP 644A NEGRO, PARA HP LASERJET - Q6460A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.48],
-    [':sku'=>'1976',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 78A NEGRO (CE278A) - TONER ORIGINAL HP 78A NEGRO, RENDIMIENTO 2,100 PÁGINAS, PARA HP LASERJET - CE278A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1916',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 80A NEGRO (CF280A) - TONER ORIGINAL HP 80A NEGRO, RENDIMIENTO 2,700 PÁGINAS, PARA HP LASERJET - CF280A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.14,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2108',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL - HP - 83AD NEGRO (CF283AD) - TONER ORIGINAL HP 83A NEGRO, MODELO DE REFERENCIA CF283AD, PARA HP LASERJET - CF283AD',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.28,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1942',':shelf_id'=>'S01',':name'=>'TONER LÁSER ORIGINAL ALTO RENDIMIENTO - HP - 26X NEGRO (CF226X) - TONER ORIGINAL HP 26X NEGRO ALTO RENDIMIENTO, RENDIMIENTO 9,000 PÁGINAS, MODELO DE REFERENCIA CF2',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.42,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1904',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL ALTO RENDIMIENTO - HP - 305X NEGRO (CE410X) - TONER ORIGINAL HP 305X NEGRO ALTO RENDIMIENTO, RENDIMIENTO 4,000 PÁGINAS, PARA HP LASERJET - CE4',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.56,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2172',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL ALTO RENDIMIENTO - HP - 42X NEGRO (Q5942X) - TONER ORIGINAL HP 42X NEGRO ALTO RENDIMIENTO, PARA HP LASERJET - Q5942X',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.7,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2054',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL ALTO RENDIMIENTO - HP - 51A NEGRO (Q7551A) - TONER ORIGINAL HP 51A NEGRO ALTO RENDIMIENTO, RENDIMIENTO 6,500 PÁGINAS, PARA HP LASERJET - Q7551',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.84,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2038',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL ALTO RENDIMIENTO - HP - 80X NEGRO (CF280X) - TONER ORIGINAL HP 80X NEGRO ALTO RENDIMIENTO, RENDIMIENTO 6,900 PÁGINAS, PARA HP LASERJET - CF280',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.98,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1781',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL HP - 83A NEGRO (CF283A) - TONER ORIGINAL HP 83A NEGRO, RENDIMIENTO 1,500 PÁGINAS, PARA HP LASERJET - CF283A',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.12,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1806',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL PACK - HP - 78A NEGRO (CE278AD) - PACK DE 2 TONERES ORIGINALES HP 78A NEGRO, PARA HP LASERJET P1606/P1536, MODELO DE REFERENCIA CE278AD - SIN',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.26,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2048',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL PACK - HP - 80XD NEGRO (CF280XD) - PACK DUAL DE TONERES ORIGINALES HP 80X NEGRO, RENDIMIENTO TOTAL 13,800 PÁGINAS, PARA HP LASERJET - CF280XD',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.4,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2128',':shelf_id'=>'S01',':name'=>'TONER LASER ORIGINAL PACK - HP - W1103AD NEGRO (103AD) - PACK DE 2 TONERES ORIGINALES HP W1103AD NEGRO, RENDIMIENTO 2,500 PÁGINAS, PARA HP LASERJET - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.54,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2471',':shelf_id'=>'S01',':name'=>'TONER LASER- KENYA IRO - CF226X - TONER COMPATIBLE DE ALTO RENDIMIENTO NEGRO, PARA IMPRESORAS HP (MODELOS COMPATIBLES CON TONER CF226X)',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.68,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'2290',':shelf_id'=>'S05',':name'=>'TRIPODE PARA WEBCAM - GENIUS - TRIPODE DE 25.1 CM, NEGRO/PLATEADO, CABEZAL AJUSTABLE - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2165',':shelf_id'=>'S05',':name'=>'TRIPODE PULPO FLEXIBLE , PATAS AJUSTABLES, PARA CELULAR - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.37,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1977',':shelf_id'=>'S01',':name'=>'UNIDAD FUSOR - KYOCERA - FK-3100 - UNIDAD FUSOR PARA KYOCERA FS-2100D, COMPONENTE DE IMPRESIÓN - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>1.82,':ly'=>0.0,':lz'=>0.6],
-    [':sku'=>'1870',':shelf_id'=>'S01',':name'=>'UNIDAD FUSOR - RICOH - AE04-5099 - UNIDAD FUSOR PARA MODELOS RICOH, COMPONENTE DE IMPRESIÓN - SIN N/P',':width'=>0.12,':height'=>0.08,':depth'=>0.1,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1738',':shelf_id'=>'S02',':name'=>'UNIDAD OPTICA - LG - BH16NS40 - UNIDAD REGRABADORA BLU-RAY 16X SATA INTERNA, SOPORTE 3D Y M-DISC - SIN N/P',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.38,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2369',':shelf_id'=>'S02',':name'=>'UNIDAD OPTICA - SUPER MULTI DVD WRITER - GRABADORA DE DVD SUPER MULTI INTERNA, FORMATO SATA O IDE, MODELO 700577-6E2 - 700577-6E2',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.55,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2536',':shelf_id'=>'S05',':name'=>'USB ADAPTER WIFI DUAL BAND GENERICO 2.4GHZ Y 5GHZ WIRELES - AC 1200M',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.74,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1710',':shelf_id'=>'S05',':name'=>'VENTILADOR 120MM, RGB, 12V, 4 PINES PWM, CONTROL DE ILUMINACIÓN - MFW-B2DN-12NFA-S2',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.11,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'2264',':shelf_id'=>'S05',':name'=>'VENTILADOR ARGB 120MM, 1500 RPM, ILUMINACIÓN DIRIGIBLE, 4 PINES PWM - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>1.48,':ly'=>1.0,':lz'=>0.32],
-    [':sku'=>'1735',':shelf_id'=>'S02',':name'=>'VENTILADOR DE CASE - COOLER MASTER - MF120 S3 - DE 120MM, CAJA',':width'=>0.15,':height'=>0.05,':depth'=>0.2,':lx'=>2.72,':ly'=>1.0,':lz'=>0.0],
-    [':sku'=>'2314',':shelf_id'=>'S05',':name'=>'VENTILADOR MINI PORTÁTIL USB, PARA PC Y LAPTOP, ENFRIAMIENTO PERSONAL, DISEÑO SILENCIOSO - SIN N/P',':width'=>0.35,':height'=>0.25,':depth'=>0.3,':lx'=>0.0,':ly'=>0.0,':lz'=>0.0],
-    [':sku'=>'1718',':shelf_id'=>'S03',':name'=>'WEBCAM TEROS - TE-9073N - WEBCAM 4K (3840X2160), MICROFONO INCORPORADO, CONEXION USB 2.0 - TE-9073N',':width'=>0.2,':height'=>0.12,':depth'=>0.15,':lx'=>5.28,':ly'=>0.525,':lz'=>0.17]
-];
-
-// ── Importación ───────────────────────────────────────────────────
-$stmt = $pdo->prepare("
-    INSERT INTO productos (sku, shelf_id, name, width, height, depth, local_x, local_y, local_z)
-    VALUES (:sku, :shelf_id, :name, :width, :height, :depth, :lx, :ly, :lz)
-    ON DUPLICATE KEY UPDATE
-        shelf_id = VALUES(shelf_id),
-        name     = VALUES(name),
-        width    = VALUES(width),
-        height   = VALUES(height),
-        depth    = VALUES(depth),
-        local_x  = VALUES(local_x),
-        local_y  = VALUES(local_y),
-        local_z  = VALUES(local_z)
-");
-
-$ok = 0; $errors = [];
-foreach ($productos as $p) {
-
-    $sku   = $p["sku"];
-    $name  = $p["name"];
-    $width = $p["width"];
-    $height= $p["height"];
-    $depth = $p["depth"];
-    $x     = $p["x"];
-    $y     = $p["y"];
-    $z     = $p["z"];
-    $shelfId = $p["shelfId"];
-
-    // 🔥 Detectar categoría automática
-    $nombre = strtoupper($name);
-
-    if (str_contains($nombre, "TINTA") || str_contains($nombre, "TONER")) {
-        $category = "Consumibles";
-    } elseif (str_contains($nombre, "CABLE")) {
-        $category = "Redes";
-    } elseif (str_contains($nombre, "MONITOR") || str_contains($nombre, "LAPTOP")) {
-        $category = "Equipos";
-    } elseif (str_contains($nombre, "SSD") || str_contains($nombre, "RAM")) {
-        $category = "Componentes";
-    } else {
-        $category = "General";
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
     }
-
-    try {
-        $stmt = $pdo->prepare("
-            INSERT INTO productos 
-            (sku, shelf_id, name, category, width, height, depth, local_x, local_y, local_z)
-            VALUES 
-            (:sku, :shelf, :name, :category, :w, :h, :d, :x, :y, :z)
-            ON DUPLICATE KEY UPDATE
-                shelf_id = VALUES(shelf_id),
-                name     = VALUES(name),
-                category = VALUES(category),
-                width    = VALUES(width),
-                height   = VALUES(height),
-                depth    = VALUES(depth),
-                local_x  = VALUES(local_x),
-                local_y  = VALUES(local_y),
-                local_z  = VALUES(local_z)
-        ");
-
-        $stmt->execute([
-            ":sku" => $sku,
-            ":shelf" => $shelfId,
-            ":name" => $name,
-            ":category" => $category,
-            ":w" => $width,
-            ":h" => $height,
-            ":d" => $depth,
-            ":x" => $x,
-            ":y" => $y,
-            ":z" => $z
-        ]);
-
-    } catch (Exception $e) {
-        echo "<p class='err'>Error SKU {$sku}: " . $e->getMessage() . "</p>";
-    }
+    api_log_error($e, "importar_productos");
+    http_response_code(500);
+    echo "<pre>Error: " . htmlspecialchars($e->getMessage(), ENT_QUOTES, "UTF-8") . "</pre>";
+    exit;
 }
-ksort($byShelf);
-
 ?>
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<title>Importación — Almacén Digital</title>
-<style>
-  body { font-family: 'Segoe UI', sans-serif; background: #0a0d14; color: #e2e8f0; padding: 2rem; }
-  h1 { color: #18c7ff; }
-  .card { background: #111620; border: 1px solid #1e2a3a; border-radius: 12px; padding: 1.2rem 1.6rem; margin: 1rem 0; }
-  .ok { color: #00e5a0; }
-  .warn { color: #ffd45c; }
-  .err { color: #ff6b6b; }
-  table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-  th { text-align: left; color: #64748b; font-size: .75rem; letter-spacing: .1em; padding: .4rem .7rem; border-bottom: 1px solid #1e2a3a; }
-  td { padding: .5rem .7rem; border-bottom: 1px solid #1e2a3a; }
-  .note { font-size: .8rem; color: #64748b; margin-top: 1.5rem; }
-</style>
+    <meta charset="utf-8">
+    <title>Importación de productos</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem; color: #18212f; }
+        main { max-width: 680px; }
+        code { background: #eef2f6; padding: .15rem .35rem; border-radius: 4px; }
+        li { margin: .4rem 0; }
+    </style>
 </head>
 <body>
-<h1>📦 Importación de Productos</h1>
-
-<div class="card">
-  <p class="<?= $ok === $total ? 'ok' : 'warn' ?>">
-    <?= $ok === $total ? '✅' : '⚠️' ?>
-    <strong><?= $ok ?> / <?= $total ?></strong> productos importados correctamente
-  </p>
-  <?php if (!empty($errors)): ?>
-    <p class="err">❌ <?= count($errors) ?> errores:</p>
+<main>
+    <h1>Importación completada</h1>
+    <p>Se importó el catálogo usando dimensiones estándar <code><?= $standardWidth ?> x <?= $standardHeight ?> x <?= $standardDepth ?></code>.</p>
     <ul>
-      <?php foreach (array_slice($errors, 0, 20) as $e): ?>
-        <li class="err" style="font-size:.8rem"><?= htmlspecialchars($e) ?></li>
-      <?php endforeach; ?>
+        <li>Catálogo: <?= $counts["catalogo"] ?></li>
+        <li>Productos ubicados: <?= $counts["productos"] ?></li>
+        <li>Dimensiones: <?= $counts["dimensiones"] ?></li>
+        <li>Categorías: <?= $counts["categorias"] ?></li>
+        <li>Marcas: <?= $counts["marcas"] ?></li>
     </ul>
-  <?php endif; ?>
-</div>
-
-<div class="card">
-  <p style="color:#64748b;font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.5rem">DISTRIBUCIÓN POR ESTANTE</p>
-  <table>
-    <thead><tr><th>Estante</th><th>Tipo de Productos</th><th>Cantidad</th></tr></thead>
-    <tbody>
-      <tr><td><strong style="color:#18c7ff">S01</strong></td><td>Consumibles de impresión (tintas, cartuchos, tóners)</td><td><?= $byShelf['S01'] ?? 0 ?></td></tr>
-      <tr><td><strong style="color:#18c7ff">S02</strong></td><td>Componentes internos de PC (RAM, SSD, GPU, procesadores)</td><td><?= $byShelf['S02'] ?? 0 ?></td></tr>
-      <tr><td><strong style="color:#18c7ff">S03</strong></td><td>Periféricos y audio (audífonos, mouse, teclados)</td><td><?= $byShelf['S03'] ?? 0 ?></td></tr>
-      <tr><td><strong style="color:#18c7ff">S04</strong></td><td>Redes, cables, adaptadores y energía</td><td><?= $byShelf['S04'] ?? 0 ?></td></tr>
-      <tr><td><strong style="color:#18c7ff">S05</strong></td><td>Equipos (laptops, impresoras, monitores, software)</td><td><?= $byShelf['S05'] ?? 0 ?></td></tr>
-    </tbody>
-  </table>
-</div>
-
-<p class="note">
-  ⚠️ <strong>Importante:</strong> elimina este archivo del servidor una vez completada la importación.<br>
-  Ruta: <code>api/importar_productos.php</code>
-</p>
+</main>
 </body>
 </html>

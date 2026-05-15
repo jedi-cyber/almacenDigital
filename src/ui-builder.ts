@@ -28,6 +28,8 @@ export interface HudRefs {
   editorSkuDisplay: HTMLElement;
   editorForm: HTMLFormElement;
   editorName: HTMLInputElement;
+  editorCategory: HTMLInputElement;
+  editorBrand: HTMLInputElement;
   editorWidth: HTMLInputElement;
   editorHeight: HTMLInputElement;
   editorDepth: HTMLInputElement;
@@ -145,7 +147,7 @@ function buildHudTemplate(): string {
             <label class="search-label">
               <span>${UI_COPY.search.label}</span>
               <div class="search-row">
-                <input name="searchSku" type="text" placeholder="SKU-001 o Caja de tornillos" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
+		                <input name="searchSku" type="text" placeholder="SKU, nombre, categoria o marca" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
                 <button type="submit" class="icon-button" aria-label="${UI_COPY.search.buttonAriaLabel}" title="${UI_COPY.search.buttonAriaLabel}" data-testid="search-submit-btn">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path
@@ -161,9 +163,23 @@ function buildHudTemplate(): string {
                 <button type="button" id="clear-search-btn" class="icon-button icon-button--ghost" aria-label="${UI_COPY.buttons.clearSearch}" title="${UI_COPY.buttons.clearSearch}" data-testid="clear-search-btn" hidden>
                   ${renderIcon(ICON_PATHS.close)}
                 </button>
-              </div>
-            </label>
-        </form>
+	              </div>
+	            </label>
+	            <div class="catalog-filter-row" aria-label="Filtros de catalogo">
+	              <label>
+	                <span>Categoria</span>
+	                <select id="search-category-filter" name="categoryFilter">
+	                  <option value="">Todas</option>
+	                </select>
+	              </label>
+	              <label>
+	                <span>Marca</span>
+	                <select id="search-brand-filter" name="brandFilter">
+	                  <option value="">Todas</option>
+	                </select>
+	              </label>
+	            </div>
+	        </form>
         <div class="barcode-scanner" id="barcode-scanner" hidden>
           <video id="barcode-video" class="barcode-video" autoplay muted playsinline></video>
           <div class="barcode-frame" aria-hidden="true"></div>
@@ -315,6 +331,35 @@ function buildHudTemplate(): string {
               </button>
             </div>
           </section>
+
+          <section class="shelf-config">
+            <div class="shelf-config-head">
+              <strong>${UI_COPY.productForm.routeConfig.title}</strong>
+              <span>${UI_COPY.productForm.routeConfig.description}</span>
+            </div>
+            <div class="shelf-config-row">
+              <label>
+                <span>${UI_COPY.productForm.routeConfig.entranceX}</span>
+                <input id="warehouse-entrance-x" type="number" step="0.1" />
+              </label>
+              <label>
+                <span>${UI_COPY.productForm.routeConfig.entranceZ}</span>
+                <input id="warehouse-entrance-z" type="number" step="0.1" />
+              </label>
+            </div>
+            <label class="manager-field">
+              <span>${UI_COPY.productForm.routeConfig.aislesLabel}</span>
+              <textarea id="warehouse-aisles-input" rows="5" spellcheck="false"></textarea>
+            </label>
+            <div class="shelf-config-actions">
+              <button type="button" id="use-camera-entrance-btn" class="shelf-config-action-btn shelf-config-action-btn--soft">
+                ${UI_COPY.productForm.routeConfig.useCameraBtn}
+              </button>
+              <button type="button" id="save-route-config-btn" class="shelf-config-action-btn">
+                ${UI_COPY.productForm.routeConfig.saveBtn}
+              </button>
+            </div>
+          </section>
         </section>
 
         <section class="floating-panel" id="edit-panel" hidden aria-hidden="true" aria-label="${UI_COPY.editPanel.title}" data-testid="edit-panel">
@@ -412,13 +457,23 @@ function buildHudTemplate(): string {
                 <input name="sku" type="text" placeholder="Ej. SKU-001" required data-testid="product-sku-input" />
               </label>
               <div class="sku-name-divider" aria-hidden="true"></div>
-              <label>
-                <span>${UI_COPY.productForm.steps.productName}</span>
-                <input name="productName" type="text" placeholder="Ej. Caja de tornillos" data-testid="product-name-input" />
-              </label>
-            </div>
+	              <label>
+	                <span>${UI_COPY.productForm.steps.productName}</span>
+	                <input name="productName" type="text" placeholder="Ej. Caja de tornillos" data-testid="product-name-input" />
+	              </label>
+	            </div>
+	            <div class="field-row">
+	              <label>
+	                <span>Categoria</span>
+		                <input name="category" type="text" list="category-options" placeholder="Ej. Ferreteria" data-testid="product-category-input" />
+	              </label>
+	              <label>
+	                <span>Marca</span>
+		                <input name="brand" type="text" list="brand-options" placeholder="Ej. Generica" data-testid="product-brand-input" />
+	              </label>
+	            </div>
 
-            <section class="dimension-group">
+	            <section class="dimension-group">
               <div class="dimension-group-head">
                 <div class="form-step form-step--inline">
                   <span>3</span>
@@ -456,12 +511,22 @@ function buildHudTemplate(): string {
             <div class="sku-name-group">
               <p class="editor-sku" id="editor-sku-display" aria-live="polite"></p>
               <div class="sku-name-divider" aria-hidden="true"></div>
-              <label>
-                <span>${UI_COPY.productEditor.nameLabel}</span>
-                <input id="editor-name" type="text" placeholder="Ej. Caja de tornillos" />
-              </label>
-            </div>
-            <div class="field-row">
+	              <label>
+	                <span>${UI_COPY.productEditor.nameLabel}</span>
+	                <input id="editor-name" type="text" placeholder="Ej. Caja de tornillos" />
+	              </label>
+	            </div>
+	            <div class="field-row">
+	              <label>
+	                <span>Categoria</span>
+		                <input id="editor-category" type="text" list="category-options" placeholder="Ej. Ferreteria" />
+	              </label>
+	              <label>
+	                <span>Marca</span>
+		                <input id="editor-brand" type="text" list="brand-options" placeholder="Ej. Generica" />
+	              </label>
+	            </div>
+	            <div class="field-row">
               <label>
                 <span>${UI_COPY.productForm.dimensions.legacyLabels.width}</span>
                 <input id="editor-width" type="number" min="0.01" step="0.01" />
@@ -524,7 +589,7 @@ function buildHudTemplate(): string {
 	      </aside>
 	      <div class="search-result search-result--modal" id="search-result" aria-live="polite" data-testid="search-result" data-minimized="false" hidden>
 	        <section class="search-result-panel" aria-label="Reporte de productos encontrados">
-		          <div class="search-result-head">
+		          <div class="search-result-head" title="Arrastrar mensaje">
 		            <div class="search-result-meta">
 		              <strong id="search-result-sku"></strong>
 		              <span id="search-result-shelf"></span>
@@ -542,7 +607,7 @@ function buildHudTemplate(): string {
 	          <div class="search-report-list" id="search-report-list" aria-label="Productos encontrados"></div>
 	        </section>
 	        <button type="button" id="restore-search-report-btn" class="search-result-minimized" aria-label="Abrir reporte de productos" title="Abrir reporte de productos">
-	          <strong>Reporte de productos</strong>
+	          <strong>Producto ubicado</strong>
 	          <span id="search-result-minimized-summary"></span>
 	        </button>
 	      </div>
@@ -561,8 +626,10 @@ function buildHudTemplate(): string {
           ${UI_COPY.buttons.showLegend}
         </button>
         <ul class="legend" id="legend" aria-label="Lista de estantes" data-testid="legend" hidden></ul>
-      </main>
-    </section>
+	      </main>
+	      <datalist id="category-options"></datalist>
+	      <datalist id="brand-options"></datalist>
+	    </section>
   `;
 }
 
@@ -596,6 +663,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
   const editorSkuDisplay = container.querySelector<HTMLElement>("#editor-sku-display");
   const editorForm = container.querySelector<HTMLFormElement>("#editor-form");
   const editorName = container.querySelector<HTMLInputElement>("#editor-name");
+  const editorCategory = container.querySelector<HTMLInputElement>("#editor-category");
+  const editorBrand = container.querySelector<HTMLInputElement>("#editor-brand");
   const editorWidth = container.querySelector<HTMLInputElement>("#editor-width");
   const editorHeight = container.querySelector<HTMLInputElement>("#editor-height");
   const editorDepth = container.querySelector<HTMLInputElement>("#editor-depth");
@@ -632,6 +701,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
     !editorSkuDisplay ||
     !editorForm ||
     !editorName ||
+    !editorCategory ||
+    !editorBrand ||
     !editorWidth ||
     !editorHeight ||
     !editorDepth ||
@@ -671,6 +742,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
     editorSkuDisplay,
     editorForm,
     editorName,
+    editorCategory,
+    editorBrand,
     editorWidth,
     editorHeight,
     editorDepth,

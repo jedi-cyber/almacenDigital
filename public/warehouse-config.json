@@ -1,4 +1,24 @@
 {
+  "entrance": {
+    "label": "Entrada principal",
+    "position": { "x": 5.6, "y": 0.04, "z": 1.7 }
+  },
+  "aisles": [
+    {
+      "id": "P01",
+      "label": "Pasillo principal",
+      "from": { "x": 5.6, "y": 0.055, "z": 1.7 },
+      "to": { "x": -4.8, "y": 0.055, "z": 1.7 },
+      "width": 1.4
+    },
+    {
+      "id": "P02",
+      "label": "Pasillo posterior",
+      "from": { "x": -4.8, "y": 0.055, "z": 1.7 },
+      "to": { "x": -4.8, "y": 0.055, "z": -3.4 },
+      "width": 1.2
+    }
+  ],
   "shelves": [
     {
       "id": "S01",

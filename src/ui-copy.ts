@@ -95,6 +95,16 @@ export const UI_COPY = {
       updateHelp: "",
       updateBtn: "Aplicar tamaño"
     },
+    routeConfig: {
+      title: "Ruta y pasillos",
+      description: "Define desde donde inicia la ruta y los pasillos transitables del almacen.",
+      entranceLabel: "Entrada del almacen",
+      entranceX: "Entrada X",
+      entranceZ: "Entrada Z",
+      aislesLabel: "Pasillos JSON",
+      saveBtn: "Guardar ruta del almacen",
+      useCameraBtn: "Usar camara como entrada"
+    },
     shelfSummary: {
       title: "Capacidad del estante",
       legacyTitle: "Referencia del estante"
@@ -137,6 +147,10 @@ export const UI_COPY = {
   status: {
     loadingConfig: "Cargando configuracion del almacen...",
     loadingProducts: "Restaurando productos guardados...",
+    loadingScene: "Preparando vista 3D del almacen...",
+    productsEmpty: "Catalogo cargado correctamente. Aun no hay productos registrados en los estantes.",
+    productsLoadFailed: "No se pudo conectar con la API de productos. La lista no esta vacia necesariamente; la carga fallo.",
+    productsLoadRetry: "Reintentar carga",
     initial: "",
     legacyInitial: "Agrega un producto y luego buscalo por nombre o SKU para probar la fase 5.",
     shelfNotFound: "No se encontro el estante seleccionado.",
@@ -159,8 +173,10 @@ export function getProductName(sku: string): string {
   return `Producto ${sku}`;
 }
 
-export function getSearchNotFoundMessage(sku: string): string {
-  return `No existe un producto registrado con nombre o SKU ${sku}.`;
+export function getSearchNotFoundMessage(query: string, suggestions: string[] = []): string {
+  const base = `No se encontro un producto con nombre, SKU, categoria o marca "${query}".`;
+  if (suggestions.length === 0) return base;
+  return `${base} Sugerencias cercanas: ${suggestions.join(", ")}.`;
 }
 
 export function getSearchShelfMissingMessage(sku: string): string {
@@ -168,7 +184,7 @@ export function getSearchShelfMissingMessage(sku: string): string {
 }
 
 export function getSearchSuccessMessage(sku: string, shelfId: string, matchCount = 1): string {
-  const matchText = matchCount > 1 ? ` Se encontraron ${matchCount} productos con ese nombre; se muestra el primero.` : "";
+  const matchText = matchCount > 1 ? ` Se encontraron ${matchCount} coincidencias ordenadas por relevancia; se muestra la mejor.` : "";
   return `Producto ${sku} encontrado en ${shelfId}. Sigue la ruta marcada desde la puerta hasta el estante.${matchText}`;
 }
 
@@ -184,9 +200,27 @@ export function getDuplicateSkuMessage(sku: string): string {
   return `Ya existe un producto con SKU "${sku}". Usa un identificador diferente.`;
 }
 
+export function getInvalidSkuMessage(): string {
+  return "Ingresa un SKU valido antes de guardar el producto.";
+}
+
+export function getInvalidProductDimensionsMessage(): string {
+  return "Las medidas del producto deben ser numeros mayores a cero.";
+}
+
+export function getProductTooLargeForSectionMessage(
+  shelfId: string,
+  section: number,
+  maxWidth: number,
+  maxHeight: number,
+  maxDepth: number
+): string {
+  return `El producto no cabe en ${shelfId} piso ${section}. Maximo permitido: ${maxWidth} x ${maxHeight} x ${maxDepth} m.`;
+}
+
 export function getNoSpaceMessage(sku: string, shelfId: string, section?: number): string {
   const sectionText = typeof section === "number" ? ` piso ${section}` : "";
-  return `No hay espacio para ${sku} en ${shelfId}${sectionText}. El algoritmo no encontro una posicion valida.`;
+  return `Las medidas caben, pero no hay espacio libre para ${sku} en ${shelfId}${sectionText}. Selecciona otro piso, otro estante o reduce el tamano.`;
 }
 
 export function getPlacementSuccessMessage(

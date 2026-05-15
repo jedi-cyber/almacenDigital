@@ -29,9 +29,30 @@ export interface Shelf extends Dimensions {
 }
 
 /**
+ * Punto de entrada real desde donde inicia la navegación guiada.
+ */
+export interface WarehouseEntrance {
+  label: string;
+  position: Vector3D;
+}
+
+/**
+ * Pasillo o zona transitable usada para construir rutas más realistas.
+ */
+export interface WarehouseAisle {
+  id: string;
+  label: string;
+  from: Vector3D;
+  to: Vector3D;
+  width?: number;
+}
+
+/**
  * Configuración serializable del almacén. */
 export interface WarehouseConfig {
   shelves: Shelf[];
+  entrance?: WarehouseEntrance;
+  aisles?: WarehouseAisle[];
 }
 
 /**
@@ -42,7 +63,10 @@ export interface Item {
   width: number;
   height: number;
   depth: number;
-  category?: string; // 🔥 obligatorio
+  category?: string;
+  categoryId?: number | null;
+  brand?: string;
+  brandId?: number | null;
 }
 
 /**

@@ -5,7 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
-import type { PlacedItem, Shelf, WarehouseConfig } from "./types.js";
+import type { PlacedItem, Shelf, WarehouseAisle, WarehouseConfig } from "./types.js";
 import { getSectionBoundaries } from "./canPlace.js";
 import {
   createRuntime,
@@ -23,6 +23,7 @@ import {
  */
 export async function createWarehouseApp(container: HTMLElement): Promise<void> {
   const refs = buildHtml(container);
+  const isMobileRouteMode = document.documentElement.dataset.appMode === "mobile-route";
 
   // Propagar errores de red en background al status message del HUD.
   setApiErrorHandler((msg) => setStatus(refs.statusMessage, msg, true));
@@ -37,6 +38,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 
   const config = await loadWarehouseConfig();
 
+  setLoadingText(UI_COPY.status.loadingScene);
   const { scene, renderer, camera, controls } = buildScene(refs.canvas);
   const runtime = createRuntime(config);
 
@@ -45,7 +47,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   const wallMeshes = addWalls(scene, config.shelves);
   const door = addDoorS01S02(scene, config.shelves);
   const wallColliders = [...wallMeshes, ...(door?.wallMeshes ?? [])];
-  const entrancePosition = door?.entrancePosition ?? new THREE.Vector3(5.6, 0.04, 1.7);
+  const entrancePosition = getConfiguredEntrancePosition(config, door?.entrancePosition);
   let isEditCameraFree = false;
   let doorOpen = false;
   const setDoorOpen = (isOpen: boolean): void => {
@@ -67,6 +69,8 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   );
   const routeControls = createRouteStepControls(refs.canvas.parentElement);
   let guidedRoute: GuidedRoute | null = null;
+  let guidedRouteSku: string | null = null;
+  let keepCurrentRouteUntilFinish = false;
 
   const shelfMeshes = new Map<string, THREE.Mesh>();
   const shelfSprites = new Map<string, THREE.Sprite>();
@@ -88,16 +92,67 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   setLoadingText(UI_COPY.status.loadingProducts);
   refs.statusMessage.textContent = UI_COPY.status.loadingProducts;
 
-  const savedProducts = await loadPlacedProducts();
-  for (const { shelfId, item, localPosition } of savedProducts) {
-    const shelfMesh = shelfMeshes.get(shelfId);
-    if (!shelfMesh) continue;
-    restoreItem(runtime, scene, shelfId, item, localPosition, shelfMesh);
-    const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
-    updateLegendCount(shelfId, count);
-  }
+  let retryProductsButton: HTMLButtonElement | null = null;
+  const clearProductsBeforeRetry = (): void => {
+    runtime.productsByShelf.forEach((_, shelfId) => {
+      runtime.productsByShelf.set(shelfId, []);
+      runtime.productSkusByShelf.set(shelfId, []);
+      updateLegendCount(shelfId, 0);
+    });
+    runtime.productEntryBySku.clear();
+    runtime.instanceOwner.clear();
+    runtime.instancedMeshByGeo.forEach((mesh) => {
+      mesh.count = 0;
+      mesh.instanceMatrix.needsUpdate = true;
+    });
+  };
+  const restoreSavedProducts = async (): Promise<boolean> => {
+    const result = await loadPlacedProducts();
+    if (!result.ok) {
+      setStatus(refs.statusMessage, UI_COPY.status.productsLoadFailed, true);
+      if (!retryProductsButton) {
+        retryProductsButton = document.createElement("button");
+        retryProductsButton.type = "button";
+        retryProductsButton.className = "status-retry-btn";
+        retryProductsButton.textContent = UI_COPY.status.productsLoadRetry;
+        refs.statusMessage.insertAdjacentElement("afterend", retryProductsButton);
+        retryProductsButton.addEventListener("click", async () => {
+          retryProductsButton?.setAttribute("disabled", "true");
+          setStatus(refs.statusMessage, UI_COPY.status.loadingProducts, false);
+          clearProductsBeforeRetry();
+          const restored = await restoreSavedProducts();
+          if (restored) {
+            retryProductsButton?.remove();
+            retryProductsButton = null;
+            setStatus(refs.statusMessage, UI_COPY.status.initial, false);
+          } else {
+            retryProductsButton?.removeAttribute("disabled");
+          }
+        });
+      }
+      return false;
+    }
 
-  setStatus(refs.statusMessage, UI_COPY.status.initial, false);
+    if (result.products.length === 0) {
+      setStatus(refs.statusMessage, UI_COPY.status.productsEmpty, false);
+      refs.statusMessage.dataset.state = "empty";
+      return true;
+    }
+
+    for (const { shelfId, item, localPosition } of result.products) {
+      const shelfMesh = shelfMeshes.get(shelfId);
+      if (!shelfMesh) continue;
+      restoreItem(runtime, scene, shelfId, item, localPosition, shelfMesh);
+      const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
+      updateLegendCount(shelfId, count);
+    }
+    return true;
+  };
+
+  const productsLoaded = await restoreSavedProducts();
+  if (productsLoaded && refs.statusMessage.dataset.state !== "empty") {
+    setStatus(refs.statusMessage, UI_COPY.status.initial, false);
+  }
 
   const { refreshShelfSummary, handleRemoveBoard } = wireProductForm({
     config,
@@ -122,7 +177,8 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     onShelfResized: (shelfId, shelf) => {
       const sprite = shelfSprites.get(shelfId);
       if (sprite) sprite.position.y = shelf.position.y + shelf.height / 2 + 0.7;
-    }
+    },
+    enableGhostPreview: !isMobileRouteMode
   });
 
   const dragController = wireShelfDrag(
@@ -139,6 +195,29 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       isEditCameraFree = enabled;
     }
   );
+
+  const canChangeRouteProduct = (sku: string): boolean => {
+    if (!guidedRoute || !guidedRouteSku || guidedRouteSku === sku) return true;
+
+    if (keepCurrentRouteUntilFinish) {
+      setStatus(
+        refs.statusMessage,
+        `Ruta protegida para ${guidedRouteSku}. Termina la ruta antes de cambiar de producto.`,
+        false
+      );
+      return false;
+    }
+
+    const shouldChange = window.confirm(
+      `Ya tienes una ruta guiada hacia ${guidedRouteSku}.\n\n¿Quieres cambiar la ruta al producto ${sku}?`
+    );
+    if (!shouldChange) {
+      setStatus(refs.statusMessage, `Se mantiene la ruta actual hacia ${guidedRouteSku}.`, false);
+      return false;
+    }
+
+    return true;
+  };
 
   const selectProduct = wireSearchForm({
     searchForm: refs.searchForm,
@@ -161,38 +240,89 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     transferConfirmBtn: refs.transferConfirmBtn,
     transferCancelBtn: refs.transferCancelBtn,
     productEditor: refs.productEditor,
-    editorSkuDisplay: refs.editorSkuDisplay,
-    editorForm: refs.editorForm,
-    editorName: refs.editorName,
-    editorWidth: refs.editorWidth,
+	    editorSkuDisplay: refs.editorSkuDisplay,
+	    editorForm: refs.editorForm,
+	    editorName: refs.editorName,
+	    editorCategory: refs.editorCategory,
+	    editorBrand: refs.editorBrand,
+	    editorWidth: refs.editorWidth,
     editorHeight: refs.editorHeight,
     editorDepth: refs.editorDepth,
     onMoveRequested: dragController.armProductMove,
-    onProductRemoved: (shelfId: string) => {
-      if (refs.shelfSelect.value === shelfId) {
-        refreshShelfSummary(shelfId);
-      }
-    },
-    onProductLocated: (worldPos, shelfMesh) => {
-      guidedRoute = drawGuidedRoute(
-        scene,
-        camera,
+	    onProductRemoved: (shelfId: string) => {
+	      if (refs.shelfSelect.value === shelfId) {
+	        refreshShelfSummary(shelfId);
+	      }
+	    },
+	    beforeProductSelected: canChangeRouteProduct,
+	    onProductLocated: (worldPos, shelfMesh, sku) => {
+	      guidedRouteSku = sku;
+	      const routeEntry = runtime.productEntryBySku.get(sku);
+	      const routeShelf = routeEntry ? config.shelves.find((shelf) => shelf.id === routeEntry.shelfId) : undefined;
+	      const productLabel = routeEntry?.item.name ? `${routeEntry.item.name} (${sku})` : sku;
+	      const destinationLabel = routeEntry
+	        ? `${routeEntry.shelfId} · ${routeShelf?.label ?? routeEntry.shelfId} · ${getRouteSectionLabel(routeShelf, routeEntry.localPosition.y)}`
+	        : "Destino no disponible";
+	      guidedRoute = drawGuidedRoute(
+	        scene,
+	        camera,
         controls,
         entrancePosition,
         worldPos,
         shelfMesh,
         shelfMeshes,
         wallColliders,
-        guidedRoute,
-        routeControls,
-        ensureDoorOpen
-      );
-    },
-    onSearchCleared: () => {
-      guidedRoute = clearGuidedRoute(scene, guidedRoute);
-      routeControls.hide();
-    }
-  });
+        config.aisles ?? [],
+		        guidedRoute,
+		        routeControls,
+		        ensureDoorOpen,
+		        productLabel,
+		        destinationLabel,
+		        () => {
+		          guidedRouteSku = null;
+		          keepCurrentRouteUntilFinish = false;
+		          routeControls.setLocked(false);
+		          setStatus(refs.statusMessage, `Llegaste al destino: ${productLabel}.`, false);
+		        }
+		      );
+	    },
+		    onSearchCleared: () => {
+		      guidedRoute = clearGuidedRoute(scene, guidedRoute);
+		      guidedRouteSku = null;
+		      keepCurrentRouteUntilFinish = false;
+		      routeControls.setLocked(false);
+		      routeControls.hide();
+		    }
+		  });
+
+	  routeControls.lockButton.onclick = () => {
+    keepCurrentRouteUntilFinish = !keepCurrentRouteUntilFinish;
+    routeControls.setLocked(keepCurrentRouteUntilFinish);
+    setStatus(
+      refs.statusMessage,
+      keepCurrentRouteUntilFinish
+        ? "Producto fijado: los clics accidentales no cambiaran la ruta hasta terminar."
+        : "Producto liberado: puedes cambiar la ruta seleccionando otro producto.",
+      false
+    );
+	  };
+
+	  routeControls.cancelButton.onclick = () => {
+	    guidedRoute = clearGuidedRoute(scene, guidedRoute);
+	    guidedRouteSku = null;
+	    keepCurrentRouteUntilFinish = false;
+	    routeControls.setLocked(false);
+	    setStatus(refs.statusMessage, "Ruta cancelada. Puedes buscar o seleccionar otro producto.", false);
+	  };
+
+  const routeSku = new URLSearchParams(window.location.search).get("sku")?.trim();
+  if (routeSku) {
+    window.setTimeout(() => {
+      selectProduct(routeSku);
+    }, 450);
+  }
+
+  setupWarehouseRouteConfigPanel(config, camera, entrancePosition, refs.statusMessage);
 
   const clearSelectedProduct = () => {
     refs.productEditor.hidden = true;
@@ -295,8 +425,12 @@ interface RouteStepControls {
   backButton: HTMLButtonElement;
   nextButton: HTMLButtonElement;
   finishButton: HTMLButtonElement;
+  lockButton: HTMLButtonElement;
+  cancelButton: HTMLButtonElement;
+  setRouteInfo: (productLabel: string, destinationLabel: string) => void;
   setStep: (current: number, total: number) => void;
   setBusy: (isBusy: boolean) => void;
+  setLocked: (isLocked: boolean) => void;
   show: () => void;
   hide: () => void;
 }
@@ -310,6 +444,7 @@ interface GuidedRoute {
   camera: THREE.PerspectiveCamera;
   orbitControls: OrbitControls;
   ensureDoorOpen: () => boolean;
+  onFinished?: () => void;
 }
 
 function createRouteStepControls(viewport: HTMLElement | null): RouteStepControls {
@@ -317,28 +452,80 @@ function createRouteStepControls(viewport: HTMLElement | null): RouteStepControl
   container.className = "route-step-controls";
   container.hidden = true;
 
+  const info = document.createElement("div");
+  info.className = "route-step-info";
+
+  const productText = document.createElement("strong");
+  productText.textContent = "Ruta guiada";
+
+  const destinationText = document.createElement("span");
+  destinationText.textContent = "Destino pendiente";
+
+  const progressText = document.createElement("small");
+  progressText.textContent = "Paso 1 de 1";
+
+  info.append(productText, destinationText, progressText);
+
+  const actions = document.createElement("div");
+  actions.className = "route-step-actions";
+
   const backButton = createRouteButton("Retroceder");
   const nextButton = createRouteButton("Avanzar ruta");
   const finishButton = createRouteButton("Ir al final");
+  const lockButton = createRouteButton("Fijar");
+  const cancelButton = createRouteButton("Cancelar");
+  lockButton.classList.add("route-step-btn--lock");
+  lockButton.setAttribute("aria-pressed", "false");
+  cancelButton.classList.add("route-step-btn--cancel");
 
-  container.append(backButton, nextButton, finishButton);
+  actions.append(backButton, nextButton, finishButton, lockButton, cancelButton);
+  container.append(info, actions);
   viewport?.append(container);
+
+  let lastCurrent = 1;
+  let lastTotal = 1;
+
+  const applyStepState = () => {
+    progressText.textContent = lastCurrent >= lastTotal
+      ? `Llegaste al destino (${lastTotal}/${lastTotal})`
+      : `Paso ${lastCurrent} de ${lastTotal}`;
+    nextButton.textContent = lastCurrent >= lastTotal ? "Llegaste" : `Avanzar ${lastCurrent}/${lastTotal}`;
+    backButton.disabled = lastCurrent <= 1;
+    nextButton.disabled = lastCurrent >= lastTotal;
+    finishButton.disabled = lastCurrent <= 1 || lastCurrent >= lastTotal;
+  };
 
   return {
     container,
     backButton,
     nextButton,
     finishButton,
+    lockButton,
+    cancelButton,
+    setRouteInfo: (productLabel: string, destinationLabel: string) => {
+      productText.textContent = productLabel;
+      destinationText.textContent = destinationLabel;
+    },
     setStep: (current: number, total: number) => {
-      nextButton.textContent = current >= total ? `Finalizar ${current}/${total}` : `Avanzar ${current}/${total}`;
-      backButton.disabled = current <= 1;
-      nextButton.disabled = false;
-      finishButton.disabled = current <= 1 || current >= total;
+      lastCurrent = current;
+      lastTotal = total;
+      applyStepState();
     },
     setBusy: (isBusy: boolean) => {
-      backButton.disabled = isBusy || backButton.disabled;
-      nextButton.disabled = isBusy;
-      finishButton.disabled = isBusy || finishButton.disabled;
+      if (!isBusy) {
+        applyStepState();
+        lockButton.disabled = false;
+        return;
+      }
+      backButton.disabled = true;
+      nextButton.disabled = true;
+      finishButton.disabled = true;
+      lockButton.disabled = isBusy;
+    },
+    setLocked: (isLocked: boolean) => {
+      lockButton.dataset.locked = isLocked ? "true" : "false";
+      lockButton.setAttribute("aria-pressed", isLocked ? "true" : "false");
+      lockButton.textContent = isLocked ? "Fijado" : "Fijar";
     },
     show: () => {
       container.hidden = false;
@@ -348,6 +535,8 @@ function createRouteStepControls(viewport: HTMLElement | null): RouteStepControl
       backButton.disabled = false;
       nextButton.disabled = false;
       finishButton.disabled = false;
+      lockButton.disabled = false;
+      cancelButton.disabled = false;
       backButton.onclick = null;
       nextButton.onclick = null;
       finishButton.onclick = null;
@@ -363,6 +552,71 @@ function createRouteButton(label: string): HTMLButtonElement {
   return button;
 }
 
+function getConfiguredEntrancePosition(config: WarehouseConfig, fallback?: THREE.Vector3): THREE.Vector3 {
+  const entrance = config.entrance?.position;
+  if (entrance && Number.isFinite(entrance.x) && Number.isFinite(entrance.z)) {
+    return new THREE.Vector3(entrance.x, entrance.y ?? 0.04, entrance.z);
+  }
+
+  return fallback?.clone() ?? new THREE.Vector3(5.6, 0.04, 1.7);
+}
+
+function setupWarehouseRouteConfigPanel(
+  config: WarehouseConfig,
+  camera: THREE.PerspectiveCamera,
+  entrancePosition: THREE.Vector3,
+  statusMessage: HTMLParagraphElement
+): void {
+  const entranceX = document.querySelector<HTMLInputElement>("#warehouse-entrance-x");
+  const entranceZ = document.querySelector<HTMLInputElement>("#warehouse-entrance-z");
+  const aislesInput = document.querySelector<HTMLTextAreaElement>("#warehouse-aisles-input");
+  const useCameraButton = document.querySelector<HTMLButtonElement>("#use-camera-entrance-btn");
+  const saveButton = document.querySelector<HTMLButtonElement>("#save-route-config-btn");
+  if (!entranceX || !entranceZ || !aislesInput || !useCameraButton || !saveButton) return;
+
+  const syncFields = () => {
+    entranceX.value = entrancePosition.x.toFixed(2);
+    entranceZ.value = entrancePosition.z.toFixed(2);
+    aislesInput.value = JSON.stringify(config.aisles ?? [], null, 2);
+  };
+
+  useCameraButton.addEventListener("click", () => {
+    entranceX.value = camera.position.x.toFixed(2);
+    entranceZ.value = camera.position.z.toFixed(2);
+    setStatus(statusMessage, "Entrada preparada desde la posicion actual de la camara. Guarda para aplicarla.", false);
+  });
+
+  saveButton.addEventListener("click", () => {
+    const x = Number.parseFloat(entranceX.value);
+    const z = Number.parseFloat(entranceZ.value);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      setStatus(statusMessage, "Ingresa coordenadas validas para la entrada del almacen.", true);
+      return;
+    }
+
+    let aisles: WarehouseAisle[];
+    try {
+      const parsed = JSON.parse(aislesInput.value || "[]") as WarehouseAisle[];
+      if (!Array.isArray(parsed)) throw new Error("Los pasillos deben ser una lista.");
+      aisles = parsed.filter((aisle) => aisle?.from && aisle?.to);
+    } catch {
+      setStatus(statusMessage, "El JSON de pasillos no es valido.", true);
+      return;
+    }
+
+    entrancePosition.set(x, 0.04, z);
+    config.entrance = {
+      label: config.entrance?.label ?? "Entrada principal",
+      position: { x, y: 0.04, z }
+    };
+    config.aisles = aisles;
+    saveWarehouseConfig(config);
+    setStatus(statusMessage, `Ruta del almacen actualizada: entrada (${x.toFixed(2)}, ${z.toFixed(2)}) y ${aisles.length} pasillo(s).`, false);
+  });
+
+  syncFields();
+}
+
 function drawGuidedRoute(
   scene: THREE.Scene,
   camera: THREE.PerspectiveCamera,
@@ -372,9 +626,13 @@ function drawGuidedRoute(
   shelfMesh: THREE.Mesh,
   shelfMeshes: Map<string, THREE.Mesh>,
   wallColliders: THREE.Mesh[],
+  aisles: WarehouseAisle[],
   currentRoute: GuidedRoute | null,
   controls: RouteStepControls,
-  ensureDoorOpen: () => boolean
+  ensureDoorOpen: () => boolean,
+  productLabel: string,
+  destinationLabel: string,
+  onFinished?: () => void
 ): GuidedRoute {
   clearGuidedRoute(scene, currentRoute);
 
@@ -382,7 +640,8 @@ function drawGuidedRoute(
   const end = getShelfApproachPoint(productWorldPos, shelfMesh, entrancePosition);
   const obstacleMeshes = [...shelfMeshes.values(), ...wallColliders];
   const manualPoints = buildBackShelfRoutePoints(start, end, shelfMesh, shelfMeshes, entrancePosition);
-  const rawPoints = manualPoints ?? buildAisleRoutePoints(start, end, obstacleMeshes) ?? buildFallbackRoutePoints(start, end);
+  const configuredAislePoints = buildConfiguredAisleRoutePoints(start, end, aisles);
+  const rawPoints = manualPoints ?? configuredAislePoints ?? buildAisleRoutePoints(start, end, obstacleMeshes) ?? buildFallbackRoutePoints(start, end);
   const points = orthogonalizeRoutePoints(rawPoints);
 
   const route: GuidedRoute = {
@@ -393,12 +652,14 @@ function drawGuidedRoute(
     controls,
     camera,
     orbitControls,
-    ensureDoorOpen
+    ensureDoorOpen,
+    onFinished
   };
 
   controls.backButton.onclick = () => retreatGuidedRoute(scene, route);
   controls.nextButton.onclick = () => advanceGuidedRoute(scene, route);
   controls.finishButton.onclick = () => finishGuidedRoute(scene, route);
+  controls.setRouteInfo(productLabel, destinationLabel);
   controls.show();
   renderGuidedRouteStep(scene, route);
   moveCameraWithRoute(route, 0);
@@ -410,6 +671,60 @@ function buildFallbackRoutePoints(start: THREE.Vector3, end: THREE.Vector3): THR
   return start.distanceTo(corner) < 0.15 || corner.distanceTo(end) < 0.15
     ? [start, end]
     : [start, corner, end];
+}
+
+function buildConfiguredAisleRoutePoints(
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  aisles: WarehouseAisle[]
+): THREE.Vector3[] | null {
+  if (aisles.length === 0) return null;
+
+  const validAisles = aisles
+    .map((aisle) => ({
+      from: vectorFromConfig(aisle.from),
+      to: vectorFromConfig(aisle.to)
+    }))
+    .filter((aisle) => aisle.from.distanceTo(aisle.to) > 0.25);
+  if (validAisles.length === 0) return null;
+
+  let bestRoute: THREE.Vector3[] | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  validAisles.forEach((startAisle) => {
+    const startProjection = projectPointToSegment(start, startAisle.from, startAisle.to);
+    validAisles.forEach((endAisle) => {
+      const endProjection = projectPointToSegment(end, endAisle.from, endAisle.to);
+      const junction = projectPointToSegment(endProjection, startAisle.from, startAisle.to);
+      const points = compactRoutePoints([start, startProjection, junction, endProjection, end]);
+      const distance = routeDistance(points);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestRoute = points;
+      }
+    });
+  });
+
+  return bestRoute && bestRoute.length > 1 ? bestRoute : null;
+}
+
+function routeDistance(points: THREE.Vector3[]): number {
+  return points.reduce((total, point, index) => {
+    if (index === 0) return total;
+    return total + point.distanceTo(points[index - 1]);
+  }, 0);
+}
+
+function projectPointToSegment(point: THREE.Vector3, from: THREE.Vector3, to: THREE.Vector3): THREE.Vector3 {
+  const segment = to.clone().sub(from);
+  const lengthSq = segment.lengthSq();
+  if (lengthSq === 0) return from.clone().setY(0.055);
+  const t = THREE.MathUtils.clamp(point.clone().sub(from).dot(segment) / lengthSq, 0, 1);
+  return from.clone().addScaledVector(segment, t).setY(0.055);
+}
+
+function vectorFromConfig(value: { x: number; y?: number; z: number }): THREE.Vector3 {
+  return new THREE.Vector3(value.x, value.y ?? 0.055, value.z);
 }
 
 function buildBackShelfRoutePoints(
@@ -693,11 +1008,6 @@ function showRouteArrival(scene: THREE.Scene, route: GuidedRoute): void {
   scene.add(route.activeSegment);
   route.controls.setStep(route.points.length - 1, route.points.length - 1);
   moveCameraToRouteEnd(route);
-  window.setTimeout(() => {
-    route.controls.hide();
-    disposeRouteSegment(scene, route.activeSegment);
-    route.activeSegment = null;
-  }, 1400);
 }
 
 function renderGuidedRouteStep(scene: THREE.Scene, route: GuidedRoute): void {
@@ -778,13 +1088,14 @@ function moveCameraWithRoute(route: GuidedRoute, stepIndex: number, isArrival = 
       route.camera.lookAt(route.orbitControls.target);
       route.orbitControls.update();
     },
-    onComplete: () => {
-      route.controls.setStep(
-        Math.min(route.currentStep + 1, route.points.length - 1),
-        route.points.length - 1
-      );
-    }
-  });
+	    onComplete: () => {
+	      route.controls.setStep(
+	        Math.min(route.currentStep + 1, route.points.length - 1),
+	        route.points.length - 1
+	      );
+	      route.controls.setBusy(false);
+	    }
+	  });
 }
 
 function moveCameraToRouteEnd(route: GuidedRoute): void {
@@ -828,10 +1139,13 @@ function moveCameraToRouteEnd(route: GuidedRoute): void {
       route.camera.lookAt(route.orbitControls.target);
       route.orbitControls.update();
     },
-    onComplete: () => {
-      route.controls.setStep(endIndex, endIndex);
-    }
-  });
+	    onComplete: () => {
+	      route.controls.setStep(endIndex, endIndex);
+	      route.controls.setBusy(false);
+	      route.onFinished?.();
+	      route.onFinished = undefined;
+	    }
+	  });
 }
 
 function clearGuidedRoute(scene: THREE.Scene, route: GuidedRoute | null): null {
@@ -1602,6 +1916,33 @@ function boxesOverlap(
     aPosition.z < bPosition.z + bSize.depth &&
     aPosition.z + aSize.depth > bPosition.z
   );
+}
+
+function getRouteSectionLabel(shelf: Shelf | undefined, localPositionY: number): string {
+  const section = getRouteSectionNumber(shelf, localPositionY);
+  const label = shelf?.sectionLabels?.[section - 1]?.trim();
+  return label || `Piso ${section}`;
+}
+
+function getRouteSectionNumber(shelf: Shelf | undefined, localPositionY: number): number {
+  if (!shelf) return 1;
+
+  const sections = Math.max(1, Math.floor(shelf.sections ?? 1));
+  const offsets = shelf.boardOffsets && shelf.boardOffsets.length > 0
+    ? shelf.boardOffsets.map((fraction) => fraction * shelf.height)
+    : Array.from({ length: sections - 1 }, (_, index) => ((index + 1) * shelf.height) / sections);
+  const bounds = [0, ...offsets, shelf.height].sort((a, b) => a - b);
+  const safePositionY = clamp(localPositionY, 0, shelf.height);
+
+  for (let index = 0; index < bounds.length - 1; index += 1) {
+    const lowerBound = bounds[index];
+    const upperBound = bounds[index + 1];
+    if (safePositionY >= lowerBound && (safePositionY < upperBound || index === bounds.length - 2)) {
+      return index + 1;
+    }
+  }
+
+  return 1;
 }
 
 function clamp(value: number, min: number, max: number): number {

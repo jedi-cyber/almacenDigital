@@ -1,6 +1,7 @@
 export {
   addShelfBoard,
   collectBoardOffsets,
+  clearShelfSectionHighlight,
   flashShelfMesh,
   focusOnProductFromAisle,
   getInstanceWorldPosition,
@@ -11,5 +12,6 @@ export {
   removeLastShelfBoard,
   removeShelfBoardAtSection,
   SHELF_PALETTE,
+  highlightShelfSection,
   updateShelfSectionPreview
 } from "./scene.js";

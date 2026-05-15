@@ -54,3 +54,5 @@ datasets/
 *.sql
 *.bak
 *.backup
+
+docs/
