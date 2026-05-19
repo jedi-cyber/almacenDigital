@@ -40,7 +40,7 @@ import {
   UI_COPY
 } from "./ui-copy.js";
 import { populateShelves, setStatus, updateLegendCount } from "./ui-handlers.js";
-import { type WarehouseRuntime, clearHighlight, highlightProduct, loadProductCatalogs, placeItem, removeItem, transferItem, updateItemDimensions } from "./warehouse.js";
+import { type WarehouseRuntime, clearHighlight, highlightProduct, loadProductCatalogs, placeItem, removeItem, transferItem, updateItemDimensions, uploadProductImage } from "./warehouse.js";
 import type { ProductEntry } from "./warehouse.js";
 import { canPlace } from "./canPlace.js";
 
@@ -77,6 +77,7 @@ export interface ProductFormDeps {
   onShelfLabelUpdated?: (shelfId: string, shelf: Shelf) => void;
   onShelfUpdated?: () => void;
   onShelfResized?: (shelfId: string, shelf: Shelf) => void;
+  onProductPlaced?: () => void;
   enableGhostPreview?: boolean;
 }
 
@@ -106,6 +107,7 @@ export interface SearchFormDeps {
   editorName: HTMLInputElement;
   editorCategory: HTMLInputElement;
   editorBrand: HTMLInputElement;
+  editorImageUrl: HTMLInputElement;
   editorWidth: HTMLInputElement;
   editorHeight: HTMLInputElement;
   editorDepth: HTMLInputElement;
@@ -147,6 +149,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     onShelfLabelUpdated,
     onShelfUpdated,
     onShelfResized,
+    onProductPlaced,
     enableGhostPreview = true
   } = params;
 
@@ -509,7 +512,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     }
   };
 
-  const handleProductFormSubmit = (event: SubmitEvent) => {
+  const handleProductFormSubmit = async (event: SubmitEvent) => {
     event.preventDefault();
 
     const data = new FormData(form);
@@ -518,6 +521,10 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     const productName = String(data.get("productName") ?? "").trim() || getProductName(sku);
     const category = String(data.get("category") ?? "").trim() || "Sin categoria";
     const brand = String(data.get("brand") ?? "").trim() || "Sin marca";
+    const imageFile = data.get("imageFile");
+    const imageUrl = imageFile instanceof File && imageFile.size > 0
+      ? await uploadProductImage(imageFile)
+      : null;
     const preferredSection = Number(data.get("section") ?? "1");
 	    const width = Number(data.get("width"));
 	    const height = Number(data.get("height"));
@@ -566,7 +573,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 	      return;
 	    }
 	
-		    const item: Item = { sku, name: productName, category, brand, width, height, depth };
+		    const item: Item = { sku, name: productName, category, brand, imageUrl, width, height, depth };
 	    const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
 	    const previewPlacement = canPlace(shelf, placedItems, item, { preferredSection });
 	    if (!previewPlacement) {
@@ -583,6 +590,7 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 
     const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
     updateLegendCount(shelfId, count);
+    onProductPlaced?.();
     refreshShelfSummary(shelfId);
     flashShelfMesh(shelfMesh);
     setStatus(statusMessage, getPlacementSuccessMessage(sku, shelf.id, placement.localPosition, preferredSection), false);
@@ -659,6 +667,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     editorName,
     editorCategory,
     editorBrand,
+    editorImageUrl,
     editorWidth,
     editorHeight,
     editorDepth,
@@ -958,13 +967,15 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	      : getReportSummary(reportMatches, shelfId, shelfLabel);
     renderSearchReport(reportMatches, sku);
     searchResult.dataset.resultCount = String(reportMatches.length);
-    searchResult.hidden = false;
+    searchResult.hidden = reportMatches.length <= 1;
     setReportMinimized(false);
     if (productActions) productActions.hidden = false;
     if (clearSearchBtn) clearSearchBtn.hidden = false;
 
-    const input = searchForm.elements.namedItem("searchSku");
-    if (input instanceof HTMLInputElement) input.value = item.name || sku;
+	    const input = searchForm.elements.namedItem("searchSku");
+	    if (input instanceof HTMLInputElement) input.value = item.name || sku;
+    const globalSearchInput = document.querySelector<HTMLInputElement>(".global-search input");
+    if (globalSearchInput) globalSearchInput.value = item.name || sku;
 
     editorSkuDisplay.textContent = `SKU: ${sku}`;
     editorName.value = item.name ?? "";
@@ -976,7 +987,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     if (shelf) {
       applyEditorLimits(shelf, localPos.y);
     }
-    productEditor.hidden = false;
+	    productEditor.hidden = true;
 
     const instancedMesh = runtime.instancedMeshByGeo.get(productEntry.geoKey);
 	    if (instancedMesh) {
@@ -997,6 +1008,11 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	    const categoryFilter = searchCategoryFilter?.value.trim() ?? "";
 	    const brandFilter = searchBrandFilter?.value.trim() ?? "";
 	
+    const globalSearchInput = document.querySelector<HTMLInputElement>(".global-search input");
+    if (globalSearchInput && globalSearchInput.value.trim() !== query) {
+      globalSearchInput.value = query;
+    }
+
 	    if (!query && !categoryFilter && !brandFilter) {
 	      hideResult();
 	      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
@@ -1100,13 +1116,15 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     hideTransferPanel();
   };
 
-  const handleEditorSave = (event: SubmitEvent) => {
+  const handleEditorSave = async (event: SubmitEvent) => {
     event.preventDefault();
     if (!activeSku) return;
 
     const name = editorName.value.trim();
     const category = editorCategory.value.trim() || "Sin categoria";
     const brand = editorBrand.value.trim() || "Sin marca";
+    const imageFile = editorImageUrl.files?.[0] ?? null;
+    const imageUrl = imageFile ? await uploadProductImage(imageFile) : undefined;
     const width = Number(editorWidth.value);
     const height = Number(editorHeight.value);
     const depth = Number(editorDepth.value);
@@ -1132,7 +1150,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
       return;
     }
 
-	    const ok = updateItemDimensions(runtime, scene, activeSku, { name, category, brand, width, height, depth }, shelfMesh);
+	    const ok = updateItemDimensions(runtime, scene, activeSku, { name, category, brand, imageUrl, width, height, depth }, shelfMesh);
 	    if (ok) {
 	      highlightProduct(runtime, activeSku, scene);
 	      setActiveSectionHighlight(shelfMesh, shelf, editorEntry.localPosition.y);
@@ -1477,13 +1495,24 @@ function escapeHtml(value: string): string {
 export function wireSceneClick(params: SceneClickDeps): void {
   const { canvas, camera, runtime, config, clickInfo, clickInfoSku, clickInfoShelf, clickInfoDims, isSuppressed, onProductSelected, onSelectionCleared } =
     params;
+  let clickInfoTimer: number | null = null;
+
+  const hideClickInfo = () => {
+    clickInfo.hidden = true;
+    if (clickInfoTimer !== null) {
+      window.clearTimeout(clickInfoTimer);
+      clickInfoTimer = null;
+    }
+  };
+
+  clickInfo.querySelector<HTMLButtonElement>(".click-info-close")?.addEventListener("click", hideClickInfo);
 
   const handleSceneClick = (event: MouseEvent) => {
     if (isSuppressed?.()) return;
     const sku = pickProduct(event, camera, canvas, [...runtime.instancedMeshByGeo.values()], runtime.instanceOwner);
 
     if (!sku) {
-      clickInfo.hidden = true;
+      hideClickInfo();
       onSelectionCleared?.();
       return;
     }
@@ -1491,20 +1520,7 @@ export function wireSceneClick(params: SceneClickDeps): void {
     const accepted = onProductSelected?.(sku);
     if (accepted === false) return;
 
-	    const hitEntry = runtime.productEntryBySku.get(sku);
-	    if (!hitEntry) return;
-	    const { item: { width, height, depth }, shelfId, localPosition } = hitEntry;
-	    const shelf = config.shelves.find((s) => s.id === shelfId);
-	    const section = getSectionNumberForPosition(shelf, localPosition.y);
-	    clickInfoSku.textContent = sku;
-	    clickInfoShelf.textContent = formatProductLocation(
-	      shelfId,
-	      shelf?.label ?? shelfId,
-	      getSectionLabel(shelf, section),
-	      localPosition
-	    );
-	    clickInfoDims.textContent = `Medidas: ${width} x ${height} x ${depth} m`;
-	    clickInfo.hidden = false;
+    hideClickInfo();
   };
 
   canvas.addEventListener("click", handleSceneClick);

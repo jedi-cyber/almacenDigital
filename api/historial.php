@@ -18,6 +18,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "GET") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
+    require_api_session($pdo);
 
     $limit = isset($_GET["limit"]) && is_numeric($_GET["limit"])
         ? max(1, min(200, (int)$_GET["limit"]))

@@ -2,19 +2,25 @@ import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
+import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, focusOnProductFromAisle, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
+import type { HudRefs } from "./hud.js";
 import type { PlacedItem, Shelf, WarehouseAisle, WarehouseConfig } from "./types.js";
 import { getSectionBoundaries } from "./canPlace.js";
 import {
   createRuntime,
+  closeUserSession,
+  createUserSession,
+  loadProductHistory,
   loadPlacedProducts,
+  loadUserSession,
   loadWarehouseConfig,
   restoreItem,
   saveWarehouseConfig,
-  setApiErrorHandler,
-  updateItemPlacement,
+	  setApiErrorHandler,
+  updateUserProfile,
+	  updateItemPlacement,
   type WarehouseRuntime
 } from "./warehouse.js";
 
@@ -23,7 +29,13 @@ import {
  */
 export async function createWarehouseApp(container: HTMLElement): Promise<void> {
   const refs = buildHtml(container);
+  const appShell = container.querySelector<HTMLElement>(".app-shell");
   const isMobileRouteMode = document.documentElement.dataset.appMode === "mobile-route";
+  if (appShell) appShell.dataset.authRequired = "true";
+  refs.authPanel.hidden = false;
+  refs.authPanel.setAttribute("aria-hidden", "false");
+  refs.authLogoutBtn.hidden = true;
+  refs.profileForm.hidden = true;
 
   // Propagar errores de red en background al status message del HUD.
   setApiErrorHandler((msg) => setStatus(refs.statusMessage, msg, true));
@@ -32,11 +44,68 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   const loadingStatus = document.querySelector<HTMLParagraphElement>("#loading-status");
   const setLoadingText = (text: string) => { if (loadingStatus) loadingStatus.textContent = text; };
 
-  setLoadingText(UI_COPY.status.loadingConfig);
-  refs.statusMessage.textContent = UI_COPY.status.loadingConfig;
-  refs.statusMessage.dataset.state = "loading";
+	  setLoadingText(UI_COPY.status.loadingConfig);
+	  refs.statusMessage.textContent = UI_COPY.status.loadingConfig;
+	  refs.statusMessage.dataset.state = "loading";
 
-  const config = await loadWarehouseConfig();
+  let activeSession: Awaited<ReturnType<typeof loadUserSession>> = null;
+  const applySession = (session: Awaited<ReturnType<typeof loadUserSession>>) => {
+    activeSession = session;
+    const hasSession = Boolean(session);
+    if (appShell) appShell.dataset.authRequired = hasSession ? "false" : "true";
+    refs.authPanel.hidden = hasSession;
+    refs.authPanel.setAttribute("aria-hidden", hasSession ? "true" : "false");
+    refs.adminName.textContent = session?.user.name ?? "Sin sesión";
+    refs.adminRole.textContent = session?.user.role ?? "Inicia sesión";
+    const profileButton = container.querySelector<HTMLButtonElement>("#admin-card-btn");
+    if (profileButton) {
+      profileButton.title = session ? `${session.user.name} · ${session.user.role}` : "Abrir mi perfil";
+      profileButton.setAttribute("aria-label", session ? `Abrir perfil de ${session.user.name}` : "Abrir mi perfil");
+    }
+    const initials = getInitials(session?.user.name ?? session?.user.email ?? "SS");
+    refs.adminInitials.textContent = initials;
+    container.querySelector<HTMLElement>("#profile-avatar")?.replaceChildren(document.createTextNode(initials));
+    refs.authLogoutBtn.hidden = !session;
+    refs.profileForm.hidden = !session;
+    refs.authForm.hidden = hasSession;
+    refs.profileStatus.hidden = true;
+    if (session) {
+      refs.authName.value = session.user.name;
+      refs.authEmail.value = session.user.email;
+      refs.profileName.value = session.user.name;
+      refs.profileEmail.value = session.user.email;
+      refs.profileRole.textContent = session.user.role;
+      refs.profileUserId.textContent = `#${session.user.id}`;
+      refs.profileSessionExpiry.textContent = formatSessionExpiry(session.expiresAt);
+    }
+  };
+
+  const initialSession = await loadUserSession();
+  applySession(initialSession);
+
+  refs.authForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const session = await createUserSession({
+      email: refs.authEmail.value.trim(),
+      password: refs.authPassword.value
+    });
+    if (!session) {
+      setStatus(refs.statusMessage, "Correo o contraseña incorrectos.", true);
+      return;
+    }
+    refs.authPassword.value = "";
+    window.history.replaceState(null, "", window.location.pathname.replace(/\/LOGIN\/?$/i, "/"));
+    window.location.hash = "";
+    window.location.reload();
+  });
+
+  if (!initialSession) {
+    window.history.replaceState(null, "", window.location.pathname.replace(/\/LOGIN\/?$/i, "/"));
+    return;
+  }
+
+	  const config = await loadWarehouseConfig();
+	  refs.summaryShelves.textContent = String(config.shelves.length);
 
   setLoadingText(UI_COPY.status.loadingScene);
   const { scene, renderer, camera, controls } = buildScene(refs.canvas);
@@ -67,10 +136,24 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     wallColliders,
     () => isEditCameraFree
   );
-  const routeControls = createRouteStepControls(refs.canvas.parentElement);
-  let guidedRoute: GuidedRoute | null = null;
-  let guidedRouteSku: string | null = null;
-  let keepCurrentRouteUntilFinish = false;
+	  const routeControls = createRouteStepControls(refs.canvas.parentElement);
+	  let guidedRoute: GuidedRoute | null = null;
+	  let guidedRouteSku: string | null = null;
+	  let selectedProductSku: string | null = null;
+	  let keepCurrentRouteUntilFinish = false;
+  let routeNoticeTimer: number | null = null;
+  const showRouteNotice = (message: string): void => {
+    setStatus(refs.statusMessage, message, false);
+    refs.statusMessage.dataset.notice = "route";
+    if (routeNoticeTimer !== null) window.clearTimeout(routeNoticeTimer);
+    routeNoticeTimer = window.setTimeout(() => {
+      if (refs.statusMessage.dataset.notice === "route") {
+        setStatus(refs.statusMessage, "", false);
+        delete refs.statusMessage.dataset.notice;
+      }
+      routeNoticeTimer = null;
+    }, 4200);
+  };
 
   const shelfMeshes = new Map<string, THREE.Mesh>();
   const shelfSprites = new Map<string, THREE.Sprite>();
@@ -146,10 +229,12 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
       updateLegendCount(shelfId, count);
     }
+    updateDashboardSummary(refs, runtime, 0);
     return true;
   };
 
   const productsLoaded = await restoreSavedProducts();
+  updateDashboardSummary(refs, runtime, 0);
   if (productsLoaded && refs.statusMessage.dataset.state !== "empty") {
     setStatus(refs.statusMessage, UI_COPY.status.initial, false);
   }
@@ -178,6 +263,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       const sprite = shelfSprites.get(shelfId);
       if (sprite) sprite.position.y = shelf.position.y + shelf.height / 2 + 0.7;
     },
+    onProductPlaced: () => updateDashboardSummary(refs, runtime, 0),
     enableGhostPreview: !isMobileRouteMode
   });
 
@@ -199,22 +285,18 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   const canChangeRouteProduct = (sku: string): boolean => {
     if (!guidedRoute || !guidedRouteSku || guidedRouteSku === sku) return true;
 
-    if (keepCurrentRouteUntilFinish) {
-      setStatus(
-        refs.statusMessage,
-        `Ruta protegida para ${guidedRouteSku}. Termina la ruta antes de cambiar de producto.`,
-        false
-      );
-      return false;
-    }
+	    if (keepCurrentRouteUntilFinish) {
+      showRouteNotice(`Ruta protegida para ${guidedRouteSku}. Termina la ruta antes de cambiar de producto.`);
+	      return false;
+	    }
 
     const shouldChange = window.confirm(
       `Ya tienes una ruta guiada hacia ${guidedRouteSku}.\n\n¿Quieres cambiar la ruta al producto ${sku}?`
-    );
-    if (!shouldChange) {
-      setStatus(refs.statusMessage, `Se mantiene la ruta actual hacia ${guidedRouteSku}.`, false);
-      return false;
-    }
+	    );
+	    if (!shouldChange) {
+      showRouteNotice(`Se mantiene la ruta actual hacia ${guidedRouteSku}.`);
+	      return false;
+	    }
 
     return true;
   };
@@ -245,6 +327,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 	    editorName: refs.editorName,
 	    editorCategory: refs.editorCategory,
 	    editorBrand: refs.editorBrand,
+	    editorImageUrl: refs.editorImageUrl,
 	    editorWidth: refs.editorWidth,
     editorHeight: refs.editorHeight,
     editorDepth: refs.editorDepth,
@@ -253,10 +336,13 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 	      if (refs.shelfSelect.value === shelfId) {
 	        refreshShelfSummary(shelfId);
 	      }
+	      updateDashboardSummary(refs, runtime, 0);
 	    },
-	    beforeProductSelected: canChangeRouteProduct,
-	    onProductLocated: (worldPos, shelfMesh, sku) => {
-	      guidedRouteSku = sku;
+		    beforeProductSelected: canChangeRouteProduct,
+		    onProductLocated: (worldPos, shelfMesh, sku) => {
+		      selectedProductSku = sku;
+		      refs.selectedProductPanel.hidden = true;
+		      guidedRouteSku = sku;
 	      const routeEntry = runtime.productEntryBySku.get(sku);
 	      const routeShelf = routeEntry ? config.shelves.find((shelf) => shelf.id === routeEntry.shelfId) : undefined;
 	      const productLabel = routeEntry?.item.name ? `${routeEntry.item.name} (${sku})` : sku;
@@ -282,6 +368,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 		          guidedRouteSku = null;
 		          keepCurrentRouteUntilFinish = false;
 		          routeControls.setLocked(false);
+		          updateDashboardSummary(refs, runtime, 1);
 		          setStatus(refs.statusMessage, `Llegaste al destino: ${productLabel}.`, false);
 		        }
 		      );
@@ -289,6 +376,8 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 		    onSearchCleared: () => {
 		      guidedRoute = clearGuidedRoute(scene, guidedRoute);
 		      guidedRouteSku = null;
+		      selectedProductSku = null;
+		      refs.selectedProductPanel.hidden = true;
 		      keepCurrentRouteUntilFinish = false;
 		      routeControls.setLocked(false);
 		      routeControls.hide();
@@ -315,6 +404,13 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 	    setStatus(refs.statusMessage, "Ruta cancelada. Puedes buscar o seleccionar otro producto.", false);
 	  };
 
+  routeControls.detailButton.onclick = () => {
+    if (!selectedProductSku) return;
+    updateSelectedProductPanel(refs, runtime, config, selectedProductSku);
+    refs.selectedProductPanel.hidden = false;
+    refs.selectedProductPanel.dataset.minimized = "false";
+  };
+
   const routeSku = new URLSearchParams(window.location.search).get("sku")?.trim();
   if (routeSku) {
     window.setTimeout(() => {
@@ -322,10 +418,90 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     }, 450);
   }
 
+  refs.selectedProductHistoryBtn.addEventListener("click", async () => {
+    if (!selectedProductSku) return;
+    const history = await loadProductHistory(selectedProductSku);
+    const message = history.length > 0
+      ? history.map((entry) => `${entry.createdAt} · ${entry.summary}`).join("\n")
+      : "Este producto aun no tiene historial registrado.";
+    window.alert(message);
+  });
+
+  refs.selectedProductEditBtn.addEventListener("click", () => {
+    if (!selectedProductSku) return;
+    refs.canvas.parentElement?.querySelector<HTMLElement>("#search-card")?.setAttribute("hidden", "");
+    refs.selectedProductPanel.hidden = true;
+    refs.productEditor.hidden = false;
+    refs.productEditor.dataset.minimized = "false";
+  });
+
+		  refs.profileForm.addEventListener("submit", async (event) => {
+	    event.preventDefault();
+	    const newPassword = refs.profileNewPassword.value.trim();
+    const confirmPassword = refs.profileConfirmPassword.value.trim();
+	    const currentPassword = refs.profileCurrentPassword.value;
+    const emailChanged = activeSession ? refs.profileEmail.value.trim() !== activeSession.user.email : false;
+	    if ((newPassword || emailChanged) && !currentPassword) {
+	      setProfileStatus(refs, "Ingresa tu contraseña actual para cambiar correo o contraseña.", true);
+	      return;
+	    }
+    if (newPassword !== confirmPassword) {
+      setProfileStatus(refs, "La confirmacion de contraseña no coincide.", true);
+      return;
+    }
+	    const session = await updateUserProfile({
+	      name: refs.profileName.value.trim(),
+      email: refs.profileEmail.value.trim(),
+      currentPassword,
+      newPassword
+    });
+    if (!session) {
+      setProfileStatus(refs, "No se pudo actualizar el perfil. Revisa los datos.", true);
+      return;
+	    }
+	    refs.profileCurrentPassword.value = "";
+	    refs.profileNewPassword.value = "";
+    refs.profileConfirmPassword.value = "";
+	    applySession(session);
+    refs.authPanel.hidden = false;
+    setProfileStatus(refs, "Perfil actualizado correctamente.", false);
+	  });
+
+  refs.profileResetBtn.addEventListener("click", () => {
+    if (!activeSession) return;
+    refs.profileName.value = activeSession.user.name;
+    refs.profileEmail.value = activeSession.user.email;
+    refs.profileCurrentPassword.value = "";
+    refs.profileNewPassword.value = "";
+    refs.profileConfirmPassword.value = "";
+    setProfileStatus(refs, "Cambios descartados.", false);
+  });
+
+		  refs.authLogoutBtn.addEventListener("click", async () => {
+	    await closeUserSession();
+	    refs.authPassword.value = "";
+	    refs.profileCurrentPassword.value = "";
+	    refs.profileNewPassword.value = "";
+    refs.profileConfirmPassword.value = "";
+	    applySession(null);
+	  });
+
+  wireViewportControls({
+    refs,
+    camera,
+    controls,
+    entrancePosition,
+    getSelectedSku: () => selectedProductSku,
+    runtime,
+    shelfMeshes
+  });
+
   setupWarehouseRouteConfigPanel(config, camera, entrancePosition, refs.statusMessage);
 
   const clearSelectedProduct = () => {
     refs.productEditor.hidden = true;
+    refs.selectedProductPanel.hidden = true;
+    selectedProductSku = null;
   };
 
   wireSceneClick({
@@ -365,9 +541,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   removeBoardBtn?.addEventListener("click", handleRemoveBoard);
 
   // ── Reporte completo ──
-  const openReportBtn = container.querySelector<HTMLButtonElement>("#open-report-btn")
-    ?? document.querySelector<HTMLButtonElement>("#open-report-btn");
-  openReportBtn?.addEventListener("click", () => {
+  const openReport = () => {
     import("./report-page.js").then(({ openReportWindow }) => {
       openReportWindow({
         shelves: config.shelves,
@@ -375,6 +549,9 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
         generatedAt: new Date(),
       });
     });
+  };
+  container.querySelectorAll<HTMLButtonElement>("[data-report-toggle]").forEach((button) => {
+    button.addEventListener("click", openReport);
   });
 
   const resize = () => {
@@ -398,6 +575,147 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     updateShelfTransparency(camera, shelfMeshes);
     renderer.render(scene, camera);
   });
+}
+
+function updateDashboardSummary(refs: HudRefs, runtime: WarehouseRuntime, completedRouteDelta: number): void {
+  const products = runtime.productEntryBySku.size;
+  refs.summaryProducts.textContent = products.toLocaleString("es-PE");
+  const currentRoutes = Number(refs.summaryRoutes.textContent || "0");
+  refs.summaryRoutes.textContent = String(Math.max(0, currentRoutes + completedRouteDelta));
+}
+
+function getInitials(value: string): string {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "US";
+  return parts[0][0].toUpperCase();
+}
+
+function setProfileStatus(refs: HudRefs, message: string, isError: boolean): void {
+  refs.profileStatus.textContent = message;
+  refs.profileStatus.hidden = false;
+  refs.profileStatus.dataset.state = isError ? "error" : "success";
+}
+
+function formatSessionExpiry(value: string): string {
+  const date = new Date(value.replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-PE", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(date);
+}
+
+function updateSelectedProductPanel(
+  refs: HudRefs,
+  runtime: WarehouseRuntime,
+  config: WarehouseConfig,
+  sku: string
+): void {
+  const entry = runtime.productEntryBySku.get(sku);
+  if (!entry) {
+    refs.selectedProductPanel.hidden = true;
+    return;
+  }
+
+  const shelf = config.shelves.find((candidate) => candidate.id === entry.shelfId);
+  const section = getRouteSectionLabel(shelf, entry.localPosition.y);
+  refs.selectedProductPanel.hidden = false;
+  refs.selectedProductStatus.textContent = "Disponible";
+  refs.selectedProductName.textContent = entry.item.name || sku;
+  refs.selectedProductSku.textContent = `SKU: ${sku}`;
+  refs.selectedProductImage.textContent = entry.item.imageUrl ? "" : "Sin imagen";
+  refs.selectedProductImage.style.backgroundImage = entry.item.imageUrl ? `url("${entry.item.imageUrl.replace(/"/g, "%22")}")` : "";
+  refs.selectedProductImage.dataset.hasImage = entry.item.imageUrl ? "true" : "false";
+  refs.selectedProductLocation.textContent =
+    `${entry.shelfId} · ${shelf?.label ?? entry.shelfId} · ${section} · Posición X ${formatRouteMetric(entry.localPosition.x)}, Y ${formatRouteMetric(entry.localPosition.y)}, Z ${formatRouteMetric(entry.localPosition.z)}`;
+  refs.selectedProductDimensions.textContent =
+    `${formatRouteMetric(entry.item.width)} x ${formatRouteMetric(entry.item.height)} x ${formatRouteMetric(entry.item.depth)} m`;
+  refs.selectedProductStock.textContent =
+    `${runtime.productSkusByShelf.get(entry.shelfId)?.length ?? 1} unidades en estante`;
+  refs.selectedProductCategory.textContent =
+    [entry.item.category, entry.item.brand].filter(Boolean).join(" / ") || "Sin catalogar";
+}
+
+function wireViewportControls(params: {
+  refs: HudRefs;
+  camera: THREE.PerspectiveCamera;
+  controls: OrbitControls;
+  entrancePosition: THREE.Vector3;
+  getSelectedSku: () => string | null;
+  runtime: WarehouseRuntime;
+  shelfMeshes: Map<string, THREE.Mesh>;
+}): void {
+  const { refs, camera, controls, entrancePosition, getSelectedSku, runtime, shelfMeshes } = params;
+  let topView = false;
+
+  const moveAlongView = (factor: number) => {
+    const direction = camera.position.clone().sub(controls.target);
+    const nextDistance = Math.min(Math.max(direction.length() * factor, 1.2), 42);
+    direction.setLength(nextDistance);
+    camera.position.copy(controls.target).add(direction);
+    controls.update();
+  };
+
+  refs.resetCameraBtn.addEventListener("click", () => {
+    topView = false;
+    refs.cameraModeBtn.textContent = "3D";
+    setCameraAtEntrance(camera, controls, entrancePosition, refs.canvas.parentElement);
+  });
+
+	  refs.focusSelectedBtn.addEventListener("click", () => {
+	    const sku = getSelectedSku();
+	    const entry = sku ? runtime.productEntryBySku.get(sku) : null;
+	    if (!entry) {
+	      setStatus(refs.statusMessage, "Busca o selecciona un producto antes de enfocarlo.", true);
+	      return;
+	    }
+	    const mesh = shelfMeshes.get(entry.shelfId);
+	    const instancedMesh = runtime.instancedMeshByGeo.get(entry.geoKey);
+	    if (!mesh || !instancedMesh) {
+	      setStatus(refs.statusMessage, "No se pudo enfocar el producto seleccionado en la escena.", true);
+	      return;
+	    }
+	    topView = false;
+	    refs.cameraModeBtn.textContent = "3D";
+	    focusOnProductFromAisle(getInstanceWorldPosition(instancedMesh, entry.instanceIndex), mesh, camera, controls, entry.item);
+	    setStatus(refs.statusMessage, `Enfocando producto ${sku}.`, false);
+	  });
+
+  refs.cameraModeBtn.addEventListener("click", () => {
+    topView = !topView;
+    refs.cameraModeBtn.textContent = topView ? "TOP" : "3D";
+    if (topView) {
+      gsap.to(camera.position, {
+        x: controls.target.x,
+        y: 18,
+        z: controls.target.z + 0.01,
+        duration: 0.45,
+        ease: "power2.inOut",
+        onUpdate: () => {
+          camera.lookAt(controls.target);
+          controls.update();
+        }
+      });
+      return;
+    }
+    setCameraAtEntrance(camera, controls, entrancePosition, refs.canvas.parentElement);
+  });
+
+  refs.zoomInBtn.addEventListener("click", () => moveAlongView(0.78));
+  refs.zoomOutBtn.addEventListener("click", () => moveAlongView(1.28));
+  refs.fullscreenBtn.addEventListener("click", () => {
+    const viewport = refs.canvas.parentElement;
+    if (!viewport) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void viewport.requestFullscreen();
+    }
+  });
+}
+
+function formatRouteMetric(value: number): string {
+  return Number(value.toFixed(2)).toString();
 }
 
 function setCameraAtEntrance(
@@ -425,6 +743,7 @@ interface RouteStepControls {
   backButton: HTMLButtonElement;
   nextButton: HTMLButtonElement;
   finishButton: HTMLButtonElement;
+  detailButton: HTMLButtonElement;
   lockButton: HTMLButtonElement;
   cancelButton: HTMLButtonElement;
   setRouteInfo: (productLabel: string, destinationLabel: string) => void;
@@ -450,7 +769,22 @@ interface GuidedRoute {
 function createRouteStepControls(viewport: HTMLElement | null): RouteStepControls {
   const container = document.createElement("div");
   container.className = "route-step-controls";
+  container.dataset.minimized = "false";
   container.hidden = true;
+
+  const minimizeButton = document.createElement("button");
+  minimizeButton.type = "button";
+  minimizeButton.className = "route-step-minimize";
+  minimizeButton.title = "Minimizar ruta";
+  minimizeButton.setAttribute("aria-label", "Minimizar ruta");
+  minimizeButton.textContent = "−";
+  minimizeButton.addEventListener("click", () => {
+    const isMinimized = container.dataset.minimized === "true";
+    container.dataset.minimized = isMinimized ? "false" : "true";
+    minimizeButton.textContent = isMinimized ? "−" : "+";
+    minimizeButton.title = isMinimized ? "Minimizar ruta" : "Expandir ruta";
+    minimizeButton.setAttribute("aria-label", minimizeButton.title);
+  });
 
   const info = document.createElement("div");
   info.className = "route-step-info";
@@ -472,14 +806,15 @@ function createRouteStepControls(viewport: HTMLElement | null): RouteStepControl
   const backButton = createRouteButton("Retroceder");
   const nextButton = createRouteButton("Avanzar ruta");
   const finishButton = createRouteButton("Ir al final");
+  const detailButton = createRouteButton("Ver detalle");
   const lockButton = createRouteButton("Fijar");
   const cancelButton = createRouteButton("Cancelar");
   lockButton.classList.add("route-step-btn--lock");
   lockButton.setAttribute("aria-pressed", "false");
   cancelButton.classList.add("route-step-btn--cancel");
 
-  actions.append(backButton, nextButton, finishButton, lockButton, cancelButton);
-  container.append(info, actions);
+  actions.append(backButton, nextButton, finishButton, detailButton, lockButton, cancelButton);
+  container.append(minimizeButton, info, actions);
   viewport?.append(container);
 
   let lastCurrent = 1;
@@ -497,10 +832,11 @@ function createRouteStepControls(viewport: HTMLElement | null): RouteStepControl
 
   return {
     container,
-    backButton,
-    nextButton,
-    finishButton,
-    lockButton,
+	    backButton,
+	    nextButton,
+	    finishButton,
+      detailButton,
+	    lockButton,
     cancelButton,
     setRouteInfo: (productLabel: string, destinationLabel: string) => {
       productText.textContent = productLabel;
@@ -532,6 +868,8 @@ function createRouteStepControls(viewport: HTMLElement | null): RouteStepControl
     },
     hide: () => {
       container.hidden = true;
+      container.dataset.minimized = "false";
+      minimizeButton.textContent = "−";
       backButton.disabled = false;
       nextButton.disabled = false;
       finishButton.disabled = false;
@@ -705,7 +1043,8 @@ function buildConfiguredAisleRoutePoints(
     });
   });
 
-  return bestRoute && bestRoute.length > 1 ? bestRoute : null;
+  const route = bestRoute as THREE.Vector3[] | null;
+  return route && route.length > 1 ? route : null;
 }
 
 function routeDistance(points: THREE.Vector3[]): number {

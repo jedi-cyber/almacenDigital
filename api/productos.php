@@ -12,6 +12,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
+    require_api_session($pdo);
 } catch (PDOException $e) {
     api_log_error($e, "db_connect");
     http_response_code(500);
@@ -33,6 +34,7 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
                 cat.id AS category_id,
                 COALESCE(m.nombre, 'Sin marca') AS brand,
                 m.id AS brand_id,
+                p.image_url,
                 p.local_x,
                 p.local_y,
                 p.local_z,
@@ -64,7 +66,8 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
                 "category" => $row["category"] ?? "Sin categoria",
                 "categoryId" => isset($row["category_id"]) ? (int)$row["category_id"] : null,
                 "brand" => $row["brand"] ?? "Sin marca",
-                "brandId" => isset($row["brand_id"]) ? (int)$row["brand_id"] : null
+                "brandId" => isset($row["brand_id"]) ? (int)$row["brand_id"] : null,
+                "imageUrl" => $row["image_url"] ?? null
             ],
             "localPosition" => [
                 "x" => (float)$row["local_x"],
@@ -93,6 +96,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     $category = valid_string($body["category"] ?? "Sin categoria", 150) ?? "Sin categoria";
     $brand = valid_string($body["brand"] ?? ($body["marca"] ?? "Sin marca"), 150) ?? "Sin marca";
+    $imageUrl = valid_optional_url($body["imageUrl"] ?? ($body["image_url"] ?? null), 500);
 
     $lx = isset($body["localPosition"]["x"]) && is_numeric($body["localPosition"]["x"]) ? (float)$body["localPosition"]["x"] : null;
     $ly = isset($body["localPosition"]["y"]) && is_numeric($body["localPosition"]["y"]) ? (float)$body["localPosition"]["y"] : null;
@@ -128,6 +132,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
                 p.name,
                 COALESCE(cat.nombre, p.category, 'Sin categoria') AS category,
                 COALESCE(m.nombre, 'Sin marca') AS brand,
+                p.image_url,
                 p.dimension_id,
                 p.local_x,
                 p.local_y,
@@ -173,9 +178,9 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $stmt = $pdo->prepare("
             INSERT INTO productos
-            (sku, shelf_id, name, category, categoria_id, marca_id, dimension_id, local_x, local_y, local_z)
+            (sku, shelf_id, name, category, categoria_id, marca_id, dimension_id, image_url, local_x, local_y, local_z)
             VALUES
-            (:sku, :shelf_id, :name, :category, :categoria_id, :marca_id, :dimension_id, :local_x, :local_y, :local_z)
+            (:sku, :shelf_id, :name, :category, :categoria_id, :marca_id, :dimension_id, :image_url, :local_x, :local_y, :local_z)
             ON DUPLICATE KEY UPDATE
                 shelf_id = VALUES(shelf_id),
                 name = VALUES(name),
@@ -183,6 +188,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
                 categoria_id = VALUES(categoria_id),
                 marca_id = VALUES(marca_id),
                 dimension_id = VALUES(dimension_id),
+                image_url = VALUES(image_url),
                 local_x = VALUES(local_x),
                 local_y = VALUES(local_y),
                 local_z = VALUES(local_z)
@@ -195,6 +201,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
             ":categoria_id" => $categoryId,
             ":marca_id" => $brandId,
             ":dimension_id" => $dimensionId,
+            ":image_url" => $imageUrl,
             ":local_x"  => $lx,
             ":local_y"  => $ly,
             ":local_z"  => $lz,
@@ -206,6 +213,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
             "name" => $name,
             "category" => $category,
             "brand" => $brand,
+            "image_url" => $imageUrl,
             "width" => $width,
             "height" => $height,
             "depth" => $depth,
@@ -248,6 +256,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "DELETE") {
                 p.name,
                 COALESCE(cat.nombre, p.category, 'Sin categoria') AS category,
                 COALESCE(m.nombre, 'Sin marca') AS brand,
+                p.image_url,
                 p.local_x,
                 p.local_y,
                 p.local_z,
@@ -355,4 +364,24 @@ function upsertCatalogValue(PDO $pdo, string $table, string $name): int
     $select = $pdo->prepare("SELECT id FROM `{$table}` WHERE nombre = :nombre");
     $select->execute([":nombre" => $cleanName]);
     return (int)$select->fetchColumn();
+}
+
+function valid_optional_url(mixed $v, int $maxLen = 500): ?string
+{
+    if (!is_string($v)) {
+        return null;
+    }
+    $s = trim($v);
+    if ($s === "") {
+        return null;
+    }
+    if (strlen($s) > $maxLen) {
+        return null;
+    }
+    if (preg_match('/^\s*javascript:/i', $s)) {
+        return null;
+    }
+    return filter_var($s, FILTER_VALIDATE_URL) || str_starts_with($s, "/") || str_starts_with($s, "./") || str_starts_with($s, "image/")
+        ? $s
+        : null;
 }

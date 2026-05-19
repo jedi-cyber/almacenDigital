@@ -58,6 +58,19 @@ function resolveApiBaseUrl(): string {
 }
 
 const API = resolveApiBaseUrl();
+const sessionStorageKey = "almacen-digital-session-token";
+
+function getSessionToken(): string | null {
+  return window.localStorage.getItem(sessionStorageKey);
+}
+
+function authHeaders(extra?: HeadersInit): HeadersInit {
+  const token = getSessionToken();
+  return {
+    ...(extra ?? {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  };
+}
 
 export interface CatalogOption {
   id: number;
@@ -68,6 +81,32 @@ export interface CatalogOption {
 export interface ProductCatalogs {
   categories: CatalogOption[];
   brands: CatalogOption[];
+}
+
+export interface UserSession {
+  token: string;
+  expiresAt: string;
+  user: {
+    id: number;
+    name: string;
+    email: string;
+    role: string;
+  };
+}
+
+export interface UserProfileInput {
+  name: string;
+  email: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
+export interface ProductHistoryEntry {
+  id: number;
+  sku: string;
+  action: string;
+  summary: string;
+  createdAt: string;
 }
 
 export type PlacedProductsLoadResult =
@@ -101,14 +140,16 @@ function reportApiError(context: string, error: unknown): void {
 export function saveWarehouseConfig(config: WarehouseConfig): void {
   fetch(`${API}/config.php`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(config)
   }).catch((e) => reportApiError("guardar la configuracion del estante", e));
 }
 
 export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
   try {
-    const response = await fetch(`${API}/config.php`);
+    const response = await fetch(`${API}/config.php`, {
+      headers: authHeaders()
+    });
     if (!response.ok) {
       throw new Error(`No se pudo cargar la configuracion: ${response.status}`);
     }
@@ -137,7 +178,9 @@ export async function loadWarehouseConfig(): Promise<WarehouseConfig> {
 
 export async function loadPlacedProducts(): Promise<PlacedProductsLoadResult> {
   try {
-    const response = await fetch(`${API}/productos.php`);
+    const response = await fetch(`${API}/productos.php`, {
+      headers: authHeaders()
+    });
     if (!response.ok) {
       throw new Error(`Respuesta HTTP ${response.status}`);
     }
@@ -158,7 +201,9 @@ export async function loadPlacedProducts(): Promise<PlacedProductsLoadResult> {
 
 export async function loadProductCatalogs(): Promise<ProductCatalogs> {
   try {
-    const response = await fetch(`${API}/catalogos.php`);
+    const response = await fetch(`${API}/catalogos.php`, {
+      headers: authHeaders()
+    });
     if (!response.ok) throw new Error(`No se pudieron cargar catalogos: ${response.status}`);
     const data = (await response.json()) as ProductCatalogs;
     return {
@@ -168,6 +213,113 @@ export async function loadProductCatalogs(): Promise<ProductCatalogs> {
   } catch (error) {
     reportApiError("cargar categorias y marcas", error);
     return { categories: [], brands: [] };
+  }
+}
+
+export async function loadUserSession(): Promise<UserSession | null> {
+  const storedToken = getSessionToken();
+  try {
+    const response = await fetch(`${API}/sesion.php`, {
+      headers: storedToken ? { Authorization: `Bearer ${storedToken}` } : {}
+    });
+    if (!response.ok) throw new Error(`No se pudo cargar sesion: ${response.status}`);
+    const data = (await response.json()) as { session?: UserSession };
+    if (data.session?.token) {
+      window.localStorage.setItem(sessionStorageKey, data.session.token);
+      return data.session;
+    }
+  } catch (error) {
+    reportApiError("cargar la sesion de usuario", error);
+  }
+  return null;
+}
+
+export async function createUserSession(input: { email: string; password: string }): Promise<UserSession | null> {
+  try {
+    const response = await fetch(`${API}/sesion.php`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    });
+    if (!response.ok) throw new Error(`No se pudo iniciar sesion: ${response.status}`);
+    const data = (await response.json()) as { session?: UserSession };
+    if (data.session?.token) {
+      window.localStorage.setItem(sessionStorageKey, data.session.token);
+      return data.session;
+    }
+  } catch (error) {
+    reportApiError("iniciar sesion", error);
+  }
+  return null;
+}
+
+export async function updateUserProfile(input: UserProfileInput): Promise<UserSession | null> {
+  const storedToken = getSessionToken();
+  if (!storedToken) return null;
+  try {
+    const response = await fetch(`${API}/sesion.php`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${storedToken}`
+      },
+      body: JSON.stringify(input)
+    });
+    if (!response.ok) throw new Error(`No se pudo actualizar perfil: ${response.status}`);
+    const data = (await response.json()) as { session?: UserSession };
+    if (data.session?.token) {
+      window.localStorage.setItem(sessionStorageKey, data.session.token);
+      return data.session;
+    }
+  } catch (error) {
+    reportApiError("actualizar mi perfil", error);
+  }
+  return null;
+}
+
+export async function closeUserSession(): Promise<void> {
+  const storedToken = getSessionToken();
+  window.localStorage.removeItem(sessionStorageKey);
+  if (!storedToken) return;
+  try {
+    await fetch(`${API}/sesion.php`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${storedToken}` }
+    });
+  } catch (error) {
+    reportApiError("cerrar sesion", error);
+  }
+}
+
+export async function loadProductHistory(sku: string): Promise<ProductHistoryEntry[]> {
+  try {
+    const response = await fetch(`${API}/historial.php?sku=${encodeURIComponent(sku)}&limit=8`, {
+      headers: authHeaders()
+    });
+    if (!response.ok) throw new Error(`No se pudo cargar historial: ${response.status}`);
+    const data = (await response.json()) as { history?: ProductHistoryEntry[] };
+    return Array.isArray(data.history) ? data.history : [];
+  } catch (error) {
+    reportApiError("cargar historial del producto", error);
+    return [];
+  }
+}
+
+export async function uploadProductImage(file: File): Promise<string | null> {
+  const body = new FormData();
+  body.append("image", file);
+  try {
+    const response = await fetch(`${API}/imagenes.php`, {
+      method: "POST",
+      headers: authHeaders(),
+      body
+    });
+    if (!response.ok) throw new Error(`No se pudo subir imagen: ${response.status}`);
+    const data = (await response.json()) as { url?: string };
+    return data.url ?? null;
+  } catch (error) {
+    reportApiError("subir imagen del producto", error);
+    return null;
   }
 }
 
@@ -388,7 +540,10 @@ export function removeItem(
     });
   }
 
-  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
+  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, {
+    method: "DELETE",
+    headers: authHeaders()
+  })
     .catch((e) => reportApiError("eliminar el producto del servidor", e));
 
   return shelfId;
@@ -531,7 +686,10 @@ export function transferItem(
 
   // Primero eliminar el registro anterior y solo después guardar el nuevo,
   // para evitar que el DELETE llegue después del POST y borre el producto trasladado.
-  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
+	  fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, {
+      method: "DELETE",
+      headers: authHeaders()
+    })
     .then(() => persistPlacedItem(targetShelfId, placement.item, placement.localPosition))
     .catch((e) => reportApiError("transferir el producto en el servidor", e));
 
@@ -544,7 +702,7 @@ export function updateItemDimensions(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
   sku: string,
-  newDimensions: { name: string; category?: string; brand?: string; width: number; height: number; depth: number },
+  newDimensions: { name: string; category?: string; brand?: string; imageUrl?: string | null; width: number; height: number; depth: number },
   shelfMesh: THREE.Mesh
 ): boolean {
   const entry = runtime.productEntryBySku.get(sku);
@@ -564,6 +722,9 @@ export function updateItemDimensions(
   if (newDimensions.name) placedItem.item.name = newDimensions.name;
   placedItem.item.category = newDimensions.category ?? placedItem.item.category ?? "Sin categoria";
   placedItem.item.brand = newDimensions.brand ?? placedItem.item.brand ?? "Sin marca";
+  if ("imageUrl" in newDimensions) {
+    placedItem.item.imageUrl = newDimensions.imageUrl ?? null;
+  }
   placedItem.item.width = newDimensions.width;
   placedItem.item.height = newDimensions.height;
   placedItem.item.depth = newDimensions.depth;
@@ -606,7 +767,10 @@ export function removeShelf(
   const skus = [...(runtime.productSkusByShelf.get(shelfId) ?? [])];
 
   for (const sku of skus) {
-    fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, { method: "DELETE" })
+	    fetch(`${API}/productos.php?sku=${encodeURIComponent(sku)}`, {
+        method: "DELETE",
+        headers: authHeaders()
+      })
       .catch((e) => reportApiError("eliminar producto del estante", e));
 
     const entry = runtime.productEntryBySku.get(sku);
@@ -667,7 +831,7 @@ function persistPlacedItem(
 ): void {
   fetch(`${API}/productos.php`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       sku: item.sku,
       shelfId: shelfId,
@@ -677,6 +841,7 @@ function persistPlacedItem(
       depth: item.depth,
       category: item.category ?? "Sin categoria",
       brand: item.brand ?? "Sin marca",
+      imageUrl: item.imageUrl ?? null,
       localPosition: localPosition
     })
   }).catch((e) =>

@@ -18,6 +18,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "GET") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
+    require_api_session($pdo);
 
     $categorias = $pdo->query("SELECT id, nombre, slug FROM categorias ORDER BY nombre")->fetchAll(PDO::FETCH_ASSOC);
     $marcas = $pdo->query("SELECT id, nombre, slug FROM marcas ORDER BY nombre")->fetchAll(PDO::FETCH_ASSOC);

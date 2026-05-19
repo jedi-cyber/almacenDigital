@@ -68,7 +68,70 @@ function cors_headers(string $methods = "GET, POST, OPTIONS"): void
     // Si el origen no coincide no se envía el header y el navegador bloqueará la petición.
 
     header("Access-Control-Allow-Methods: {$methods}");
-    header("Access-Control-Allow-Headers: Content-Type");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization");
+}
+
+function get_bearer_token(): ?string
+{
+    $header = $_SERVER["HTTP_AUTHORIZATION"]
+        ?? $_SERVER["REDIRECT_HTTP_AUTHORIZATION"]
+        ?? "";
+
+    if ($header === "" && function_exists("getallheaders")) {
+        $headers = getallheaders();
+        $header = $headers["Authorization"] ?? $headers["authorization"] ?? "";
+    }
+
+    if (preg_match('/Bearer\s+(.+)/i', $header, $matches)) {
+        return trim($matches[1]);
+    }
+    return null;
+}
+
+function require_api_session(PDO $pdo): array
+{
+    $token = get_bearer_token();
+    if (!$token) {
+        http_response_code(401);
+        echo json_encode(["error" => "Sesion requerida.", "code" => "AUTH_REQUIRED"]);
+        exit;
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT
+            s.expires_at,
+            u.id,
+            u.nombre,
+            u.email,
+            u.rol
+         FROM sesiones s
+         INNER JOIN usuarios u ON u.id = s.usuario_id
+         WHERE s.token_hash = :token_hash
+            AND s.expires_at > NOW()
+            AND u.activo = 1
+         LIMIT 1"
+    );
+    $stmt->execute([":token_hash" => hash("sha256", $token)]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        http_response_code(401);
+        echo json_encode(["error" => "Sesion invalida o expirada.", "code" => "INVALID_SESSION"]);
+        exit;
+    }
+
+    $update = $pdo->prepare("UPDATE sesiones SET last_seen_at = NOW() WHERE token_hash = :token_hash");
+    $update->execute([":token_hash" => hash("sha256", $token)]);
+
+    return [
+        "token" => $token,
+        "expiresAt" => $row["expires_at"],
+        "user" => [
+            "id" => (int)$row["id"],
+            "name" => $row["nombre"],
+            "email" => $row["email"],
+            "role" => $row["rol"],
+        ],
+    ];
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +209,38 @@ function db_ensure_schema(PDO $pdo): void
     );
 
     $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS usuarios (
+            id INT NOT NULL AUTO_INCREMENT,
+            nombre VARCHAR(120) NOT NULL,
+            email VARCHAR(180) NOT NULL,
+            rol VARCHAR(80) NOT NULL DEFAULT 'Administrador',
+            password_hash VARCHAR(255) NOT NULL,
+            activo TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_usuarios_email (email)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS sesiones (
+            id BIGINT NOT NULL AUTO_INCREMENT,
+            usuario_id INT NOT NULL,
+            token_hash CHAR(64) NOT NULL,
+            ip_address VARCHAR(45) NULL,
+            user_agent VARCHAR(255) NULL,
+            expires_at DATETIME NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TIMESTAMP NULL DEFAULT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_sesiones_token_hash (token_hash),
+            KEY idx_sesiones_usuario_id (usuario_id),
+            KEY idx_sesiones_expires_at (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+
+    $pdo->exec(
         "CREATE TABLE IF NOT EXISTS producto_dimensiones (
             id INT NOT NULL AUTO_INCREMENT,
             producto_sku VARCHAR(100) NOT NULL,
@@ -194,6 +289,7 @@ function db_ensure_schema(PDO $pdo): void
             categoria_id INT NULL,
             marca_id INT NULL,
             dimension_id INT NULL,
+            image_url VARCHAR(500) NULL,
             local_x FLOAT NOT NULL DEFAULT 0,
             local_y FLOAT NOT NULL DEFAULT 0,
             local_z FLOAT NOT NULL DEFAULT 0,
@@ -230,6 +326,10 @@ function db_ensure_schema(PDO $pdo): void
     db_add_column_if_missing($pdo, "productos", "categoria_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "marca_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "dimension_id", "INT NULL");
+    db_add_column_if_missing($pdo, "productos", "image_url", "VARCHAR(500) NULL");
+    db_add_column_if_missing($pdo, "usuarios", "password_hash", "VARCHAR(255) NULL");
+    db_seed_default_user($pdo);
+    $pdo->exec("ALTER TABLE usuarios MODIFY COLUMN password_hash VARCHAR(255) NOT NULL");
     $pdo->exec("ALTER TABLE productos MODIFY COLUMN name VARCHAR(255) NOT NULL");
     db_add_index_if_missing($pdo, "productos", "idx_productos_categoria_id", "categoria_id");
     db_add_index_if_missing($pdo, "productos", "idx_productos_marca_id", "marca_id");
@@ -423,4 +523,27 @@ function db_seed_default_shelves(PDO $pdo): void
             ":rotation_y" => $shelf[10],
         ]);
     }
+}
+
+function db_seed_default_user(PDO $pdo): void
+{
+    $count = (int)$pdo->query("SELECT COUNT(*) FROM usuarios")->fetchColumn();
+    if ($count > 0) {
+        return;
+    }
+
+    $defaultPasswordHash = password_hash("admin123", PASSWORD_DEFAULT);
+    $stmt = $pdo->prepare(
+        "INSERT INTO usuarios (nombre, email, rol, password_hash, activo)
+         VALUES (:nombre, :email, :rol, :password_hash, 1)
+         ON DUPLICATE KEY UPDATE
+            password_hash = COALESCE(NULLIF(password_hash, ''), VALUES(password_hash)),
+            activo = 1"
+    );
+    $stmt->execute([
+        ":nombre" => "Admin Almacén",
+        ":email" => "admin@almacen.local",
+        ":rol" => "Administrador",
+        ":password_hash" => $defaultPasswordHash,
+    ]);
 }

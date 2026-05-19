@@ -30,6 +30,7 @@ export interface HudRefs {
   editorName: HTMLInputElement;
   editorCategory: HTMLInputElement;
   editorBrand: HTMLInputElement;
+  editorImageUrl: HTMLInputElement;
   editorWidth: HTMLInputElement;
   editorHeight: HTMLInputElement;
   editorDepth: HTMLInputElement;
@@ -38,6 +39,46 @@ export interface HudRefs {
   clickInfoShelf: HTMLElement;
   clickInfoDims: HTMLElement;
   editShelvesBtn: HTMLButtonElement;
+  summaryProducts: HTMLElement;
+  summaryShelves: HTMLElement;
+  summaryRoutes: HTMLElement;
+  adminInitials: HTMLElement;
+  adminName: HTMLElement;
+  adminRole: HTMLElement;
+  selectedProductPanel: HTMLElement;
+  selectedProductStatus: HTMLElement;
+  selectedProductName: HTMLElement;
+  selectedProductSku: HTMLElement;
+  selectedProductImage: HTMLElement;
+  selectedProductLocation: HTMLElement;
+  selectedProductDimensions: HTMLElement;
+  selectedProductStock: HTMLElement;
+  selectedProductCategory: HTMLElement;
+  selectedProductHistoryBtn: HTMLButtonElement;
+  selectedProductEditBtn: HTMLButtonElement;
+  resetCameraBtn: HTMLButtonElement;
+  focusSelectedBtn: HTMLButtonElement;
+  cameraModeBtn: HTMLButtonElement;
+  zoomInBtn: HTMLButtonElement;
+  zoomOutBtn: HTMLButtonElement;
+  fullscreenBtn: HTMLButtonElement;
+  authPanel: HTMLElement;
+  authForm: HTMLFormElement;
+  authName: HTMLInputElement;
+  authEmail: HTMLInputElement;
+  authPassword: HTMLInputElement;
+  authLogoutBtn: HTMLButtonElement;
+  profileForm: HTMLFormElement;
+  profileName: HTMLInputElement;
+  profileEmail: HTMLInputElement;
+  profileCurrentPassword: HTMLInputElement;
+  profileNewPassword: HTMLInputElement;
+  profileConfirmPassword: HTMLInputElement;
+  profileRole: HTMLElement;
+  profileUserId: HTMLElement;
+  profileSessionExpiry: HTMLElement;
+  profileResetBtn: HTMLButtonElement;
+  profileStatus: HTMLParagraphElement;
 }
 
 const ICON_PATHS = {
@@ -96,7 +137,7 @@ function buildHudTemplate(): string {
         <header class="hud-header">
           <span class="app-badge">3D</span>
           <div class="hud-title-group">
-            <h1>${UI_COPY.page.title}</h1>
+            <h1>Almacén <span>Digital 3D</span></h1>
             <p>${UI_COPY.page.description}</p>
           </div>
           <button
@@ -112,6 +153,56 @@ function buildHudTemplate(): string {
             <span data-theme-toggle-label>Oscuro</span>
           </button>
         </header>
+
+        <nav class="side-nav" aria-label="Navegacion principal">
+          <a class="side-nav-item side-nav-item--active" href="#">
+            ${renderIcon(ICON_PATHS.layers)}
+            <span>Inicio</span>
+          </a>
+          <button type="button" class="side-nav-item" data-product-toggle>
+            ${renderIcon(ICON_PATHS.barcode)}
+            <span>Registrar producto</span>
+          </button>
+          <button type="button" class="side-nav-item" data-panel-toggle="shelf-manager-panel">
+            ${renderIcon(ICON_PATHS.layers)}
+            <span>Gestionar estantes</span>
+          </button>
+          <button type="button" class="side-nav-item" data-panel-toggle="edit-panel">
+            ${renderIcon(ICON_PATHS.move)}
+            <span>Rutas y edición</span>
+          </button>
+          <button type="button" class="side-nav-item" id="open-report-btn" data-report-toggle>
+            ${renderIcon(ICON_PATHS.report)}
+            <span>Reportes</span>
+          </button>
+        </nav>
+
+        <section class="quick-summary" aria-label="Resumen rapido">
+          <div class="quick-summary-head">
+            <strong>Resumen rápido</strong>
+            <span>↗</span>
+          </div>
+          <dl>
+            <div>
+              <button type="button" class="quick-summary-action" data-report-toggle>
+                <span class="quick-summary-label">Productos registrados</span>
+                <span class="quick-summary-value"><strong id="summary-products">0</strong> <span id="summary-products-delta">Ver reporte</span></span>
+              </button>
+            </div>
+            <div>
+              <button type="button" class="quick-summary-action" data-panel-toggle="shelf-manager-panel">
+                <span class="quick-summary-label">Estantes activos</span>
+                <span class="quick-summary-value"><strong id="summary-shelves">0</strong> <span>Gestionar</span></span>
+              </button>
+            </div>
+            <div>
+              <button type="button" class="quick-summary-action" data-search-toggle>
+                <span class="quick-summary-label">Rutas generadas (hoy)</span>
+                <span class="quick-summary-value"><strong id="summary-routes">0</strong> <span>Buscar ruta</span></span>
+              </button>
+            </div>
+          </dl>
+        </section>
 
         <ol class="workflow-strip" aria-label="Flujo principal">
           <li>
@@ -135,11 +226,19 @@ function buildHudTemplate(): string {
           ${UI_COPY.status.initial}
         </p>
 
-        <section class="form-card form-card--search" id="search-card" aria-labelledby="search-card-title" data-testid="search-card">
+        <section class="form-card form-card--search" id="search-card" aria-labelledby="search-card-title" data-testid="search-card" hidden>
           <div class="form-card-head">
             <div class="form-card-head-copy">
               <strong id="search-card-title">${UI_COPY.search.title}</strong>
               <p>${UI_COPY.search.description}</p>
+            </div>
+            <div class="panel-head-actions">
+              <button type="button" class="panel-minimize-btn" data-minimize-panel="search-card" aria-label="Minimizar buscador" title="Minimizar buscador">
+                <span aria-hidden="true">−</span>
+              </button>
+              <button type="button" class="panel-minimize-btn" data-close-panel="search-card" aria-label="Cerrar buscador" title="Cerrar buscador">
+                <span aria-hidden="true">×</span>
+              </button>
             </div>
           </div>
           <div class="form-card-body" id="search-card-body">
@@ -187,42 +286,24 @@ function buildHudTemplate(): string {
         </div>
         </section>
 
-        <div class="hud-actions">
-          ${renderIconButton({
-            id: "open-report-btn",
-            className: "icon-action-btn icon-action-btn--primary icon-action-btn--wide-mobile",
-            label: "Ver Reporte",
-            iconPath: ICON_PATHS.report
-          })}
-          ${renderIconButton({
-            id: "open-shelf-manager-btn",
-            className: "icon-action-btn icon-action-btn--soft icon-action-btn--labeled",
-            label: UI_COPY.buttons.manageShelf,
-            iconPath: ICON_PATHS.layers,
-            extraAttributes: 'data-panel-toggle="shelf-manager-panel"'
-          })}
-          ${renderIconButton({
-            id: "open-edit-panel-btn",
-            className: "icon-action-btn icon-action-btn--soft icon-action-btn--labeled",
-            label: UI_COPY.buttons.edit,
-            iconPath: ICON_PATHS.edit,
-            extraAttributes: 'data-panel-toggle="edit-panel"'
-          })}
-        </div>
-
         <section class="floating-panel" id="shelf-manager-panel" hidden aria-hidden="true" aria-label="${UI_COPY.productForm.shelfManager.title}" data-testid="shelf-manager-panel">
           <div class="floating-panel-head">
             <div class="floating-panel-copy">
               <strong>${UI_COPY.productForm.shelfManager.title}</strong>
               ${UI_COPY.productForm.shelfManager.description ? `<p>${UI_COPY.productForm.shelfManager.description}</p>` : ""}
             </div>
-            ${renderIconButton({
-              id: "close-shelf-manager-btn",
-              className: "icon-action-btn",
-              label: UI_COPY.toggles.closeMenu,
-              iconPath: ICON_PATHS.close,
-              extraAttributes: 'data-panel-close="shelf-manager-panel"'
-            })}
+            <div class="panel-head-actions">
+              <button type="button" class="panel-minimize-btn" data-minimize-panel="shelf-manager-panel" aria-label="Minimizar gestor de estantes" title="Minimizar gestor de estantes">
+                <span aria-hidden="true">−</span>
+              </button>
+              ${renderIconButton({
+                id: "close-shelf-manager-btn",
+                className: "icon-action-btn",
+                label: UI_COPY.toggles.closeMenu,
+                iconPath: ICON_PATHS.close,
+                extraAttributes: 'data-panel-close="shelf-manager-panel"'
+              })}
+            </div>
           </div>
 
           <div class="manager-grid">
@@ -368,13 +449,18 @@ function buildHudTemplate(): string {
               <strong>${UI_COPY.editPanel.title}</strong>
               <p>${UI_COPY.editPanel.description}</p>
             </div>
-            ${renderIconButton({
-              id: "close-edit-panel-btn",
-              className: "icon-action-btn",
-              label: UI_COPY.toggles.closeMenu,
-              iconPath: ICON_PATHS.close,
-              extraAttributes: 'data-panel-close="edit-panel"'
-            })}
+            <div class="panel-head-actions">
+              <button type="button" class="panel-minimize-btn" data-minimize-panel="edit-panel" aria-label="Minimizar herramientas de edicion" title="Minimizar herramientas de edicion">
+                <span aria-hidden="true">−</span>
+              </button>
+              ${renderIconButton({
+                id: "close-edit-panel-btn",
+                className: "icon-action-btn",
+                label: UI_COPY.toggles.closeMenu,
+                iconPath: ICON_PATHS.close,
+                extraAttributes: 'data-panel-close="edit-panel"'
+              })}
+            </div>
           </div>
 
           <div class="edit-group">
@@ -404,31 +490,30 @@ function buildHudTemplate(): string {
         </section>
 
         <div class="click-info" id="click-info" aria-live="polite" data-testid="click-info" hidden>
-          <strong id="click-info-sku"></strong>
-          <span id="click-info-shelf"></span>
-          <span id="click-info-dims"></span>
+          <div class="click-info-body">
+            <strong id="click-info-sku"></strong>
+            <span id="click-info-shelf"></span>
+            <span id="click-info-dims"></span>
+          </div>
+          <button type="button" class="click-info-close" aria-label="Cerrar mensaje" title="Cerrar mensaje">
+            ${renderIcon(ICON_PATHS.close)}
+          </button>
         </div>
 
-        <section class="form-card form-card--product" id="product-card" data-card data-collapsed="false" aria-labelledby="product-card-title" data-testid="product-card">
+        <section class="form-card form-card--product" id="product-card" data-card data-collapsed="false" aria-labelledby="product-card-title" data-testid="product-card" hidden>
           <div class="form-card-head form-card-head--split">
             <div class="form-card-head-copy">
               <strong id="product-card-title">${UI_COPY.productForm.title}</strong>
               <p>${UI_COPY.productForm.description}</p>
             </div>
-            <button
-              type="button"
-              class="card-toggle-btn"
-              data-card-toggle
-              data-card-id="product-card"
-              data-section-label="${UI_COPY.productForm.title}"
-              aria-expanded="true"
-              aria-controls="product-card-body"
-              title="${UI_COPY.toggles.close} ${UI_COPY.productForm.title}"
-            >
-              ${renderIcon(ICON_PATHS.chevron)}
-              <span class="action-label" aria-hidden="true">${UI_COPY.toggles.close}</span>
-              <span class="visually-hidden">${UI_COPY.toggles.close} ${UI_COPY.productForm.title}</span>
-            </button>
+            <div class="panel-head-actions">
+              <button type="button" class="panel-minimize-btn" data-minimize-panel="product-card" aria-label="Minimizar registro de producto" title="Minimizar registro de producto">
+                <span aria-hidden="true">−</span>
+              </button>
+              <button type="button" class="panel-minimize-btn" data-close-panel="product-card" aria-label="Cerrar registro de producto" title="Cerrar registro de producto">
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
           </div>
           <div class="form-card-body" id="product-card-body" data-card-body>
           <form class="product-form" id="product-form" aria-label="${UI_COPY.productForm.title}" data-testid="product-form">
@@ -462,16 +547,20 @@ function buildHudTemplate(): string {
 	                <input name="productName" type="text" placeholder="Ej. Caja de tornillos" data-testid="product-name-input" />
 	              </label>
 	            </div>
-	            <div class="field-row">
-	              <label>
-	                <span>Categoria</span>
-		                <input name="category" type="text" list="category-options" placeholder="Ej. Ferreteria" data-testid="product-category-input" />
-	              </label>
-	              <label>
-	                <span>Marca</span>
-		                <input name="brand" type="text" list="brand-options" placeholder="Ej. Generica" data-testid="product-brand-input" />
-	              </label>
-	            </div>
+		            <div class="field-row">
+		              <label>
+		                <span>Categoria</span>
+			                <input name="category" type="text" list="category-options" placeholder="Ej. Ferreteria" data-testid="product-category-input" />
+		              </label>
+		              <label>
+		                <span>Marca</span>
+			                <input name="brand" type="text" list="brand-options" placeholder="Ej. Generica" data-testid="product-brand-input" />
+		              </label>
+		              <label>
+		                <span>Imagen del producto</span>
+			                <input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" data-testid="product-image-input" />
+		              </label>
+		            </div>
 
 	            <section class="dimension-group">
               <div class="dimension-group-head">
@@ -505,8 +594,18 @@ function buildHudTemplate(): string {
           </div>
         </section>
 
-        <section class="product-editor" id="product-editor" aria-labelledby="product-editor-title" data-testid="product-editor" hidden>
-          <strong id="product-editor-title">${UI_COPY.productEditor.title}</strong>
+        <section class="product-editor" id="product-editor" aria-labelledby="product-editor-title" data-testid="product-editor" data-minimized="false" hidden>
+          <div class="panel-titlebar">
+            <strong id="product-editor-title">${UI_COPY.productEditor.title}</strong>
+            <div class="panel-head-actions">
+              <button type="button" class="panel-minimize-btn" data-minimize-panel="product-editor" aria-label="Minimizar editor" title="Minimizar editor">
+                <span aria-hidden="true">−</span>
+              </button>
+              <button type="button" class="panel-minimize-btn" data-close-panel="product-editor" aria-label="Cerrar editor" title="Cerrar editor">
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+          </div>
           <form id="editor-form" class="editor-form" aria-label="${UI_COPY.productEditor.title}" data-testid="editor-form">
             <div class="sku-name-group">
               <p class="editor-sku" id="editor-sku-display" aria-live="polite"></p>
@@ -521,11 +620,15 @@ function buildHudTemplate(): string {
 	                <span>Categoria</span>
 		                <input id="editor-category" type="text" list="category-options" placeholder="Ej. Ferreteria" />
 	              </label>
-	              <label>
-	                <span>Marca</span>
-		                <input id="editor-brand" type="text" list="brand-options" placeholder="Ej. Generica" />
-	              </label>
-	            </div>
+		              <label>
+		                <span>Marca</span>
+			                <input id="editor-brand" type="text" list="brand-options" placeholder="Ej. Generica" />
+		              </label>
+		              <label>
+		                <span>Imagen del producto</span>
+				                <input id="editor-image-url" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+		              </label>
+		            </div>
 	            <div class="field-row">
               <label>
                 <span>${UI_COPY.productForm.dimensions.legacyLabels.width}</span>
@@ -586,7 +689,77 @@ function buildHudTemplate(): string {
           </ul>
         </section>
 
-	      </aside>
+	        <section class="auth-panel" id="auth-panel" hidden aria-label="Sesion de usuario">
+          <form id="auth-form" class="auth-form">
+            <input id="auth-name" name="name" type="hidden" value="Admin Almacén" />
+            <label>
+              <span>Correo</span>
+              <input id="auth-email" name="email" type="email" value="admin@almacen.local" maxlength="180" required />
+            </label>
+            <label>
+              <span>Contraseña</span>
+              <input id="auth-password" name="password" type="password" autocomplete="current-password" required />
+            </label>
+            <button type="submit">Iniciar sesión</button>
+          </form>
+	          <form id="profile-form" class="profile-form" hidden>
+	            <div class="profile-head">
+	              <span id="profile-avatar" aria-hidden="true">AD</span>
+	              <div>
+	                <strong>Mi perfil</strong>
+	                <small>Datos de la cuenta activa</small>
+	              </div>
+                <button type="button" class="panel-minimize-btn" data-close-panel="auth-panel" aria-label="Cerrar mi perfil" title="Cerrar mi perfil">
+                  <span aria-hidden="true">×</span>
+                </button>
+	            </div>
+              <dl class="profile-account-summary" aria-label="Resumen de cuenta">
+                <div>
+                  <dt>Rol</dt>
+                  <dd id="profile-role">-</dd>
+                </div>
+                <div>
+                  <dt>ID usuario</dt>
+                  <dd id="profile-user-id">-</dd>
+                </div>
+                <div>
+                  <dt>Sesión activa hasta</dt>
+                  <dd id="profile-session-expiry">-</dd>
+                </div>
+              </dl>
+	            <label>
+	              <span>Nombre</span>
+	              <input id="profile-name" name="name" type="text" maxlength="120" required />
+            </label>
+            <label>
+              <span>Correo</span>
+              <input id="profile-email" name="email" type="email" maxlength="180" required />
+            </label>
+            <div class="profile-password-grid">
+              <label>
+                <span>Contraseña actual</span>
+                <input id="profile-current-password" name="currentPassword" type="password" autocomplete="current-password" />
+              </label>
+	              <label>
+	                <span>Nueva contraseña</span>
+	                <input id="profile-new-password" name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+	              </label>
+                <label>
+                  <span>Confirmar nueva contraseña</span>
+                  <input id="profile-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
+                </label>
+	            </div>
+              <p class="profile-help">Para cambiar correo o contraseña, ingresa tu contraseña actual.</p>
+	            <p id="profile-status" class="profile-status" aria-live="polite" hidden></p>
+              <div class="profile-actions">
+	              <button type="submit">Guardar perfil</button>
+                <button type="button" id="profile-reset-btn" class="profile-reset-btn">Restaurar cambios</button>
+              </div>
+	          </form>
+          <button type="button" id="auth-logout-btn" class="auth-logout-btn">Cerrar sesión</button>
+        </section>
+
+		      </aside>
 	      <div class="search-result search-result--modal" id="search-result" aria-live="polite" data-testid="search-result" data-minimized="false" hidden>
 	        <section class="search-result-panel" aria-label="Reporte de productos encontrados">
 		          <div class="search-result-head" title="Arrastrar mensaje">
@@ -611,8 +784,94 @@ function buildHudTemplate(): string {
 	          <span id="search-result-minimized-summary"></span>
 	        </button>
 	      </div>
-	      <main class="viewport" data-testid="viewport">
-        <canvas class="scene-canvas" aria-label="Vista 3D del almacen" data-testid="scene-canvas"></canvas>
+		      <main class="viewport" data-testid="viewport">
+        <header class="top-commandbar" aria-label="Cabecera del panel">
+          <div class="breadcrumb">
+            <span>Inicio</span>
+            <b>/</b>
+            <strong>Panel de navegación 3D</strong>
+          </div>
+	          <label class="global-search">
+	            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.03 11.6l4.43 4.43 1.41-1.41-4.43-4.43A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z" fill="currentColor"/></svg>
+	            <input type="text" placeholder="Buscar SKU, producto o ubicación..." aria-label="Buscar SKU, producto o ubicación" />
+	            <button type="button" id="global-clear-search-btn" aria-label="Cancelar búsqueda" title="Cancelar búsqueda">×</button>
+	          </label>
+          <div class="top-actions">
+            <button type="button" data-legend-toggle aria-controls="legend" aria-expanded="false" title="${UI_COPY.buttons.showLegend}">
+              ${renderIcon(ICON_PATHS.layers)}
+              <span>Ver leyenda</span>
+            </button>
+            <button type="button" data-panel-toggle="edit-panel">
+              ${renderIcon(ICON_PATHS.edit)}
+              <span>Modo edición</span>
+            </button>
+	            <button type="button" class="top-register" data-product-toggle>
+	              <span aria-hidden="true">+</span>
+	              Registrar producto
+	            </button>
+            <button type="button" class="admin-card" id="admin-card-btn" aria-label="Abrir mi perfil" title="Abrir mi perfil">
+              <span id="admin-initials">AD</span>
+              <div class="admin-card-copy">
+                <strong id="admin-name">Admin Almacén</strong>
+                <small id="admin-role">Administrador</small>
+              </div>
+            </button>
+	          </div>
+        </header>
+	        <canvas class="scene-canvas" aria-label="Vista 3D del almacen" data-testid="scene-canvas"></canvas>
+        <section class="selected-product-panel" id="selected-product-panel" aria-live="polite" hidden>
+	          <div class="selected-product-head">
+	            <strong>Producto seleccionado</strong>
+	            <div class="selected-product-head-actions">
+	              <span id="selected-product-status">Disponible</span>
+                <div class="panel-head-actions">
+	                <button type="button" class="panel-minimize-btn" data-minimize-panel="selected-product-panel" aria-label="Minimizar producto seleccionado" title="Minimizar producto seleccionado">
+	                  <span aria-hidden="true">−</span>
+	                </button>
+	                <button type="button" class="panel-minimize-btn" data-close-panel="selected-product-panel" aria-label="Cerrar producto seleccionado" title="Cerrar producto seleccionado">
+	                  <span aria-hidden="true">×</span>
+	                </button>
+                </div>
+	            </div>
+	          </div>
+          <div class="selected-product-main">
+            <div class="selected-product-thumb" id="selected-product-image">Sin imagen</div>
+            <div>
+              <h2 id="selected-product-name">Producto</h2>
+              <p id="selected-product-sku">SKU: -</p>
+            </div>
+          </div>
+          <div class="selected-product-location">
+            <span>Ubicación exacta</span>
+            <strong id="selected-product-location">-</strong>
+          </div>
+          <dl class="selected-product-metrics">
+            <div>
+              <dt>Medidas</dt>
+              <dd id="selected-product-dimensions">-</dd>
+            </div>
+            <div>
+              <dt>Stock</dt>
+              <dd id="selected-product-stock">-</dd>
+            </div>
+            <div>
+              <dt>Categoría / marca</dt>
+              <dd id="selected-product-category">-</dd>
+            </div>
+          </dl>
+          <div class="selected-product-actions">
+            <button type="button" id="selected-product-edit-btn">Editar producto</button>
+            <button type="button" id="selected-product-history-btn">Ver historial</button>
+          </div>
+        </section>
+        <div class="viewport-tools" aria-label="Controles de vista">
+          <button type="button" id="reset-camera-btn" aria-label="Restablecer cámara" title="Restablecer cámara">↻</button>
+          <button type="button" id="focus-selected-btn" aria-label="Enfocar producto seleccionado" title="Enfocar producto seleccionado">⌖</button>
+          <button type="button" id="camera-mode-btn" aria-label="Cambiar vista 3D/superior" title="Cambiar vista 3D/superior">3D</button>
+          <button type="button" id="zoom-in-btn" aria-label="Acercar" title="Acercar">+</button>
+          <button type="button" id="zoom-out-btn" aria-label="Alejar" title="Alejar">−</button>
+          <button type="button" id="fullscreen-btn" aria-label="Pantalla completa" title="Pantalla completa">⛶</button>
+        </div>
         <button
           type="button"
           id="legend-toggle-btn"
@@ -635,6 +894,7 @@ function buildHudTemplate(): string {
 
 export function buildHtml(container: HTMLElement): HudRefs {
   container.innerHTML = buildHudTemplate();
+  relocateViewportPanels(container);
   wireHudInteractions(container);
 
   const canvas = container.querySelector<HTMLCanvasElement>(".scene-canvas");
@@ -665,6 +925,7 @@ export function buildHtml(container: HTMLElement): HudRefs {
   const editorName = container.querySelector<HTMLInputElement>("#editor-name");
   const editorCategory = container.querySelector<HTMLInputElement>("#editor-category");
   const editorBrand = container.querySelector<HTMLInputElement>("#editor-brand");
+  const editorImageUrl = container.querySelector<HTMLInputElement>("#editor-image-url");
   const editorWidth = container.querySelector<HTMLInputElement>("#editor-width");
   const editorHeight = container.querySelector<HTMLInputElement>("#editor-height");
   const editorDepth = container.querySelector<HTMLInputElement>("#editor-depth");
@@ -673,6 +934,46 @@ export function buildHtml(container: HTMLElement): HudRefs {
   const clickInfoShelf = container.querySelector<HTMLElement>("#click-info-shelf");
   const clickInfoDims = container.querySelector<HTMLElement>("#click-info-dims");
   const editShelvesBtn = container.querySelector<HTMLButtonElement>("#edit-shelves-btn");
+  const summaryProducts = container.querySelector<HTMLElement>("#summary-products");
+  const summaryShelves = container.querySelector<HTMLElement>("#summary-shelves");
+  const summaryRoutes = container.querySelector<HTMLElement>("#summary-routes");
+  const adminInitials = container.querySelector<HTMLElement>("#admin-initials");
+  const adminName = container.querySelector<HTMLElement>("#admin-name");
+  const adminRole = container.querySelector<HTMLElement>("#admin-role");
+  const selectedProductPanel = container.querySelector<HTMLElement>("#selected-product-panel");
+  const selectedProductStatus = container.querySelector<HTMLElement>("#selected-product-status");
+  const selectedProductName = container.querySelector<HTMLElement>("#selected-product-name");
+  const selectedProductSku = container.querySelector<HTMLElement>("#selected-product-sku");
+  const selectedProductImage = container.querySelector<HTMLElement>("#selected-product-image");
+  const selectedProductLocation = container.querySelector<HTMLElement>("#selected-product-location");
+  const selectedProductDimensions = container.querySelector<HTMLElement>("#selected-product-dimensions");
+  const selectedProductStock = container.querySelector<HTMLElement>("#selected-product-stock");
+  const selectedProductCategory = container.querySelector<HTMLElement>("#selected-product-category");
+  const selectedProductHistoryBtn = container.querySelector<HTMLButtonElement>("#selected-product-history-btn");
+  const selectedProductEditBtn = container.querySelector<HTMLButtonElement>("#selected-product-edit-btn");
+  const resetCameraBtn = container.querySelector<HTMLButtonElement>("#reset-camera-btn");
+  const focusSelectedBtn = container.querySelector<HTMLButtonElement>("#focus-selected-btn");
+  const cameraModeBtn = container.querySelector<HTMLButtonElement>("#camera-mode-btn");
+  const zoomInBtn = container.querySelector<HTMLButtonElement>("#zoom-in-btn");
+  const zoomOutBtn = container.querySelector<HTMLButtonElement>("#zoom-out-btn");
+  const fullscreenBtn = container.querySelector<HTMLButtonElement>("#fullscreen-btn");
+  const authPanel = container.querySelector<HTMLElement>("#auth-panel");
+  const authForm = container.querySelector<HTMLFormElement>("#auth-form");
+  const authName = container.querySelector<HTMLInputElement>("#auth-name");
+  const authEmail = container.querySelector<HTMLInputElement>("#auth-email");
+  const authPassword = container.querySelector<HTMLInputElement>("#auth-password");
+  const authLogoutBtn = container.querySelector<HTMLButtonElement>("#auth-logout-btn");
+  const profileForm = container.querySelector<HTMLFormElement>("#profile-form");
+  const profileName = container.querySelector<HTMLInputElement>("#profile-name");
+  const profileEmail = container.querySelector<HTMLInputElement>("#profile-email");
+  const profileCurrentPassword = container.querySelector<HTMLInputElement>("#profile-current-password");
+  const profileNewPassword = container.querySelector<HTMLInputElement>("#profile-new-password");
+  const profileConfirmPassword = container.querySelector<HTMLInputElement>("#profile-confirm-password");
+  const profileRole = container.querySelector<HTMLElement>("#profile-role");
+  const profileUserId = container.querySelector<HTMLElement>("#profile-user-id");
+  const profileSessionExpiry = container.querySelector<HTMLElement>("#profile-session-expiry");
+  const profileResetBtn = container.querySelector<HTMLButtonElement>("#profile-reset-btn");
+  const profileStatus = container.querySelector<HTMLParagraphElement>("#profile-status");
 
   if (
     !canvas ||
@@ -703,6 +1004,7 @@ export function buildHtml(container: HTMLElement): HudRefs {
     !editorName ||
     !editorCategory ||
     !editorBrand ||
+    !editorImageUrl ||
     !editorWidth ||
     !editorHeight ||
     !editorDepth ||
@@ -710,7 +1012,47 @@ export function buildHtml(container: HTMLElement): HudRefs {
     !clickInfoSku ||
     !clickInfoShelf ||
     !clickInfoDims ||
-    !editShelvesBtn
+    !editShelvesBtn ||
+    !summaryProducts ||
+    !summaryShelves ||
+    !summaryRoutes ||
+    !adminInitials ||
+    !adminName ||
+    !adminRole ||
+    !selectedProductPanel ||
+    !selectedProductStatus ||
+    !selectedProductName ||
+    !selectedProductSku ||
+    !selectedProductImage ||
+    !selectedProductLocation ||
+    !selectedProductDimensions ||
+    !selectedProductStock ||
+    !selectedProductCategory ||
+    !selectedProductHistoryBtn ||
+    !selectedProductEditBtn ||
+    !resetCameraBtn ||
+    !focusSelectedBtn ||
+    !cameraModeBtn ||
+    !zoomInBtn ||
+    !zoomOutBtn ||
+    !fullscreenBtn ||
+    !authPanel ||
+    !authForm ||
+    !authName ||
+    !authEmail ||
+    !authPassword ||
+    !authLogoutBtn ||
+    !profileForm ||
+    !profileName ||
+    !profileEmail ||
+    !profileCurrentPassword ||
+    !profileNewPassword ||
+    !profileConfirmPassword ||
+    !profileRole ||
+    !profileUserId ||
+    !profileSessionExpiry ||
+    !profileResetBtn ||
+    !profileStatus
   ) {
     throw new Error("No se pudieron crear los elementos base de la escena.");
   }
@@ -744,6 +1086,7 @@ export function buildHtml(container: HTMLElement): HudRefs {
     editorName,
     editorCategory,
     editorBrand,
+    editorImageUrl,
     editorWidth,
     editorHeight,
     editorDepth,
@@ -751,6 +1094,73 @@ export function buildHtml(container: HTMLElement): HudRefs {
     clickInfoSku,
     clickInfoShelf,
     clickInfoDims,
-    editShelvesBtn
+    editShelvesBtn,
+    summaryProducts,
+    summaryShelves,
+    summaryRoutes,
+    adminInitials,
+    adminName,
+    adminRole,
+    selectedProductPanel,
+    selectedProductStatus,
+    selectedProductName,
+    selectedProductSku,
+    selectedProductImage,
+    selectedProductLocation,
+    selectedProductDimensions,
+    selectedProductStock,
+    selectedProductCategory,
+    selectedProductHistoryBtn,
+    selectedProductEditBtn,
+    resetCameraBtn,
+    focusSelectedBtn,
+    cameraModeBtn,
+    zoomInBtn,
+    zoomOutBtn,
+    fullscreenBtn,
+    authPanel,
+    authForm,
+    authName,
+    authEmail,
+    authPassword,
+    authLogoutBtn,
+    profileForm,
+    profileName,
+    profileEmail,
+    profileCurrentPassword,
+    profileNewPassword,
+    profileConfirmPassword,
+    profileRole,
+    profileUserId,
+    profileSessionExpiry,
+    profileResetBtn,
+    profileStatus
   };
+}
+
+function relocateViewportPanels(container: HTMLElement): void {
+  const appShell = container.querySelector<HTMLElement>(".app-shell");
+  const viewport = container.querySelector<HTMLElement>(".viewport");
+  if (!viewport) return;
+
+  [
+    "#status-message",
+    "#search-card",
+    "#shelf-manager-panel",
+    "#edit-panel",
+    "#click-info",
+    "#product-card",
+    "#product-editor",
+    "#search-result"
+  ].forEach((selector) => {
+    const element = container.querySelector<HTMLElement>(selector);
+    if (element && element.parentElement !== viewport) {
+      viewport.append(element);
+    }
+  });
+
+  const authPanel = container.querySelector<HTMLElement>("#auth-panel");
+  if (appShell && authPanel && authPanel.parentElement !== appShell) {
+    appShell.append(authPanel);
+  }
 }

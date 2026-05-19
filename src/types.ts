@@ -67,6 +67,7 @@ export interface Item {
   categoryId?: number | null;
   brand?: string;
   brandId?: number | null;
+  imageUrl?: string | null;
 }
 
 /**

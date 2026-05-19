@@ -15,6 +15,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
+    require_api_session($pdo);
 } catch (PDOException $e) {
     api_log_error($e, "db_connect");
     http_response_code(500);

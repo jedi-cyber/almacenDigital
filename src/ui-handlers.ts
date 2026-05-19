@@ -2,12 +2,23 @@ import { SHELF_PALETTE } from "./scene.js";
 import type { Shelf } from "./types.js";
 import { UI_COPY } from "./ui-copy.js";
 
+const statusAutoCloseTimers = new WeakMap<HTMLParagraphElement, number>();
+
 export function wireHudInteractions(container: HTMLElement): void {
   const appShell = container.querySelector<HTMLElement>(".app-shell");
   const hudToggleBtn = container.querySelector<HTMLButtonElement>("[data-hud-toggle]");
   const legendToggleBtn = container.querySelector<HTMLButtonElement>("[data-legend-toggle]");
   const themeToggleBtn = container.querySelector<HTMLButtonElement>("[data-theme-toggle]");
   const legend = container.querySelector<HTMLElement>("#legend");
+  const productPanel = container.querySelector<HTMLElement>("#product-card");
+  const productEditor = container.querySelector<HTMLElement>("#product-editor");
+  const searchPanel = container.querySelector<HTMLElement>("#search-card");
+  const selectedProductPanel = container.querySelector<HTMLElement>("#selected-product-panel");
+  const authPanel = container.querySelector<HTMLElement>("#auth-panel");
+  const globalSearchInput = container.querySelector<HTMLInputElement>(".global-search input");
+  const globalClearSearchBtn = container.querySelector<HTMLButtonElement>("#global-clear-search-btn");
+  const searchForm = container.querySelector<HTMLFormElement>("#search-form");
+  const searchInput = searchForm?.querySelector<HTMLInputElement>('input[name="searchSku"]');
   const mobileQuery = window.matchMedia("(max-width: 900px), (hover: none) and (pointer: coarse)");
   const themeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   const themeStorageKey = "almacen-digital-theme";
@@ -60,6 +71,34 @@ export function wireHudInteractions(container: HTMLElement): void {
     if (hiddenLabel) hiddenLabel.textContent = label;
   };
 
+  const closeWorkspacePanels = (except?: HTMLElement | null) => {
+    if (productPanel && productPanel !== except) {
+      productPanel.hidden = true;
+      if (appShell) appShell.dataset.productPanelOpen = "false";
+    }
+    if (productEditor && productEditor !== except) productEditor.hidden = true;
+    if (searchPanel && searchPanel !== except) searchPanel.hidden = true;
+    if (selectedProductPanel && selectedProductPanel !== except) selectedProductPanel.hidden = true;
+    Array.from(container.querySelectorAll<HTMLElement>(".floating-panel")).forEach((panel) => {
+      if (panel === except) return;
+      panel.hidden = true;
+      panel.style.display = "none";
+      panel.setAttribute("aria-hidden", "true");
+    });
+  };
+
+	  const setProductPanelState = (isOpen: boolean) => {
+    if (!appShell || !productPanel) return;
+    closeWorkspacePanels(productPanel);
+    appShell.dataset.productPanelOpen = isOpen ? "true" : "false";
+    productPanel.hidden = !isOpen;
+    const body = productPanel.querySelector<HTMLElement>("[data-card-body]");
+    const button = productPanel.querySelector<HTMLButtonElement>("[data-card-toggle]");
+    if (body) body.hidden = false;
+    productPanel.dataset.collapsed = "false";
+    button?.setAttribute("aria-expanded", "true");
+  };
+
   const setLegendState = (isOpen: boolean) => {
     if (!legend || !legendToggleBtn) return;
     legend.hidden = !isOpen;
@@ -67,7 +106,12 @@ export function wireHudInteractions(container: HTMLElement): void {
     legendToggleBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
     legendToggleBtn.title = label;
     legendToggleBtn.setAttribute("aria-label", label);
-    legendToggleBtn.textContent = label;
+    const visibleLabel = legendToggleBtn.querySelector<HTMLElement>("span:not(.visually-hidden)");
+    if (visibleLabel) {
+      visibleLabel.textContent = label;
+    } else {
+      legendToggleBtn.textContent = label;
+    }
   };
 
   const syncHudStateWithViewport = () => {
@@ -86,7 +130,7 @@ export function wireHudInteractions(container: HTMLElement): void {
     return value === "light" || value === "dark" ? value : null;
   };
 
-  const getActiveTheme = (): "light" | "dark" => getStoredTheme() ?? (themeQuery.matches ? "dark" : "light");
+  const getActiveTheme = (): "light" | "dark" => getStoredTheme() ?? "dark";
 
   const setTheme = (theme: "light" | "dark", shouldStore = true) => {
     document.documentElement.dataset.theme = theme;
@@ -134,7 +178,7 @@ export function wireHudInteractions(container: HTMLElement): void {
     }
   });
 
-  container.addEventListener("click", (event) => {
+	  container.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
 
@@ -154,17 +198,89 @@ export function wireHudInteractions(container: HTMLElement): void {
       return;
     }
 
-    const themeToggle = target.closest<HTMLButtonElement>("[data-theme-toggle]");
+	    const themeToggle = target.closest<HTMLButtonElement>("[data-theme-toggle]");
     if (themeToggle) {
       event.preventDefault();
       setTheme(getActiveTheme() === "dark" ? "light" : "dark");
+	      return;
+	    }
+
+	    const productToggle = target.closest<HTMLElement>("[data-product-toggle]");
+	    if (productToggle) {
+	      event.preventDefault();
+	      setProductPanelState(appShell?.dataset.productPanelOpen !== "true");
+	      return;
+	    }
+
+	    const minimizeButton = target.closest<HTMLButtonElement>("[data-minimize-panel]");
+	    if (minimizeButton) {
+	      event.preventDefault();
+	      const panelId = minimizeButton.dataset.minimizePanel;
+      const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
+      if (!panel) return;
+      const isMinimized = panel.dataset.minimized === "true";
+      panel.dataset.minimized = isMinimized ? "false" : "true";
+      minimizeButton.setAttribute("aria-label", isMinimized ? "Minimizar panel" : "Expandir panel");
+      minimizeButton.title = isMinimized ? "Minimizar panel" : "Expandir panel";
+      const icon = minimizeButton.querySelector<HTMLElement>("span");
+	      if (icon) icon.textContent = isMinimized ? "−" : "+";
+	      return;
+	    }
+
+    const closeButton = target.closest<HTMLButtonElement>("[data-close-panel]");
+    if (closeButton) {
+      event.preventDefault();
+      const panelId = closeButton.dataset.closePanel;
+      const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
+      if (!panel) return;
+      panel.hidden = true;
+      panel.dataset.minimized = "false";
+      panel.setAttribute("aria-hidden", "true");
+      if (panelId === "product-card" && appShell) {
+        appShell.dataset.productPanelOpen = "false";
+      }
       return;
     }
+
+	    const searchToggle = target.closest<HTMLElement>("[data-search-toggle]");
+	    if (searchToggle) {
+	      event.preventDefault();
+      globalSearchInput?.focus();
+      globalSearchInput?.select();
+	      return;
+	    }
+
+    const editorToggle = target.closest<HTMLElement>("[data-editor-toggle]");
+    if (editorToggle && productEditor) {
+      event.preventDefault();
+      const shouldOpen = productEditor.hidden;
+      closeWorkspacePanels(productEditor);
+      productEditor.hidden = !shouldOpen;
+      if (shouldOpen) productEditor.dataset.minimized = "false";
+      return;
+    }
+
+	    const adminToggle = target.closest<HTMLButtonElement>("#admin-card-btn");
+	    if (adminToggle && authPanel) {
+	      event.preventDefault();
+	      if (appShell?.dataset.authRequired === "true") {
+	        authPanel.hidden = false;
+        authPanel.setAttribute("aria-hidden", "false");
+	        return;
+	      }
+	      authPanel.hidden = !authPanel.hidden;
+      authPanel.setAttribute("aria-hidden", authPanel.hidden ? "true" : "false");
+	      return;
+	    }
 
     const cardButton = target.closest<HTMLButtonElement>("[data-card-toggle]");
     if (cardButton) {
       event.preventDefault();
       const cardId = cardButton.dataset.cardId;
+      if (cardId === "product-card") {
+        setProductPanelState(false);
+        return;
+      }
       const card = cardId
         ? container.querySelector<HTMLElement>(`#${cardId}`)
         : cardButton.closest<HTMLElement>("[data-card]");
@@ -176,10 +292,11 @@ export function wireHudInteractions(container: HTMLElement): void {
     const openPanelButton = target.closest<HTMLButtonElement>("[data-panel-toggle]");
     if (openPanelButton) {
       event.preventDefault();
-      const panelId = openPanelButton.dataset.panelToggle;
-      const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
-      if (!panel) return;
-      setPanelState(panel, panel.hidden === true);
+	      const panelId = openPanelButton.dataset.panelToggle;
+	      const panel = panelId ? container.querySelector<HTMLElement>(`#${panelId}`) : null;
+	      if (!panel) return;
+      closeWorkspacePanels(panel);
+	      setPanelState(panel, panel.hidden === true);
       return;
     }
 
@@ -197,6 +314,20 @@ export function wireHudInteractions(container: HTMLElement): void {
     if (viewport && mobileQuery.matches && appShell?.dataset.hudOpen === "true") {
       setHudState(false);
     }
+  });
+
+	  globalSearchInput?.addEventListener("keydown", (event) => {
+	    if (event.key !== "Enter" || !searchForm || !searchInput) return;
+	    event.preventDefault();
+	    searchInput.value = globalSearchInput.value;
+	    searchForm.requestSubmit();
+	  });
+
+  globalClearSearchBtn?.addEventListener("click", () => {
+    if (globalSearchInput) globalSearchInput.value = "";
+    if (searchInput) searchInput.value = "";
+    searchForm?.querySelector<HTMLButtonElement>("#clear-search-btn")?.click();
+    globalSearchInput?.focus();
   });
 }
 
@@ -232,14 +363,51 @@ export function setStatus(
   message: string,
   isError: boolean
 ): void {
+  delete element.dataset.notice;
+  const activeTimer = statusAutoCloseTimers.get(element);
+  if (activeTimer !== undefined) {
+    window.clearTimeout(activeTimer);
+    statusAutoCloseTimers.delete(element);
+  }
   const text = message.trim();
-  element.textContent = text;
+  element.textContent = "";
   element.hidden = text.length === 0;
   if (!text) {
     delete element.dataset.state;
     return;
   }
+
+  const textNode = document.createElement("span");
+  textNode.className = "status-message-text";
+  textNode.textContent = text;
+  element.append(textNode);
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "status-message-close";
+  closeButton.setAttribute("aria-label", "Cerrar notificacion");
+  closeButton.title = "Cerrar notificacion";
+  closeButton.textContent = "×";
+  closeButton.addEventListener("click", () => {
+    element.hidden = true;
+    element.textContent = "";
+    delete element.dataset.state;
+    delete element.dataset.notice;
+    const timer = statusAutoCloseTimers.get(element);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      statusAutoCloseTimers.delete(element);
+    }
+  });
+  element.append(closeButton);
+
   element.dataset.state = isError ? "error" : "success";
+  if (!isError) {
+    statusAutoCloseTimers.set(
+      element,
+      window.setTimeout(() => closeButton.click(), 5200)
+    );
+  }
 }
 
 export function updateLegendCount(shelfId: string, count: number): void {
