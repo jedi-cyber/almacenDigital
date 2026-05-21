@@ -9,17 +9,23 @@ import type { HudRefs } from "./hud.js";
 import type { PlacedItem, Shelf, WarehouseAisle, WarehouseConfig } from "./types.js";
 import { getSectionBoundaries } from "./canPlace.js";
 import {
-  createRuntime,
-  closeUserSession,
-  createUserSession,
-  loadProductHistory,
+	  createRuntime,
+	  createManagedUser,
+	  closeAllUserSessions,
+	  closeUserSession,
+	  createUserSession,
+	  downloadExport,
+	  loadActiveSessions,
+	  loadManagedUsers,
+	  loadProductHistory,
   loadPlacedProducts,
   loadUserSession,
   loadWarehouseConfig,
   restoreItem,
   saveWarehouseConfig,
 	  setApiErrorHandler,
-  updateUserProfile,
+	  updateUserProfile,
+	  updateManagedUser,
 	  updateItemPlacement,
   type WarehouseRuntime
 } from "./warehouse.js";
@@ -64,10 +70,13 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     }
     const initials = getInitials(session?.user.name ?? session?.user.email ?? "SS");
     refs.adminInitials.textContent = initials;
-    container.querySelector<HTMLElement>("#profile-avatar")?.replaceChildren(document.createTextNode(initials));
-    refs.authLogoutBtn.hidden = !session;
-    refs.profileForm.hidden = !session;
-    refs.authForm.hidden = hasSession;
+	    container.querySelector<HTMLElement>("#profile-avatar")?.replaceChildren(document.createTextNode(initials));
+	    container.querySelector<HTMLElement>("#profile-display-name")?.replaceChildren(document.createTextNode(session?.user.name ?? "-"));
+	    container.querySelector<HTMLElement>("#profile-display-email")?.replaceChildren(document.createTextNode(session?.user.email ?? "-"));
+	    refs.authLogoutBtn.hidden = !session;
+	    refs.profileForm.hidden = !session;
+	    container.querySelectorAll<HTMLElement>(".profile-utility-panel").forEach((panel) => { panel.hidden = !session; });
+	    refs.authForm.hidden = hasSession;
     refs.profileStatus.hidden = true;
     if (session) {
       refs.authName.value = session.user.name;
@@ -80,10 +89,319 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     }
   };
 
-  const initialSession = await loadUserSession();
-  applySession(initialSession);
+	  const initialSession = await loadUserSession();
+	  applySession(initialSession);
 
-  refs.authForm.addEventListener("submit", async (event) => {
+  const setProfilePasswordSectionOpen = (isOpen: boolean) => {
+    refs.profilePasswordSection.hidden = !isOpen;
+    refs.profilePasswordToggleBtn.setAttribute("aria-expanded", String(isOpen));
+    refs.profilePasswordToggleBtn.textContent = isOpen ? "Ocultar cambio de contraseña" : "Cambiar contraseña";
+    if (!isOpen) {
+      refs.profileCurrentPassword.value = "";
+      refs.profileNewPassword.value = "";
+      refs.profileConfirmPassword.value = "";
+    }
+  };
+
+	  refs.profilePasswordToggleBtn.addEventListener("click", () => {
+	    setProfilePasswordSectionOpen(refs.profilePasswordSection.hidden);
+	  });
+
+  const profileEditToggleBtn = container.querySelector<HTMLButtonElement>("#profile-edit-toggle-btn");
+  const profileEditSection = container.querySelector<HTMLElement>("#profile-edit-section");
+  const setProfileEditOpen = (isOpen: boolean) => {
+    if (!profileEditSection || !profileEditToggleBtn) return;
+    profileEditSection.hidden = !isOpen;
+    profileEditToggleBtn.setAttribute("aria-expanded", String(isOpen));
+    profileEditToggleBtn.textContent = isOpen ? "Ocultar edición" : "Editar perfil";
+    if (!isOpen) setProfilePasswordSectionOpen(false);
+  };
+  profileEditToggleBtn?.addEventListener("click", () => {
+    setProfileEditOpen(Boolean(profileEditSection?.hidden));
+  });
+
+  const activeSessionsList = container.querySelector<HTMLElement>("#active-sessions-list");
+  const refreshSessionsBtn = container.querySelector<HTMLButtonElement>("#refresh-sessions-btn");
+  const logoutAllSessionsBtn = container.querySelector<HTMLButtonElement>("#logout-all-sessions-btn");
+  const renderActiveSessions = async () => {
+    if (!activeSessionsList) return;
+    activeSessionsList.textContent = "Cargando sesiones...";
+    const sessions = await loadActiveSessions();
+    activeSessionsList.replaceChildren();
+    if (sessions.length === 0) {
+      activeSessionsList.textContent = "No hay sesiones activas para mostrar.";
+      return;
+    }
+    sessions.forEach((session) => {
+      const row = document.createElement("div");
+      row.className = "active-session-item";
+      const device = document.createElement("strong");
+      const meta = document.createElement("span");
+      device.textContent = `${session.current ? "Este dispositivo" : "Otro dispositivo"} · ${session.ipAddress ?? "IP no disponible"}`;
+      meta.textContent = `Última actividad: ${formatSessionExpiry(session.lastSeenAt ?? session.createdAt)} · Expira: ${formatSessionExpiry(session.expiresAt)}`;
+      row.append(device, meta);
+      activeSessionsList.append(row);
+    });
+  };
+  refreshSessionsBtn?.addEventListener("click", () => void renderActiveSessions());
+	  logoutAllSessionsBtn?.addEventListener("click", async () => {
+	    const confirmed = await requestNotificationConfirm(
+        "Se cerrara tu sesion en todos los dispositivos. Tendras que iniciar sesion otra vez.",
+        "Cerrar todas"
+      );
+	    if (!confirmed) return;
+	    await closeAllUserSessions();
+	    window.location.reload();
+  });
+  container.querySelectorAll<HTMLButtonElement>("[data-export-type]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await downloadExport(button.dataset.exportType as "inventory-csv" | "inventory-pdf" | "config-backup");
+        setProfileStatus(refs, "Exportacion generada correctamente.", false);
+      } catch {
+        setProfileStatus(refs, "No se pudo generar la exportacion.", true);
+      }
+    });
+  });
+  if (initialSession) void renderActiveSessions();
+
+	  const userAdminPanel = container.querySelector<HTMLElement>("#user-admin-panel");
+  const userAdminBtn = container.querySelector<HTMLButtonElement>("#user-admin-btn");
+  const closeUserAdminPanelBtn = container.querySelector<HTMLButtonElement>("#close-user-admin-panel-btn");
+  const userManagementPanel = container.querySelector<HTMLElement>("#user-management-panel");
+  const userAdminStatus = container.querySelector<HTMLParagraphElement>("#user-admin-status");
+  const createUserWizard = container.querySelector<HTMLElement>("#create-user-wizard");
+  const openCreateUserWizardBtn = container.querySelector<HTMLButtonElement>("#open-create-user-wizard-btn");
+  const cancelCreateUserBtn = container.querySelector<HTMLButtonElement>("#cancel-create-user-btn");
+  const prevCreateUserStepBtn = container.querySelector<HTMLButtonElement>("#prev-create-user-step-btn");
+  const nextCreateUserStepBtn = container.querySelector<HTMLButtonElement>("#next-create-user-step-btn");
+	  const createUserBtn = container.querySelector<HTMLButtonElement>("#create-user-btn");
+  const managedUsersList = container.querySelector<HTMLElement>("#managed-users-list");
+  const refreshUsersBtn = container.querySelector<HTMLButtonElement>("#refresh-users-btn");
+  const newUserName = container.querySelector<HTMLInputElement>("#new-user-name");
+  const newUserEmail = container.querySelector<HTMLInputElement>("#new-user-email");
+  const newUserRole = container.querySelector<HTMLSelectElement>("#new-user-role");
+  const newUserPassword = container.querySelector<HTMLInputElement>("#new-user-password");
+  let createUserWizardStep = 1;
+  const setCreateUserWizardOpen = (isOpen: boolean) => {
+    if (!createUserWizard) return;
+    createUserWizard.hidden = !isOpen;
+    if (isOpen) setCreateUserWizardStep(1);
+    if (!isOpen) {
+      if (newUserName) newUserName.value = "";
+      if (newUserEmail) newUserEmail.value = "";
+      if (newUserPassword) newUserPassword.value = "";
+    }
+  };
+  const setCreateUserWizardStep = (step: number) => {
+    createUserWizardStep = Math.max(1, Math.min(3, step));
+    if (createUserWizard) createUserWizard.dataset.step = String(createUserWizardStep);
+    if (prevCreateUserStepBtn) prevCreateUserStepBtn.hidden = createUserWizardStep === 1;
+    if (nextCreateUserStepBtn) nextCreateUserStepBtn.hidden = createUserWizardStep === 3;
+    if (createUserBtn) createUserBtn.hidden = createUserWizardStep !== 3;
+  };
+  const validateCreateUserStep = () => {
+    if (createUserWizardStep === 1 && (!newUserName?.value.trim() || !newUserEmail?.value.trim())) {
+      setPanelStatus(userAdminStatus, "Completa nombre y correo para continuar.", true);
+      return false;
+    }
+    if (createUserWizardStep === 3 && (!newUserPassword || newUserPassword.value.length < 6)) {
+      setPanelStatus(userAdminStatus, "La contraseña temporal debe tener al menos 6 caracteres.", true);
+      return false;
+    }
+    return true;
+  };
+
+  const roleKey = (role: string) => role.trim().toLowerCase() === "administrador" ? "admin" : role.trim().toLowerCase();
+  const canUse = (permission: "product:write" | "product:delete" | "shelf:write" | "report:read" | "user:manage") => {
+    const role = roleKey(activeSession?.user.role ?? "");
+    const permissions: Record<string, string[]> = {
+      admin: ["product:write", "product:delete", "shelf:write", "report:read", "user:manage"],
+      operador: ["product:write"],
+      consulta: ["report:read"]
+    };
+    return permissions[role]?.includes(permission) ?? false;
+  };
+
+  const applyRoleAccess = () => {
+    const canWriteProducts = canUse("product:write");
+    const canDeleteProducts = canUse("product:delete");
+    const canWriteShelves = canUse("shelf:write");
+    const canReadReports = canUse("report:read");
+    const canManageUsers = canUse("user:manage");
+
+    container.querySelectorAll<HTMLElement>("[data-product-toggle]").forEach((el) => { el.hidden = !canWriteProducts; });
+    container.querySelectorAll<HTMLElement>("[data-panel-toggle='shelf-manager-panel']").forEach((el) => { el.hidden = !canWriteShelves; });
+    container.querySelectorAll<HTMLElement>("[data-report-toggle]").forEach((el) => { el.hidden = !canReadReports; });
+
+    refs.productEditor.hidden = refs.productEditor.hidden || !canWriteProducts;
+    refs.moveProductBtn.hidden = !canWriteProducts;
+    refs.transferProductBtn.hidden = !canWriteProducts;
+    refs.selectedProductEditBtn.hidden = !canWriteProducts;
+    refs.deleteProductBtn.hidden = !canDeleteProducts;
+    refs.editShelvesBtn.hidden = !canWriteShelves;
+    refs.productForm.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>("input, button, select").forEach((el) => {
+      el.disabled = !canWriteProducts;
+    });
+	    if (userAdminBtn) userAdminBtn.hidden = !canManageUsers;
+	    if (!canManageUsers && userAdminPanel) userAdminPanel.hidden = true;
+	  };
+
+  applyRoleAccess();
+
+  const openUserAdminPanel = async () => {
+    if (!userAdminPanel || !canUse("user:manage")) return;
+    refs.authPanel.hidden = true;
+    refs.authPanel.setAttribute("aria-hidden", "true");
+    userAdminPanel.hidden = false;
+    await refreshManagedUsers();
+  };
+
+  const closeUserAdminPanel = () => {
+    if (userAdminPanel) userAdminPanel.hidden = true;
+    setCreateUserWizardOpen(false);
+  };
+
+  const refreshManagedUsers = async () => {
+    if (!userManagementPanel || userAdminPanel?.hidden || !managedUsersList) return;
+    managedUsersList.textContent = "Cargando usuarios...";
+    renderManagedUsers(await loadManagedUsers());
+  };
+
+  const buildInput = (labelText: string, value: string, type = "text") => {
+    const label = document.createElement("label");
+    const span = document.createElement("span");
+    const input = document.createElement("input");
+    span.textContent = labelText;
+    input.type = type;
+    input.value = value;
+    label.append(span, input);
+    return { label, input };
+  };
+
+  const renderManagedUsers = (users: Awaited<ReturnType<typeof loadManagedUsers>>) => {
+    if (!managedUsersList) return;
+    managedUsersList.replaceChildren();
+    if (users.length === 0) {
+      managedUsersList.textContent = "No hay usuarios para mostrar.";
+      return;
+    }
+
+	    users.forEach((user) => {
+	      const card = document.createElement("article");
+	      card.className = "managed-user-card";
+
+      const head = document.createElement("div");
+      head.className = "managed-user-head";
+      const title = document.createElement("div");
+      const name = document.createElement("strong");
+      const email = document.createElement("small");
+      const state = document.createElement("span");
+      name.textContent = user.name;
+      email.textContent = user.email;
+      state.className = "managed-user-state";
+      state.dataset.active = String(user.active);
+	      state.textContent = user.active ? "Activo" : "Inactivo";
+	      title.append(name, email);
+	      head.append(title, state);
+
+      const meta = document.createElement("div");
+      meta.className = "managed-user-meta";
+      meta.textContent = `${user.role} · Usuario #${user.id}`;
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "profile-secondary-btn";
+      editBtn.textContent = "Editar";
+
+	      const controls = document.createElement("div");
+	      controls.className = "managed-user-controls";
+      controls.hidden = true;
+	      const nameInput = buildInput("Nombre", user.name);
+      const emailInput = buildInput("Correo", user.email, "email");
+      const roleLabel = document.createElement("label");
+      const roleSpan = document.createElement("span");
+      const roleSelect = document.createElement("select");
+      roleSpan.textContent = "Rol";
+      (["Admin", "Operador", "Consulta"] as const).forEach((role) => {
+        const option = document.createElement("option");
+        option.value = role;
+        option.textContent = role;
+        option.selected = role === user.role;
+        roleSelect.append(option);
+      });
+      roleLabel.append(roleSpan, roleSelect);
+      const passwordInput = buildInput("Nueva contraseña temporal", "", "password");
+      passwordInput.input.placeholder = "Dejar vacio para no cambiar";
+
+      const activeLabel = document.createElement("label");
+      const activeSpan = document.createElement("span");
+      const activeInput = document.createElement("input");
+      activeSpan.textContent = "Cuenta activa";
+      activeInput.type = "checkbox";
+      activeInput.checked = user.active;
+      activeLabel.append(activeSpan, activeInput);
+
+      const actions = document.createElement("div");
+      actions.className = "managed-user-actions";
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.textContent = "Guardar";
+      saveBtn.addEventListener("click", async () => {
+        const updated = await updateManagedUser({
+          id: user.id,
+          name: nameInput.input.value.trim(),
+          email: emailInput.input.value.trim(),
+          role: roleSelect.value as "Admin" | "Operador" | "Consulta",
+          active: activeInput.checked,
+          password: passwordInput.input.value
+	        });
+	        renderManagedUsers(updated);
+	        setPanelStatus(userAdminStatus, "Usuario actualizado correctamente.", false);
+	      });
+	      actions.append(saveBtn);
+
+	      controls.append(nameInput.label, emailInput.label, roleLabel, passwordInput.label, activeLabel, actions);
+      editBtn.addEventListener("click", () => {
+        controls.hidden = !controls.hidden;
+        editBtn.textContent = controls.hidden ? "Editar" : "Cerrar edición";
+      });
+	      card.append(head, meta, editBtn, controls);
+	      managedUsersList.append(card);
+	    });
+	  };
+
+  openCreateUserWizardBtn?.addEventListener("click", () => setCreateUserWizardOpen(true));
+  cancelCreateUserBtn?.addEventListener("click", () => setCreateUserWizardOpen(false));
+  prevCreateUserStepBtn?.addEventListener("click", () => setCreateUserWizardStep(createUserWizardStep - 1));
+  nextCreateUserStepBtn?.addEventListener("click", () => {
+	    if (!validateCreateUserStep()) return;
+    setCreateUserWizardStep(createUserWizardStep + 1);
+    refs.profileStatus.hidden = true;
+  });
+
+	  createUserBtn?.addEventListener("click", async () => {
+	    if (!newUserName || !newUserEmail || !newUserRole || !newUserPassword) return;
+    if (!validateCreateUserStep()) return;
+	    const users = await createManagedUser({
+      name: newUserName.value.trim(),
+      email: newUserEmail.value.trim(),
+      role: newUserRole.value as "Admin" | "Operador" | "Consulta",
+      password: newUserPassword.value
+    });
+	    newUserName.value = "";
+	    newUserEmail.value = "";
+	    newUserPassword.value = "";
+	    setCreateUserWizardOpen(false);
+		    renderManagedUsers(users);
+	    setPanelStatus(userAdminStatus, "Usuario creado correctamente.", false);
+	  });
+
+  userAdminBtn?.addEventListener("click", () => void openUserAdminPanel());
+  closeUserAdminPanelBtn?.addEventListener("click", closeUserAdminPanel);
+	  refreshUsersBtn?.addEventListener("click", refreshManagedUsers);
+
+	  refs.authForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const session = await createUserSession({
       email: refs.authEmail.value.trim(),
@@ -142,9 +460,9 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 	  let selectedProductSku: string | null = null;
 	  let keepCurrentRouteUntilFinish = false;
   let routeNoticeTimer: number | null = null;
-  const showRouteNotice = (message: string): void => {
-    setStatus(refs.statusMessage, message, false);
-    refs.statusMessage.dataset.notice = "route";
+	  const showRouteNotice = (message: string): void => {
+	    setStatus(refs.statusMessage, message, "warning");
+	    refs.statusMessage.dataset.notice = "route";
     if (routeNoticeTimer !== null) window.clearTimeout(routeNoticeTimer);
     routeNoticeTimer = window.setTimeout(() => {
       if (refs.statusMessage.dataset.notice === "route") {
@@ -152,7 +470,31 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
         delete refs.statusMessage.dataset.notice;
       }
       routeNoticeTimer = null;
-    }, 4200);
+	    }, 4200);
+	  };
+
+  const requestNotificationConfirm = (message: string, confirmLabel: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setStatus(refs.statusMessage, message, "warning");
+      const actions = document.createElement("div");
+      actions.className = "status-message-actions";
+      const cancelBtn = document.createElement("button");
+      const confirmBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      confirmBtn.type = "button";
+      cancelBtn.textContent = "Cancelar";
+      confirmBtn.textContent = confirmLabel;
+      cancelBtn.addEventListener("click", () => {
+        setStatus(refs.statusMessage, "", "info");
+        resolve(false);
+      }, { once: true });
+      confirmBtn.addEventListener("click", () => {
+        setStatus(refs.statusMessage, "", "info");
+        resolve(true);
+      }, { once: true });
+      actions.append(cancelBtn, confirmBtn);
+      refs.statusMessage.append(actions);
+    });
   };
 
   const shelfMeshes = new Map<string, THREE.Mesh>();
@@ -290,16 +632,10 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 	      return false;
 	    }
 
-    const shouldChange = window.confirm(
-      `Ya tienes una ruta guiada hacia ${guidedRouteSku}.\n\n¿Quieres cambiar la ruta al producto ${sku}?`
-	    );
-	    if (!shouldChange) {
-      showRouteNotice(`Se mantiene la ruta actual hacia ${guidedRouteSku}.`);
-	      return false;
-	    }
+    showRouteNotice(`Ruta actualizada: ahora va hacia ${sku}.`);
 
     return true;
-  };
+	  };
 
   const selectProduct = wireSearchForm({
     searchForm: refs.searchForm,
@@ -418,14 +754,19 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     }, 450);
   }
 
-  refs.selectedProductHistoryBtn.addEventListener("click", async () => {
-    if (!selectedProductSku) return;
-    const history = await loadProductHistory(selectedProductSku);
-    const message = history.length > 0
-      ? history.map((entry) => `${entry.createdAt} · ${entry.summary}`).join("\n")
-      : "Este producto aun no tiene historial registrado.";
-    window.alert(message);
-  });
+		  refs.selectedProductHistoryBtn.addEventListener("click", async () => {
+		    if (!selectedProductSku) return;
+		    const history = await loadProductHistory(selectedProductSku);
+		    const message = history.length > 0
+		      ? history.slice(0, 3).map((entry) => {
+	          const actor = entry.actor?.name
+	            ? ` · Usuario: ${entry.actor.name}${entry.actor.role ? ` (${entry.actor.role})` : ""}`
+	            : " · Usuario: no registrado";
+	          return `${entry.createdAt} · ${entry.summary}${actor}`;
+	        }).join(" | ")
+		      : "Este producto aun no tiene historial registrado.";
+		    setStatus(refs.statusMessage, message, history.length > 0 ? "info" : "warning");
+		  });
 
   refs.selectedProductEditBtn.addEventListener("click", () => {
     if (!selectedProductSku) return;
@@ -435,20 +776,30 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     refs.productEditor.dataset.minimized = "false";
   });
 
-		  refs.profileForm.addEventListener("submit", async (event) => {
-	    event.preventDefault();
-	    const newPassword = refs.profileNewPassword.value.trim();
-    const confirmPassword = refs.profileConfirmPassword.value.trim();
-	    const currentPassword = refs.profileCurrentPassword.value;
-    const emailChanged = activeSession ? refs.profileEmail.value.trim() !== activeSession.user.email : false;
-	    if ((newPassword || emailChanged) && !currentPassword) {
-	      setProfileStatus(refs, "Ingresa tu contraseña actual para cambiar correo o contraseña.", true);
+			  refs.profileForm.addEventListener("submit", async (event) => {
+		    event.preventDefault();
+		    const newPassword = refs.profileNewPassword.value.trim();
+	    const confirmPassword = refs.profileConfirmPassword.value.trim();
+		    const currentPassword = refs.profileCurrentPassword.value;
+	    const emailChanged = activeSession ? refs.profileEmail.value.trim() !== activeSession.user.email : false;
+		    if (emailChanged && !currentPassword) {
+		      setProfilePasswordSectionOpen(true);
+		      setProfileStatus(refs, "Para cambiar el correo, abre esta seccion e ingresa tu contraseña actual.", true);
+		      refs.profileCurrentPassword.focus();
+		      return;
+		    }
+		    if (newPassword && !currentPassword) {
+		      setProfilePasswordSectionOpen(true);
+		      setProfileStatus(refs, "Ingresa tu contraseña actual para cambiar la contraseña.", true);
+		      refs.profileCurrentPassword.focus();
+		      return;
+		    }
+	    if ((newPassword || confirmPassword) && newPassword !== confirmPassword) {
+	      setProfilePasswordSectionOpen(true);
+	      setProfileStatus(refs, "La confirmacion de contraseña no coincide.", true);
+	      refs.profileConfirmPassword.focus();
 	      return;
 	    }
-    if (newPassword !== confirmPassword) {
-      setProfileStatus(refs, "La confirmacion de contraseña no coincide.", true);
-      return;
-    }
 	    const session = await updateUserProfile({
 	      name: refs.profileName.value.trim(),
       email: refs.profileEmail.value.trim(),
@@ -459,32 +810,39 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       setProfileStatus(refs, "No se pudo actualizar el perfil. Revisa los datos.", true);
       return;
 	    }
-	    refs.profileCurrentPassword.value = "";
-	    refs.profileNewPassword.value = "";
-    refs.profileConfirmPassword.value = "";
-	    applySession(session);
-    refs.authPanel.hidden = false;
-    setProfileStatus(refs, "Perfil actualizado correctamente.", false);
+		    refs.profileCurrentPassword.value = "";
+		    refs.profileNewPassword.value = "";
+	    refs.profileConfirmPassword.value = "";
+	    setProfilePasswordSectionOpen(false);
+		    applySession(session);
+	    applyRoleAccess();
+	    setProfileEditOpen(false);
+	    refs.authPanel.hidden = false;
+	    setProfileStatus(refs, "Perfil actualizado correctamente.", false);
 	  });
 
   refs.profileResetBtn.addEventListener("click", () => {
     if (!activeSession) return;
     refs.profileName.value = activeSession.user.name;
     refs.profileEmail.value = activeSession.user.email;
-    refs.profileCurrentPassword.value = "";
-    refs.profileNewPassword.value = "";
-    refs.profileConfirmPassword.value = "";
-    setProfileStatus(refs, "Cambios descartados.", false);
-  });
+	    refs.profileCurrentPassword.value = "";
+	    refs.profileNewPassword.value = "";
+	    refs.profileConfirmPassword.value = "";
+	    setProfilePasswordSectionOpen(false);
+	    setProfileEditOpen(false);
+	    setProfileStatus(refs, "Cambios descartados.", false);
+	  });
 
 		  refs.authLogoutBtn.addEventListener("click", async () => {
 	    await closeUserSession();
 	    refs.authPassword.value = "";
-	    refs.profileCurrentPassword.value = "";
-	    refs.profileNewPassword.value = "";
-    refs.profileConfirmPassword.value = "";
-	    applySession(null);
-	  });
+		    refs.profileCurrentPassword.value = "";
+		    refs.profileNewPassword.value = "";
+	    refs.profileConfirmPassword.value = "";
+	    setProfilePasswordSectionOpen(false);
+		    applySession(null);
+	    applyRoleAccess();
+		  });
 
   wireViewportControls({
     refs,
@@ -541,15 +899,17 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
   removeBoardBtn?.addEventListener("click", handleRemoveBoard);
 
   // ── Reporte completo ──
-  const openReport = () => {
-    import("./report-page.js").then(({ openReportWindow }) => {
-      openReportWindow({
-        shelves: config.shelves,
-        productsBySku: runtime.productEntryBySku,
-        generatedAt: new Date(),
-      });
-    });
-  };
+	  const openReport = async () => {
+	    const history = await loadProductHistory(undefined, 200);
+	    import("./report-page.js").then(({ openReportWindow }) => {
+	      openReportWindow({
+	        shelves: config.shelves,
+	        productsBySku: runtime.productEntryBySku,
+	        generatedAt: new Date(),
+	        history,
+	      });
+	    });
+	  };
   container.querySelectorAll<HTMLButtonElement>("[data-report-toggle]").forEach((button) => {
     button.addEventListener("click", openReport);
   });
@@ -591,9 +951,14 @@ function getInitials(value: string): string {
 }
 
 function setProfileStatus(refs: HudRefs, message: string, isError: boolean): void {
-  refs.profileStatus.textContent = message;
-  refs.profileStatus.hidden = false;
-  refs.profileStatus.dataset.state = isError ? "error" : "success";
+  setPanelStatus(refs.profileStatus, message, isError);
+}
+
+function setPanelStatus(element: HTMLParagraphElement | null, message: string, state: boolean | "success" | "error" | "warning" | "info"): void {
+  if (!element) return;
+  element.textContent = message;
+  element.hidden = false;
+  element.dataset.state = typeof state === "boolean" ? (state ? "error" : "success") : state;
 }
 
 function formatSessionExpiry(value: string): string {

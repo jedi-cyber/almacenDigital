@@ -71,6 +71,8 @@ export interface HudRefs {
   profileForm: HTMLFormElement;
   profileName: HTMLInputElement;
   profileEmail: HTMLInputElement;
+  profilePasswordToggleBtn: HTMLButtonElement;
+  profilePasswordSection: HTMLElement;
   profileCurrentPassword: HTMLInputElement;
   profileNewPassword: HTMLInputElement;
   profileConfirmPassword: HTMLInputElement;
@@ -725,39 +727,138 @@ function buildHudTemplate(): string {
                 <div>
                   <dt>Sesión activa hasta</dt>
                   <dd id="profile-session-expiry">-</dd>
-                </div>
-              </dl>
-	            <label>
-	              <span>Nombre</span>
-	              <input id="profile-name" name="name" type="text" maxlength="120" required />
-            </label>
-            <label>
-              <span>Correo</span>
-              <input id="profile-email" name="email" type="email" maxlength="180" required />
-            </label>
-            <div class="profile-password-grid">
-              <label>
-                <span>Contraseña actual</span>
-                <input id="profile-current-password" name="currentPassword" type="password" autocomplete="current-password" />
-              </label>
-	              <label>
-	                <span>Nueva contraseña</span>
-	                <input id="profile-new-password" name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+	                </div>
+	              </dl>
+	              <div class="profile-readonly" id="profile-readonly">
+	                <div>
+	                  <span>Nombre</span>
+	                  <strong id="profile-display-name">-</strong>
+	                </div>
+	                <div>
+	                  <span>Correo</span>
+	                  <strong id="profile-display-email">-</strong>
+	                </div>
+	              </div>
+	              <button type="button" id="profile-edit-toggle-btn" class="profile-secondary-btn" aria-expanded="false" aria-controls="profile-edit-section">
+	                Editar perfil
+	              </button>
+	              <div id="profile-edit-section" class="profile-edit-section" hidden>
+		              <label>
+		                <span>Nombre</span>
+		                <input id="profile-name" name="name" type="text" maxlength="120" required />
 	              </label>
-                <label>
-                  <span>Confirmar nueva contraseña</span>
-                  <input id="profile-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
-                </label>
+	              <label>
+	                <span>Correo</span>
+	                <input id="profile-email" name="email" type="email" maxlength="180" required />
+	              </label>
+	                <button type="button" id="profile-password-toggle-btn" class="profile-password-toggle" aria-expanded="false" aria-controls="profile-password-section">
+	                  Cambiar contraseña
+	                </button>
+		              <div id="profile-password-section" class="profile-password-section" hidden>
+	                  <p class="profile-help">Solo completa esta sección si quieres cambiar tu correo o contraseña.</p>
+		                <div class="profile-password-grid">
+		                <label>
+		                  <span>Contraseña actual</span>
+		                  <input id="profile-current-password" name="currentPassword" type="password" autocomplete="current-password" />
+	                </label>
+		                <label>
+		                  <span>Nueva contraseña</span>
+		                  <input id="profile-new-password" name="newPassword" type="password" autocomplete="new-password" minlength="6" />
+		                </label>
+	                  <label>
+	                    <span>Confirmar nueva contraseña</span>
+	                    <input id="profile-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="6" />
+	                  </label>
+		                </div>
+		              </div>
+		              <div class="profile-actions">
+			              <button type="submit">Guardar perfil</button>
+		                <button type="button" id="profile-reset-btn" class="profile-reset-btn">Restaurar cambios</button>
+		              </div>
+	              </div>
+				            <p id="profile-status" class="profile-status" aria-live="polite" hidden></p>
+				          </form>
+	          <section id="profile-sessions-panel" class="profile-utility-panel">
+	            <div class="profile-utility-head">
+	              <strong>Sesiones activas</strong>
+	              <button type="button" id="refresh-sessions-btn" class="profile-reset-btn">Actualizar</button>
 	            </div>
-              <p class="profile-help">Para cambiar correo o contraseña, ingresa tu contraseña actual.</p>
-	            <p id="profile-status" class="profile-status" aria-live="polite" hidden></p>
-              <div class="profile-actions">
-	              <button type="submit">Guardar perfil</button>
-                <button type="button" id="profile-reset-btn" class="profile-reset-btn">Restaurar cambios</button>
-              </div>
-	          </form>
-          <button type="button" id="auth-logout-btn" class="auth-logout-btn">Cerrar sesión</button>
-        </section>
+	            <div id="active-sessions-list" class="active-sessions-list" aria-live="polite"></div>
+	            <button type="button" id="logout-all-sessions-btn" class="auth-logout-btn">Cerrar sesión en todos los dispositivos</button>
+	          </section>
+	          <section id="profile-export-panel" class="profile-utility-panel">
+	            <div class="profile-utility-head">
+	              <strong>Exportación y respaldo</strong>
+	            </div>
+	            <div class="profile-export-actions">
+	              <button type="button" data-export-type="inventory-csv">Inventario CSV / Excel</button>
+	              <button type="button" data-export-type="inventory-pdf">Inventario PDF</button>
+	              <button type="button" data-export-type="config-backup">Respaldo configuración</button>
+	            </div>
+	          </section>
+		          <button type="button" id="auth-logout-btn" class="auth-logout-btn">Cerrar sesión</button>
+		        </section>
+	        <section class="auth-panel user-admin-panel" id="user-admin-panel" hidden aria-label="Administrador de usuarios">
+	          <div id="user-management-panel" class="user-management-panel">
+	            <div class="user-management-head">
+	              <div>
+	                <strong>Usuarios y permisos</strong>
+	                <small>Administra cuentas, roles y accesos.</small>
+	              </div>
+	              <button type="button" class="panel-minimize-btn" id="close-user-admin-panel-btn" aria-label="Cerrar administrador de usuarios" title="Cerrar administrador de usuarios">
+	                <span aria-hidden="true">×</span>
+	              </button>
+	            </div>
+	            <div class="user-management-actions user-management-actions--main">
+	              <button type="button" id="open-create-user-wizard-btn" class="profile-secondary-btn">Nuevo usuario</button>
+	              <button type="button" id="refresh-users-btn" class="profile-reset-btn">Actualizar</button>
+	            </div>
+	            <div id="create-user-wizard" class="create-user-wizard" data-step="1" hidden>
+	              <div class="wizard-progress">
+	                <span data-wizard-dot="1">1</span>
+	                <span data-wizard-dot="2">2</span>
+	                <span data-wizard-dot="3">3</span>
+	              </div>
+	              <div class="wizard-step" data-wizard-step="1">
+	                <strong>Datos del usuario</strong>
+	                <label>
+	                  <span>Nombre</span>
+	                  <input id="new-user-name" name="name" type="text" maxlength="120" />
+	                </label>
+	                <label>
+	                  <span>Correo</span>
+	                  <input id="new-user-email" name="email" type="email" maxlength="180" />
+	                </label>
+	              </div>
+	              <div class="wizard-step" data-wizard-step="2">
+	                <strong>Permiso inicial</strong>
+	                <label>
+	                  <span>Rol</span>
+	                  <select id="new-user-role" name="role">
+	                    <option value="Operador">Operador</option>
+	                    <option value="Consulta">Consulta</option>
+	                    <option value="Admin">Admin</option>
+	                  </select>
+	                </label>
+	              </div>
+	              <div class="wizard-step" data-wizard-step="3">
+	                <strong>Acceso temporal</strong>
+	                <label>
+	                  <span>Contraseña temporal</span>
+	                  <input id="new-user-password" name="password" type="password" minlength="6" />
+	                </label>
+	              </div>
+	              <div class="wizard-actions">
+	                <button type="button" id="cancel-create-user-btn" class="profile-reset-btn">Cancelar</button>
+	                <button type="button" id="prev-create-user-step-btn" class="profile-reset-btn">Atrás</button>
+	                <button type="button" id="next-create-user-step-btn">Siguiente</button>
+	                <button type="button" id="create-user-btn" hidden>Crear usuario</button>
+	              </div>
+	            </div>
+	            <p id="user-admin-status" class="profile-status" aria-live="polite" hidden></p>
+	            <div id="managed-users-list" class="managed-users-list" aria-live="polite"></div>
+	          </div>
+	        </section>
 
 		      </aside>
 	      <div class="search-result search-result--modal" id="search-result" aria-live="polite" data-testid="search-result" data-minimized="false" hidden>
@@ -801,13 +902,17 @@ function buildHudTemplate(): string {
               ${renderIcon(ICON_PATHS.layers)}
               <span>Ver leyenda</span>
             </button>
-            <button type="button" data-panel-toggle="edit-panel">
-              ${renderIcon(ICON_PATHS.edit)}
-              <span>Modo edición</span>
-            </button>
-	            <button type="button" class="top-register" data-product-toggle>
-	              <span aria-hidden="true">+</span>
-	              Registrar producto
+	            <button type="button" data-panel-toggle="edit-panel">
+	              ${renderIcon(ICON_PATHS.edit)}
+	              <span>Modo edición</span>
+	            </button>
+	            <button type="button" id="user-admin-btn" class="user-admin-btn" aria-label="Abrir administrador de usuarios" title="Usuarios y permisos" hidden>
+	              ${renderIcon(ICON_PATHS.layers)}
+	              <span>Usuarios</span>
+	            </button>
+		            <button type="button" class="top-register" data-product-toggle>
+		              <span aria-hidden="true">+</span>
+		              Registrar producto
 	            </button>
             <button type="button" class="admin-card" id="admin-card-btn" aria-label="Abrir mi perfil" title="Abrir mi perfil">
               <span id="admin-initials">AD</span>
@@ -966,6 +1071,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
   const profileForm = container.querySelector<HTMLFormElement>("#profile-form");
   const profileName = container.querySelector<HTMLInputElement>("#profile-name");
   const profileEmail = container.querySelector<HTMLInputElement>("#profile-email");
+  const profilePasswordToggleBtn = container.querySelector<HTMLButtonElement>("#profile-password-toggle-btn");
+  const profilePasswordSection = container.querySelector<HTMLElement>("#profile-password-section");
   const profileCurrentPassword = container.querySelector<HTMLInputElement>("#profile-current-password");
   const profileNewPassword = container.querySelector<HTMLInputElement>("#profile-new-password");
   const profileConfirmPassword = container.querySelector<HTMLInputElement>("#profile-confirm-password");
@@ -1045,6 +1152,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
     !profileForm ||
     !profileName ||
     !profileEmail ||
+    !profilePasswordToggleBtn ||
+    !profilePasswordSection ||
     !profileCurrentPassword ||
     !profileNewPassword ||
     !profileConfirmPassword ||
@@ -1127,6 +1236,8 @@ export function buildHtml(container: HTMLElement): HudRefs {
     profileForm,
     profileName,
     profileEmail,
+    profilePasswordToggleBtn,
+    profilePasswordSection,
     profileCurrentPassword,
     profileNewPassword,
     profileConfirmPassword,
@@ -1160,7 +1271,11 @@ function relocateViewportPanels(container: HTMLElement): void {
   });
 
   const authPanel = container.querySelector<HTMLElement>("#auth-panel");
+  const userAdminPanel = container.querySelector<HTMLElement>("#user-admin-panel");
   if (appShell && authPanel && authPanel.parentElement !== appShell) {
     appShell.append(authPanel);
+  }
+  if (appShell && userAdminPanel && userAdminPanel.parentElement !== appShell) {
+    appShell.append(userAdminPanel);
   }
 }

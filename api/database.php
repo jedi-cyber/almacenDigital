@@ -122,16 +122,58 @@ function require_api_session(PDO $pdo): array
     $update = $pdo->prepare("UPDATE sesiones SET last_seen_at = NOW() WHERE token_hash = :token_hash");
     $update->execute([":token_hash" => hash("sha256", $token)]);
 
-    return [
-        "token" => $token,
-        "expiresAt" => $row["expires_at"],
-        "user" => [
-            "id" => (int)$row["id"],
-            "name" => $row["nombre"],
-            "email" => $row["email"],
-            "role" => $row["rol"],
-        ],
+	    return [
+	        "token" => $token,
+	        "expiresAt" => $row["expires_at"],
+	        "user" => [
+	            "id" => (int)$row["id"],
+	            "name" => $row["nombre"],
+	            "email" => $row["email"],
+	            "role" => $row["rol"],
+	        ],
+	    ];
+	}
+
+function normalize_user_role(string $role): string
+{
+    $clean = strtolower(trim($role));
+    return match ($clean) {
+        "admin", "administrador" => "admin",
+        "operador", "operator" => "operador",
+        "consulta", "consultor", "viewer", "solo consulta" => "consulta",
+        default => $clean,
+    };
+}
+
+function canonical_user_role(string $role): ?string
+{
+    return match (normalize_user_role($role)) {
+        "admin" => "Admin",
+        "operador" => "Operador",
+        "consulta" => "Consulta",
+        default => null,
+    };
+}
+
+function session_can(array $session, string $permission): bool
+{
+    $role = normalize_user_role((string)($session["user"]["role"] ?? ""));
+    $permissions = [
+        "admin" => ["product:read", "product:write", "product:delete", "shelf:write", "report:read", "image:upload", "user:manage"],
+        "operador" => ["product:read", "product:write", "image:upload"],
+        "consulta" => ["product:read", "report:read"],
     ];
+    return in_array($permission, $permissions[$role] ?? [], true);
+}
+
+function require_api_permission(array $session, string $permission): void
+{
+    if (session_can($session, $permission)) {
+        return;
+    }
+    http_response_code(403);
+    echo json_encode(["error" => "No tienes permisos para realizar esta accion.", "code" => "FORBIDDEN"]);
+    exit;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +201,49 @@ function valid_string(mixed $v, int $maxLen = 255): ?string
         return null;
     }
     $s = trim($v);
-    return ($s !== "" && strlen($s) <= $maxLen) ? $s : null;
+	    return ($s !== "" && strlen($s) <= $maxLen) ? $s : null;
+	}
+
+function valid_pattern_string(mixed $v, int $maxLen, string $pattern): ?string
+{
+    $s = valid_string($v, $maxLen);
+    if ($s === null || !preg_match($pattern, $s)) {
+        return null;
+    }
+    return $s;
+}
+
+function valid_float_range(mixed $v, float $min, float $max): ?float
+{
+    if (!is_numeric($v)) {
+        return null;
+    }
+    $f = (float)$v;
+    return ($f >= $min && $f <= $max) ? $f : null;
+}
+
+function valid_product_sku(mixed $v): ?string
+{
+    return valid_pattern_string($v, 64, '/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/');
+}
+
+function valid_shelf_id(mixed $v): ?string
+{
+    return valid_pattern_string($v, 64, '/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/');
+}
+
+function valid_catalog_name(mixed $v, string $fallback): string
+{
+    $name = valid_string($v, 150) ?? $fallback;
+    $name = preg_replace('/\s+/', ' ', $name) ?? $fallback;
+    return trim($name) !== "" ? trim($name) : $fallback;
+}
+
+function api_fail(int $status, string $message, string $code): void
+{
+    http_response_code($status);
+    echo json_encode(["error" => $message, "code" => $code], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 function db_connect(bool $ensureDatabase = true): PDO
@@ -312,28 +396,38 @@ function db_ensure_schema(PDO $pdo): void
             local_x_nuevo FLOAT NULL,
             local_y_nuevo FLOAT NULL,
             local_z_nuevo FLOAT NULL,
-            resumen VARCHAR(255) NOT NULL,
-            detalles JSON NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY idx_producto_historial_sku (producto_sku),
-            KEY idx_producto_historial_accion (accion),
-            KEY idx_producto_historial_created_at (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-    );
+	            resumen VARCHAR(255) NOT NULL,
+	            detalles JSON NULL,
+	            usuario_id INT NULL,
+	            usuario_nombre VARCHAR(120) NULL,
+	            usuario_email VARCHAR(180) NULL,
+	            usuario_rol VARCHAR(80) NULL,
+	            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	            PRIMARY KEY (id),
+	            KEY idx_producto_historial_sku (producto_sku),
+	            KEY idx_producto_historial_accion (accion),
+	            KEY idx_producto_historial_usuario_id (usuario_id),
+	            KEY idx_producto_historial_created_at (created_at)
+	        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+	    );
 
     db_add_column_if_missing($pdo, "productos", "category", "VARCHAR(150) NOT NULL DEFAULT 'Sin categoria'");
     db_add_column_if_missing($pdo, "productos", "categoria_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "marca_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "dimension_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "image_url", "VARCHAR(500) NULL");
-    db_add_column_if_missing($pdo, "usuarios", "password_hash", "VARCHAR(255) NULL");
-    db_seed_default_user($pdo);
+	    db_add_column_if_missing($pdo, "usuarios", "password_hash", "VARCHAR(255) NULL");
+	    db_add_column_if_missing($pdo, "producto_historial", "usuario_id", "INT NULL");
+	    db_add_column_if_missing($pdo, "producto_historial", "usuario_nombre", "VARCHAR(120) NULL");
+	    db_add_column_if_missing($pdo, "producto_historial", "usuario_email", "VARCHAR(180) NULL");
+	    db_add_column_if_missing($pdo, "producto_historial", "usuario_rol", "VARCHAR(80) NULL");
+	    db_seed_default_user($pdo);
     $pdo->exec("ALTER TABLE usuarios MODIFY COLUMN password_hash VARCHAR(255) NOT NULL");
     $pdo->exec("ALTER TABLE productos MODIFY COLUMN name VARCHAR(255) NOT NULL");
     db_add_index_if_missing($pdo, "productos", "idx_productos_categoria_id", "categoria_id");
     db_add_index_if_missing($pdo, "productos", "idx_productos_marca_id", "marca_id");
-    db_add_index_if_missing($pdo, "productos", "idx_productos_dimension_id", "dimension_id");
+	    db_add_index_if_missing($pdo, "productos", "idx_productos_dimension_id", "dimension_id");
+	    db_add_index_if_missing($pdo, "producto_historial", "idx_producto_historial_usuario_id", "usuario_id");
     db_seed_product_catalogs($pdo);
     db_migrate_inline_product_dimensions($pdo);
     db_seed_default_shelves($pdo);
@@ -543,7 +637,7 @@ function db_seed_default_user(PDO $pdo): void
     $stmt->execute([
         ":nombre" => "Admin Almacén",
         ":email" => "admin@almacen.local",
-        ":rol" => "Administrador",
+        ":rol" => "Admin",
         ":password_hash" => $defaultPasswordHash,
     ]);
 }

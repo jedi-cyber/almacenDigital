@@ -101,11 +101,48 @@ export interface UserProfileInput {
   newPassword?: string;
 }
 
+export interface ActiveSessionInfo {
+  id: number;
+  current: boolean;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  expiresAt: string;
+}
+
+export type ManagedUserRole = "Admin" | "Operador" | "Consulta";
+
+export interface ManagedUser {
+  id: number;
+  name: string;
+  email: string;
+  role: ManagedUserRole;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedUserInput {
+  id?: number;
+  name?: string;
+  email?: string;
+  role?: ManagedUserRole;
+  active?: boolean;
+  password?: string;
+}
+
 export interface ProductHistoryEntry {
   id: number;
   sku: string;
   action: string;
   summary: string;
+  actor?: {
+    id: number | null;
+    name: string | null;
+    email: string | null;
+    role: string | null;
+  };
   createdAt: string;
 }
 
@@ -291,9 +328,104 @@ export async function closeUserSession(): Promise<void> {
   }
 }
 
-export async function loadProductHistory(sku: string): Promise<ProductHistoryEntry[]> {
+export async function closeAllUserSessions(): Promise<void> {
+  const storedToken = getSessionToken();
+  window.localStorage.removeItem(sessionStorageKey);
+  if (!storedToken) return;
   try {
-    const response = await fetch(`${API}/historial.php?sku=${encodeURIComponent(sku)}&limit=8`, {
+    await fetch(`${API}/sesion.php?scope=all`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${storedToken}` }
+    });
+  } catch (error) {
+    reportApiError("cerrar todas las sesiones", error);
+  }
+}
+
+export async function loadActiveSessions(): Promise<ActiveSessionInfo[]> {
+  try {
+    const response = await fetch(`${API}/sesion.php?scope=active`, {
+      headers: authHeaders()
+    });
+    if (!response.ok) throw new Error(`No se pudieron cargar sesiones: ${response.status}`);
+    const data = (await response.json()) as { sessions?: ActiveSessionInfo[] };
+    return Array.isArray(data.sessions) ? data.sessions : [];
+  } catch (error) {
+    reportApiError("cargar sesiones activas", error);
+    return [];
+  }
+}
+
+export async function downloadExport(type: "inventory-csv" | "inventory-pdf" | "config-backup"): Promise<void> {
+  const response = await fetch(`${API}/exportar.php?type=${encodeURIComponent(type)}`, {
+    headers: authHeaders()
+  });
+  if (!response.ok) throw new Error(`No se pudo exportar: ${response.status}`);
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filenameMatch = disposition.match(/filename="([^"]+)"/);
+  const filename = filenameMatch?.[1] ?? `almacen-${type}`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function loadManagedUsers(): Promise<ManagedUser[]> {
+  try {
+    const response = await fetch(`${API}/usuarios.php`, {
+      headers: authHeaders()
+    });
+    if (!response.ok) throw new Error(`No se pudieron cargar usuarios: ${response.status}`);
+    const data = (await response.json()) as { users?: ManagedUser[] };
+    return Array.isArray(data.users) ? data.users : [];
+  } catch (error) {
+    reportApiError("cargar usuarios", error);
+    return [];
+  }
+}
+
+export async function createManagedUser(input: Required<Pick<ManagedUserInput, "name" | "email" | "role" | "password">>): Promise<ManagedUser[]> {
+  try {
+    const response = await fetch(`${API}/usuarios.php`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(input)
+    });
+    if (!response.ok) throw new Error(`No se pudo crear usuario: ${response.status}`);
+    const data = (await response.json()) as { users?: ManagedUser[] };
+    return Array.isArray(data.users) ? data.users : [];
+  } catch (error) {
+    reportApiError("crear usuario", error);
+    return [];
+  }
+}
+
+export async function updateManagedUser(input: ManagedUserInput & { id: number }): Promise<ManagedUser[]> {
+  try {
+    const response = await fetch(`${API}/usuarios.php`, {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(input)
+    });
+    if (!response.ok) throw new Error(`No se pudo actualizar usuario: ${response.status}`);
+    const data = (await response.json()) as { users?: ManagedUser[] };
+    return Array.isArray(data.users) ? data.users : [];
+  } catch (error) {
+    reportApiError("actualizar usuario", error);
+    return [];
+  }
+}
+
+export async function loadProductHistory(sku?: string, limit = 8): Promise<ProductHistoryEntry[]> {
+  try {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (sku) params.set("sku", sku);
+    const response = await fetch(`${API}/historial.php?${params.toString()}`, {
       headers: authHeaders()
     });
     if (!response.ok) throw new Error(`No se pudo cargar historial: ${response.status}`);

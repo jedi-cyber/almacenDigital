@@ -12,6 +12,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
+    cleanup_expired_sessions($pdo);
 } catch (Throwable $e) {
     api_log_error($e, "sesion:db_connect");
     http_response_code(500);
@@ -22,6 +23,15 @@ try {
 if ($_SERVER["REQUEST_METHOD"] === "GET") {
     $token = get_bearer_token();
     $session = $token ? find_session($pdo, $token) : null;
+    if (($_GET["scope"] ?? "") === "active") {
+        if (!$session) {
+            api_fail(401, "Sesion no valida.", "INVALID_SESSION");
+        }
+        echo json_encode([
+            "sessions" => list_active_sessions($pdo, (int)$session["user"]["id"], $token)
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 
     echo json_encode(["session" => $session], JSON_UNESCAPED_UNICODE);
     exit;
@@ -104,8 +114,14 @@ if ($_SERVER["REQUEST_METHOD"] === "PATCH") {
 if ($_SERVER["REQUEST_METHOD"] === "DELETE") {
     $token = get_bearer_token();
     if ($token) {
-        $stmt = $pdo->prepare("DELETE FROM sesiones WHERE token_hash = :token_hash");
-        $stmt->execute([":token_hash" => hash("sha256", $token)]);
+        $session = find_session($pdo, $token);
+        if (($_GET["scope"] ?? "") === "all" && $session) {
+            $stmt = $pdo->prepare("DELETE FROM sesiones WHERE usuario_id = :usuario_id");
+            $stmt->execute([":usuario_id" => (int)$session["user"]["id"]]);
+        } else {
+            $stmt = $pdo->prepare("DELETE FROM sesiones WHERE token_hash = :token_hash");
+            $stmt->execute([":token_hash" => hash("sha256", $token)]);
+        }
     }
     echo json_encode(["ok" => true]);
     exit;
@@ -137,6 +153,7 @@ function create_session_for_credentials(PDO $pdo, string $email, string $passwor
         ":user_agent" => substr($_SERVER["HTTP_USER_AGENT"] ?? "", 0, 255),
         ":expires_at" => $expiresAt,
     ]);
+    prune_old_user_sessions($pdo, (int)$user["id"], hash("sha256", $token));
 
     return [
         "token" => $token,
@@ -148,6 +165,55 @@ function create_session_for_credentials(PDO $pdo, string $email, string $passwor
             "role" => $user["rol"],
         ],
     ];
+}
+
+function cleanup_expired_sessions(PDO $pdo): void
+{
+    $pdo->exec("DELETE FROM sesiones WHERE expires_at <= NOW()");
+}
+
+function prune_old_user_sessions(PDO $pdo, int $userId, string $currentTokenHash): void
+{
+    $stmt = $pdo->prepare(
+        "DELETE FROM sesiones
+         WHERE usuario_id = :usuario_id
+           AND token_hash <> :current_token_hash
+           AND id NOT IN (
+             SELECT id FROM (
+               SELECT id FROM sesiones
+               WHERE usuario_id = :usuario_id_keep
+               ORDER BY last_seen_at DESC, created_at DESC
+               LIMIT 4
+             ) keep_rows
+           )"
+    );
+    $stmt->execute([
+        ":usuario_id" => $userId,
+        ":usuario_id_keep" => $userId,
+        ":current_token_hash" => $currentTokenHash,
+    ]);
+}
+
+function list_active_sessions(PDO $pdo, int $userId, string $currentToken): array
+{
+    $currentHash = hash("sha256", $currentToken);
+    $stmt = $pdo->prepare(
+        "SELECT id, token_hash, ip_address, user_agent, created_at, last_seen_at, expires_at
+         FROM sesiones
+         WHERE usuario_id = :usuario_id AND expires_at > NOW()
+         ORDER BY last_seen_at DESC, created_at DESC"
+    );
+    $stmt->execute([":usuario_id" => $userId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    return array_map(fn($row) => [
+        "id" => (int)$row["id"],
+        "current" => hash_equals((string)$row["token_hash"], $currentHash),
+        "ipAddress" => $row["ip_address"],
+        "userAgent" => $row["user_agent"],
+        "createdAt" => $row["created_at"],
+        "lastSeenAt" => $row["last_seen_at"],
+        "expiresAt" => $row["expires_at"],
+    ], $rows);
 }
 
 function find_session(PDO $pdo, string $token): ?array

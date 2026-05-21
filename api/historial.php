@@ -37,10 +37,14 @@ try {
             local_z_anterior,
             local_x_nuevo,
             local_y_nuevo,
-            local_z_nuevo,
-            resumen,
-            created_at
-        FROM producto_historial
+	            local_z_nuevo,
+	            resumen,
+	            usuario_id,
+	            usuario_nombre,
+	            usuario_email,
+	            usuario_rol,
+	            created_at
+	        FROM producto_historial
     ";
     $params = [];
     if ($sku !== "") {
@@ -57,9 +61,15 @@ try {
         return [
             "id" => (int)$row["id"],
             "sku" => $row["producto_sku"],
-            "action" => $row["accion"],
-            "summary" => $row["resumen"],
-            "from" => [
+	            "action" => $row["accion"],
+	            "summary" => $row["resumen"],
+	            "actor" => [
+	                "id" => isset($row["usuario_id"]) ? (int)$row["usuario_id"] : null,
+	                "name" => $row["usuario_nombre"],
+	                "email" => $row["usuario_email"],
+	                "role" => $row["usuario_rol"],
+	            ],
+	            "from" => [
                 "shelfId" => $row["shelf_id_anterior"],
                 "localPosition" => [
                     "x" => isset($row["local_x_anterior"]) ? (float)$row["local_x_anterior"] : null,

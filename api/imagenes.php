@@ -18,7 +18,8 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
-    require_api_session($pdo);
+    $session = require_api_session($pdo);
+    require_api_permission($session, "image:upload");
 } catch (PDOException $e) {
     api_log_error($e, "imagenes:db_connect");
     http_response_code(500);
@@ -34,6 +35,17 @@ if (!$file || !is_array($file) || ($file["error"] ?? UPLOAD_ERR_NO_FILE) !== UPL
 }
 
 $tmpName = (string)$file["tmp_name"];
+if (!is_uploaded_file($tmpName)) {
+    http_response_code(422);
+    echo json_encode(["error" => "Carga de imagen invalida.", "code" => "INVALID_UPLOAD"]);
+    exit;
+}
+$originalName = (string)($file["name"] ?? "");
+if ($originalName !== "" && !preg_match('/\.(jpe?g|png|webp|gif)$/i', $originalName)) {
+    http_response_code(422);
+    echo json_encode(["error" => "Extension de imagen no permitida.", "code" => "UNSUPPORTED_IMAGE_EXTENSION"]);
+    exit;
+}
 $mime = mime_content_type($tmpName) ?: "";
 $allowed = [
     "image/jpeg" => "jpg",
@@ -48,7 +60,14 @@ if (!isset($allowed[$mime])) {
     exit;
 }
 
-if (($file["size"] ?? 0) > 4 * 1024 * 1024) {
+if (!getimagesize($tmpName)) {
+    http_response_code(422);
+    echo json_encode(["error" => "El archivo no es una imagen valida.", "code" => "INVALID_IMAGE_CONTENT"]);
+    exit;
+}
+
+$size = (int)($file["size"] ?? 0);
+if ($size <= 0 || $size > 4 * 1024 * 1024) {
     http_response_code(422);
     echo json_encode(["error" => "La imagen no debe superar 4 MB.", "code" => "IMAGE_TOO_LARGE"]);
     exit;

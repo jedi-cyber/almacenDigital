@@ -1,10 +1,11 @@
 import type { Shelf } from "./types.js";
-import type { ProductEntry } from "./warehouse.js";
+import type { ProductEntry, ProductHistoryEntry } from "./warehouse.js";
 
 export interface ReportData {
   shelves: Shelf[];
   productsBySku: Map<string, ProductEntry>;
   generatedAt: Date;
+  history?: ProductHistoryEntry[];
 }
 
 export function openReportWindow(data: ReportData): void {
@@ -17,6 +18,14 @@ export function openReportWindow(data: ReportData): void {
 
 function fmt(n: number): string {
   return Number(n.toFixed(2)).toString();
+}
+
+function esc(value: string | number | null | undefined): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /** Convierte coordenada local a etiqueta humana: Columna · Fila · Nivel */
@@ -146,8 +155,13 @@ function csvEscape(value: string | number | null | undefined): string {
 }
 
 function buildReportHtml(data: ReportData): string {
-  const { shelves, productsBySku, generatedAt } = data;
+  const { shelves, productsBySku, generatedAt, history = [] } = data;
   const allProducts = [...productsBySku.values()];
+  const movedSkus = new Set(history.filter((entry) => entry.action === "movido").map((entry) => entry.sku));
+  const lastActivityBySku = new Map<string, string>();
+  history.forEach((entry) => {
+    if (!lastActivityBySku.has(entry.sku)) lastActivityBySku.set(entry.sku, entry.createdAt);
+  });
   const totalProducts = allProducts.length;
   const totalVolume = shelves.reduce((sum, s) => sum + s.width * s.height * s.depth, 0);
   const usedVolume = allProducts.reduce((sum, e) => sum + e.item.width * e.item.height * e.item.depth, 0);
@@ -187,6 +201,10 @@ function buildReportHtml(data: ReportData): string {
   const categoryStats = countByCatalog(allProducts, (entry) => entry.item.category);
   const brandStats = countByCatalog(allProducts, (entry) => entry.item.brand);
   const incompleteProducts = allProducts.filter((entry) => isIncompleteProduct(entry, shelves));
+  const productsWithoutImage = allProducts.filter((entry) => !entry.item.imageUrl);
+  const categoryOptions = categoryStats.map((item) => `<option value="${esc(item.name)}">${esc(item.name)}</option>`).join("");
+  const brandOptions = brandStats.map((item) => `<option value="${esc(item.name)}">${esc(item.name)}</option>`).join("");
+  const shelfOptions = shelves.map((shelf) => `<option value="${esc(shelf.id)}">${esc(shelf.id)} · ${esc(shelf.label ?? shelf.id)}</option>`).join("");
   const productsCsv = [
     ["SKU", "Nombre", "Categoria", "Marca", "Estante", "Piso", "Ancho", "Alto", "Profundidad", "Volumen", "X", "Y", "Z"],
     ...allProducts.map((entry) => {
@@ -262,24 +280,29 @@ function buildReportHtml(data: ReportData): string {
         </div>`;
     }).join("");
 
-    const rows = products.length === 0
-      ? `<tr><td colspan="6" class="empty-row">Sin productos registrados en este estante.</td></tr>`
-      : products.map((e) => {
-          const vol = e.item.width * e.item.height * e.item.depth;
-          const pos = posLabel(e.localPosition.x, e.localPosition.y, e.localPosition.z, shelf);
-          return `
-          <tr>
-            <td><span class="sku-badge">${e.item.sku}</span></td>
-            <td>${e.item.name || "—"}</td>
-            <td class="catalog-cell">${e.item.category || "Sin categoria"}<br><small>${e.item.brand || "Sin marca"}</small></td>
-            <td class="dim-cell">${fmt(e.item.width)} × ${fmt(e.item.height)} × ${fmt(e.item.depth)}</td>
-            <td><span class="vol-chip">${fmt(vol)} m³</span></td>
-            <td class="pos-cell">${pos}</td>
-          </tr>`;
-        }).join("");
+	    const rows = products.length === 0
+	      ? `<tr><td colspan="6" class="empty-row">Sin productos registrados en este estante.</td></tr>`
+	      : products.map((e) => {
+	          const vol = e.item.width * e.item.height * e.item.depth;
+	          const pos = posLabel(e.localPosition.x, e.localPosition.y, e.localPosition.z, shelf);
+          const category = e.item.category || "Sin categoria";
+          const brand = e.item.brand || "Sin marca";
+          const moved = movedSkus.has(e.item.sku);
+          const hasImage = Boolean(e.item.imageUrl);
+          const lastActivity = lastActivityBySku.get(e.item.sku) ?? "";
+	          return `
+	          <tr data-report-product-row data-shelf="${esc(e.shelfId)}" data-category="${esc(category)}" data-brand="${esc(brand)}" data-moved="${moved ? "true" : "false"}" data-has-image="${hasImage ? "true" : "false"}" data-last-activity="${esc(lastActivity)}">
+	            <td><span class="sku-badge">${esc(e.item.sku)}</span></td>
+	            <td>${esc(e.item.name || "—")}</td>
+	            <td class="catalog-cell">${esc(category)}<br><small>${esc(brand)}</small></td>
+	            <td class="dim-cell">${fmt(e.item.width)} × ${fmt(e.item.height)} × ${fmt(e.item.depth)}</td>
+	            <td><span class="vol-chip">${fmt(vol)} m³</span></td>
+	            <td class="pos-cell">${esc(pos)}${moved ? `<br><small class="moved-chip">Movido</small>` : ""}${!hasImage ? `<br><small class="missing-chip">Sin imagen</small>` : ""}</td>
+	          </tr>`;
+	        }).join("");
 
     return `
-    <div class="shelf-card" id="shelf-${shelf.id}">
+	    <div class="shelf-card" id="shelf-${esc(shelf.id)}" data-report-shelf-card data-shelf="${esc(shelf.id)}" data-occupancy="${occupancy.toFixed(2)}">
       <div class="shelf-card-head">
         <div class="shelf-id-badge">${shelf.id}</div>
         <div class="shelf-info">
@@ -360,10 +383,19 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 .chart-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.2rem 1.4rem}
 .chart-title{font-size:.65rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:1rem}
 /* ─── Tabs ─── */
-.tabs{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.8rem}
-.tab-btn{background:var(--surface);border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:.72rem;padding:.35rem .9rem;cursor:pointer}
-.tab-btn:hover{background:var(--surface2);color:var(--accent);border-color:var(--accent)}
-/* ─── Shelf cards ─── */
+	.tabs{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1.8rem}
+	.tab-btn{background:var(--surface);border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:.72rem;padding:.35rem .9rem;cursor:pointer}
+	.tab-btn:hover{background:var(--surface2);color:var(--accent);border-color:var(--accent)}
+	.report-filters{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem;margin:1.5rem 0;padding:1rem;background:rgba(17,22,32,.96);border:1px solid var(--border);border-radius:14px;backdrop-filter:blur(14px)}
+	.report-filters label{display:grid;gap:.35rem;color:var(--muted);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+	.report-filters select,.report-filters input{min-height:36px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);padding:.4rem .55rem;font:inherit;font-size:.78rem}
+	.filter-check{display:flex!important;align-items:center;gap:.5rem;text-transform:none;letter-spacing:0;font-size:.78rem}
+	.filter-check input{min-height:auto}
+	.filter-actions{display:flex;align-items:end;gap:.5rem}
+	.filter-actions button{min-height:36px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);padding:0 .8rem;font-weight:700;cursor:pointer}
+	.filter-summary{grid-column:1/-1;color:var(--muted);font-size:.78rem}
+	@media(max-width:760px){body{padding:1rem}.report-filters{position:static;grid-template-columns:1fr}.product-table{display:block;overflow-x:auto}.shelf-card{padding:1rem}.shelf-card-head{display:grid}.occupancy-ring{width:52px;height:52px}}
+	/* ─── Shelf cards ─── */
 .shelf-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:1.5rem 1.8rem;margin-bottom:1.4rem;scroll-margin-top:1rem}
 .shelf-card-head{display:flex;align-items:flex-start;gap:1rem;margin-bottom:1rem}
 .shelf-id-badge{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--accent);font-size:.7rem;font-weight:700;padding:.3rem .55rem;flex-shrink:0;margin-top:.3rem}
@@ -402,7 +434,10 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 .product-table tr:last-child td{border-bottom:none}
 .product-table tr:hover td{background:var(--surface2)}
 .sku-badge{background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--accent);font-size:.7rem;padding:.15rem .45rem}
-.vol-chip{background:rgba(24,199,255,.1);color:var(--accent);border-radius:4px;font-size:.72rem;padding:.1rem .4rem}
+	.vol-chip{background:rgba(24,199,255,.1);color:var(--accent);border-radius:4px;font-size:.72rem;padding:.1rem .4rem}
+	.moved-chip,.missing-chip{display:inline-block;margin-top:.2rem;border-radius:999px;padding:.1rem .4rem;font-size:.66rem;font-weight:800}
+	.moved-chip{background:rgba(24,199,255,.12);color:var(--accent)}
+	.missing-chip{background:rgba(255,212,92,.12);color:var(--warn)}
 .dim-cell{color:var(--muted);font-size:.74rem}
 .catalog-cell{color:var(--text);font-size:.74rem}
 .catalog-cell small{color:var(--muted);font-size:.68rem}
@@ -536,8 +571,36 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 	</div>
 </div>
 
-<!-- Detalle por estante -->
-<div class="tabs">${shelfTabs}</div>
+	<!-- Detalle por estante -->
+	<section class="report-filters" aria-label="Filtros del reporte">
+	  <label>Categoria
+	    <select id="filter-category"><option value="">Todas</option>${categoryOptions}</select>
+	  </label>
+	  <label>Marca
+	    <select id="filter-brand"><option value="">Todas</option>${brandOptions}</select>
+	  </label>
+	  <label>Estante
+	    <select id="filter-shelf"><option value="">Todos</option>${shelfOptions}</select>
+	  </label>
+	  <label>Actividad desde
+	    <input id="filter-date" type="date" />
+	  </label>
+	  <label>Capacidad usada
+	    <select id="filter-capacity">
+	      <option value="">Todos</option>
+	      <option value="low">0% - 35%</option>
+	      <option value="mid">36% - 70%</option>
+	      <option value="high">Más de 70%</option>
+	    </select>
+	  </label>
+	  <label class="filter-check"><input id="filter-moved" type="checkbox" /> Solo productos movidos</label>
+	  <label class="filter-check"><input id="filter-no-image" type="checkbox" /> Solo productos sin imagen</label>
+	  <div class="filter-actions">
+	    <button type="button" id="clear-report-filters">Limpiar</button>
+	  </div>
+	  <p class="filter-summary" id="filter-summary">${totalProducts} productos visibles · ${productsWithoutImage.length} sin imagen · ${movedSkus.size} movidos</p>
+	</section>
+	<div class="tabs">${shelfTabs}</div>
 ${shelfCards}
 
 	<!-- Botón imprimir -->
@@ -549,9 +612,67 @@ ${shelfCards}
 	  </div>
 	</div>
 	
-	<script>
-	const productsCsv = ${JSON.stringify(productsCsv)};
-	function downloadProductsCsv() {
+		<script>
+		const productsCsv = ${JSON.stringify(productsCsv)};
+		const filters = {
+		  category: document.getElementById("filter-category"),
+		  brand: document.getElementById("filter-brand"),
+		  shelf: document.getElementById("filter-shelf"),
+		  date: document.getElementById("filter-date"),
+		  capacity: document.getElementById("filter-capacity"),
+		  moved: document.getElementById("filter-moved"),
+		  noImage: document.getElementById("filter-no-image"),
+		  summary: document.getElementById("filter-summary")
+		};
+		function matchesCapacity(card) {
+		  const value = filters.capacity.value;
+		  const pct = Number(card.dataset.occupancy || 0);
+		  if (!value) return true;
+		  if (value === "low") return pct <= 35;
+		  if (value === "mid") return pct > 35 && pct <= 70;
+		  return pct > 70;
+		}
+		function applyReportFilters() {
+		  let visibleProducts = 0;
+		  document.querySelectorAll("[data-report-shelf-card]").forEach((card) => {
+		    let visibleInShelf = 0;
+		    const shelfOk = !filters.shelf.value || card.dataset.shelf === filters.shelf.value;
+		    const capacityOk = matchesCapacity(card);
+		    card.querySelectorAll("[data-report-product-row]").forEach((row) => {
+		      const dateOk = !filters.date.value || (row.dataset.lastActivity && row.dataset.lastActivity.slice(0, 10) >= filters.date.value);
+		      const ok = shelfOk
+		        && capacityOk
+		        && (!filters.category.value || row.dataset.category === filters.category.value)
+		        && (!filters.brand.value || row.dataset.brand === filters.brand.value)
+		        && (!filters.moved.checked || row.dataset.moved === "true")
+		        && (!filters.noImage.checked || row.dataset.hasImage === "false")
+		        && dateOk;
+		      row.hidden = !ok;
+		      if (ok) {
+		        visibleProducts += 1;
+		        visibleInShelf += 1;
+		      }
+		    });
+		    card.hidden = !shelfOk || !capacityOk || visibleInShelf === 0;
+		  });
+		  filters.summary.textContent = visibleProducts === 0
+		    ? "Sin resultados con los filtros actuales."
+		    : visibleProducts + " producto" + (visibleProducts === 1 ? "" : "s") + " visible" + (visibleProducts === 1 ? "" : "s");
+		}
+		Object.values(filters).forEach((control) => {
+		  if (control && control.id !== "filter-summary") control.addEventListener("input", applyReportFilters);
+		});
+		document.getElementById("clear-report-filters")?.addEventListener("click", () => {
+		  filters.category.value = "";
+		  filters.brand.value = "";
+		  filters.shelf.value = "";
+		  filters.date.value = "";
+		  filters.capacity.value = "";
+		  filters.moved.checked = false;
+		  filters.noImage.checked = false;
+		  applyReportFilters();
+		});
+		function downloadProductsCsv() {
 	  const blob = new Blob([productsCsv], { type: "text/csv;charset=utf-8" });
 	  const url = URL.createObjectURL(blob);
 	  const link = document.createElement("a");

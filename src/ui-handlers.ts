@@ -3,6 +3,7 @@ import type { Shelf } from "./types.js";
 import { UI_COPY } from "./ui-copy.js";
 
 const statusAutoCloseTimers = new WeakMap<HTMLParagraphElement, number>();
+export type StatusKind = "success" | "error" | "warning" | "info" | "empty" | "loading";
 
 export function wireHudInteractions(container: HTMLElement): void {
   const appShell = container.querySelector<HTMLElement>(".app-shell");
@@ -13,8 +14,9 @@ export function wireHudInteractions(container: HTMLElement): void {
   const productPanel = container.querySelector<HTMLElement>("#product-card");
   const productEditor = container.querySelector<HTMLElement>("#product-editor");
   const searchPanel = container.querySelector<HTMLElement>("#search-card");
-  const selectedProductPanel = container.querySelector<HTMLElement>("#selected-product-panel");
-  const authPanel = container.querySelector<HTMLElement>("#auth-panel");
+	  const selectedProductPanel = container.querySelector<HTMLElement>("#selected-product-panel");
+	  const authPanel = container.querySelector<HTMLElement>("#auth-panel");
+	  const userAdminPanel = container.querySelector<HTMLElement>("#user-admin-panel");
   const globalSearchInput = container.querySelector<HTMLInputElement>(".global-search input");
   const globalClearSearchBtn = container.querySelector<HTMLButtonElement>("#global-clear-search-btn");
   const searchForm = container.querySelector<HTMLFormElement>("#search-form");
@@ -263,12 +265,13 @@ export function wireHudInteractions(container: HTMLElement): void {
 	    const adminToggle = target.closest<HTMLButtonElement>("#admin-card-btn");
 	    if (adminToggle && authPanel) {
 	      event.preventDefault();
-	      if (appShell?.dataset.authRequired === "true") {
-	        authPanel.hidden = false;
-        authPanel.setAttribute("aria-hidden", "false");
-	        return;
-	      }
-	      authPanel.hidden = !authPanel.hidden;
+		      if (appShell?.dataset.authRequired === "true") {
+		        authPanel.hidden = false;
+	        authPanel.setAttribute("aria-hidden", "false");
+		        return;
+		      }
+	      if (userAdminPanel) userAdminPanel.hidden = true;
+		      authPanel.hidden = !authPanel.hidden;
       authPanel.setAttribute("aria-hidden", authPanel.hidden ? "true" : "false");
 	      return;
 	    }
@@ -361,7 +364,7 @@ export function populateShelves(
 export function setStatus(
   element: HTMLParagraphElement,
   message: string,
-  isError: boolean
+  state: boolean | StatusKind
 ): void {
   delete element.dataset.notice;
   const activeTimer = statusAutoCloseTimers.get(element);
@@ -401,8 +404,9 @@ export function setStatus(
   });
   element.append(closeButton);
 
-  element.dataset.state = isError ? "error" : "success";
-  if (!isError) {
+  const nextState = typeof state === "boolean" ? (state ? "error" : "success") : state;
+  element.dataset.state = nextState;
+  if (nextState !== "error" && nextState !== "warning" && nextState !== "loading") {
     statusAutoCloseTimers.set(
       element,
       window.setTimeout(() => closeButton.click(), 5200)

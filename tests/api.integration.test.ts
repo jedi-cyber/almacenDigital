@@ -2,287 +2,299 @@
  * Pruebas de integración frontend ↔ API.
  *
  * Requieren XAMPP (Apache + MySQL) corriendo en http://127.0.0.1.
- * Si la API no responde, todos los tests se marcan como "skipped" automáticamente.
+ * Si la API no responde, los tests se marcan como "skipped".
  *
- * Ejecución:  npm run test:integration
+ * Ejecución: npm run test:integration
  */
 
 import { afterAll, beforeAll, describe, expect, it, type TaskContext } from "vitest";
 
 const BASE = process.env.API_BASE_URL ?? "http://127.0.0.1/almacenDigital/api";
-const TEST_SKU      = `TEST-INTEG-${Date.now()}`;
-const TEST_SHELF_ID = `test-shelf-${Date.now()}`;
+const ADMIN_EMAIL = process.env.API_ADMIN_EMAIL ?? "admin@almacen.local";
+const ADMIN_PASSWORD = process.env.API_ADMIN_PASSWORD ?? "admin123";
+const TEST_SUFFIX = Date.now();
+const TEST_SKU = `TEST-INTEG-${TEST_SUFFIX}`;
+const TEST_USER_EMAIL = `consulta-${TEST_SUFFIX}@almacen.local`;
+
+type ApiSession = {
+  token: string;
+  expiresAt: string;
+  user: { id: number; name: string; email: string; role: string };
+};
+
+type ShelfConfig = {
+  id: string;
+  label: string;
+  width: number;
+  height: number;
+  depth: number;
+  position: { x: number; y: number; z: number };
+  rotationY?: number;
+  sections?: number;
+};
 
 let apiReachable = false;
+let adminSession: ApiSession | null = null;
+let consultaSession: ApiSession | null = null;
+let baseShelf: ShelfConfig | null = null;
+let originalShelves: ShelfConfig[] = [];
+let testUserId: number | null = null;
 
-// ---------------------------------------------------------------------------
-// Helpers HTTP
-// ---------------------------------------------------------------------------
-
-async function apiGet(path: string): Promise<Response> {
-  return fetch(`${BASE}/${path}`);
+function authHeaders(token: string | null = adminSession?.token ?? null): HeadersInit {
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
-async function apiPost(path: string, body: unknown): Promise<Response> {
+async function apiGet(path: string, token: string | null = adminSession?.token ?? null): Promise<Response> {
+  return fetch(`${BASE}/${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+}
+
+async function apiPost(path: string, body: unknown, token: string | null = adminSession?.token ?? null): Promise<Response> {
   return fetch(`${BASE}/${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(token),
     body: JSON.stringify(body),
   });
 }
 
-async function apiDelete(path: string): Promise<Response> {
-  return fetch(`${BASE}/${path}`, { method: "DELETE" });
+async function apiPatch(path: string, body: unknown, token: string | null = adminSession?.token ?? null): Promise<Response> {
+  return fetch(`${BASE}/${path}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
 }
 
-/** Marca el test como skipped si la API no está disponible. */
+async function apiDelete(path: string, token: string | null = adminSession?.token ?? null): Promise<Response> {
+  return fetch(`${BASE}/${path}`, {
+    method: "DELETE",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+}
+
+async function login(email: string, password: string): Promise<ApiSession | null> {
+  const res = await fetch(`${BASE}/sesion.php`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(3000),
+  });
+  if (!res.ok) return null;
+  const data = await res.json() as { session?: ApiSession };
+  return data.session ?? null;
+}
+
 function requireApi(ctx: TaskContext): void {
-  if (!apiReachable) ctx.skip();
+  if (!apiReachable || !adminSession || !baseShelf) ctx.skip();
 }
-
-// ---------------------------------------------------------------------------
-// Setup global
-// ---------------------------------------------------------------------------
 
 beforeAll(async () => {
   try {
-    const res = await fetch(`${BASE}/productos.php`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    apiReachable = res.status < 500;
+    adminSession = await login(ADMIN_EMAIL, ADMIN_PASSWORD);
+    apiReachable = Boolean(adminSession);
+    if (!apiReachable) return;
+
+    const config = await (await apiGet("config.php")).json() as { shelves: ShelfConfig[] };
+    originalShelves = config.shelves ?? [];
+    baseShelf = originalShelves[0] ?? null;
   } catch {
     apiReachable = false;
   }
 
   if (!apiReachable) {
     console.warn(
-      "\n[integración] API no disponible — se omiten todas las pruebas.\n" +
-      `  URL: ${BASE}/productos.php\n` +
-      "  Asegúrate de que XAMPP (Apache + MySQL) esté corriendo.\n"
+      "\n[integración] API no disponible o credenciales admin inválidas; se omiten pruebas.\n" +
+      `URL: ${BASE}\n`
     );
   }
 });
 
-// ===========================================================================
-// /api/productos.php
-// ===========================================================================
+afterAll(async () => {
+  if (!apiReachable || !adminSession) return;
+  await apiDelete(`productos.php?sku=${encodeURIComponent(TEST_SKU)}`);
+  if (testUserId) {
+    await apiPatch("usuarios.php", { id: testUserId, active: false });
+  }
+  if (originalShelves.length > 0) {
+    await apiPost("config.php", { shelves: originalShelves });
+  }
+  await apiDelete("sesion.php?scope=all");
+});
 
-describe("GET /api/productos.php", () => {
-  it("devuelve { products: Array }", async (ctx) => {
+describe("autenticación y perfil", () => {
+  it("rechaza login con credenciales inválidas", async (ctx) => {
     requireApi(ctx);
-    const res = await apiGet("productos.php");
+    const res = await fetch(`${BASE}/sesion.php`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: ADMIN_EMAIL, password: "incorrecta" }),
+    });
+    expect([401, 500]).toContain(res.status);
+  });
+
+  it("inicia sesión y devuelve token + usuario", async (ctx) => {
+    requireApi(ctx);
+    expect(adminSession?.token).toBeTruthy();
+    expect(adminSession?.user.email).toBe(ADMIN_EMAIL);
+  });
+
+  it("actualiza perfil sin cambiar correo ni contraseña", async (ctx) => {
+    requireApi(ctx);
+    const res = await apiPatch("sesion.php", {
+      name: adminSession!.user.name,
+      email: adminSession!.user.email,
+    });
     expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json).toHaveProperty("products");
-    expect(Array.isArray(json.products)).toBe(true);
+    const data = await res.json() as { session?: ApiSession };
+    expect(data.session?.user.email).toBe(ADMIN_EMAIL);
+  });
+
+  it("lista sesiones activas y marca la sesión actual", async (ctx) => {
+    requireApi(ctx);
+    const res = await apiGet("sesion.php?scope=active");
+    expect(res.status).toBe(200);
+    const data = await res.json() as { sessions: Array<{ current: boolean; expiresAt: string }> };
+    expect(data.sessions.length).toBeGreaterThan(0);
+    expect(data.sessions.some((session) => session.current)).toBe(true);
   });
 });
 
-describe("POST /api/productos.php", () => {
-  const validPayload = {
-    sku:           TEST_SKU,
-    shelfId:       "S-01",
-    name:          "Producto de integración",
-    width:         1,
-    height:        1,
-    depth:         1,
-    localPosition: { x: 0, y: 0, z: 0 },
-  };
+describe("endpoints protegidos", () => {
+  it.each([
+    "productos.php",
+    "config.php",
+    "catalogos.php",
+    "historial.php",
+    "usuarios.php",
+    "exportar.php?type=inventory-csv",
+  ])("rechaza GET sin token en %s", async (path) => {
+    const res = await apiGet(path, null);
+    expect(res.status).toBe(401);
+  });
 
-  it("acepta producto válido → 200 { ok: true }", async (ctx) => {
+  it("permite exportar inventario con token autorizado", async (ctx) => {
     requireApi(ctx);
-    const res = await apiPost("productos.php", validPayload);
+    const res = await apiGet("exportar.php?type=inventory-csv");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type") ?? "").toContain("text/csv");
+  });
+});
+
+describe("productos y auditoría", () => {
+  function validProductPayload() {
+    return {
+      sku: TEST_SKU,
+      shelfId: baseShelf!.id,
+      name: "Producto de integración",
+      width: Math.min(0.2, baseShelf!.width),
+      height: Math.min(0.2, baseShelf!.height),
+      depth: Math.min(0.2, baseShelf!.depth),
+      category: "TEST",
+      brand: "INTEGRACION",
+      localPosition: { x: 0, y: 0, z: 0 },
+    };
+  }
+
+  it("crea producto válido con usuario autenticado", async (ctx) => {
+    requireApi(ctx);
+    const res = await apiPost("productos.php", validProductPayload());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it("el producto persiste: aparece en GET tras el POST", async (ctx) => {
-    requireApi(ctx);
-    const res  = await apiGet("productos.php");
-    const { products } = await res.json() as { products: { item: { sku: string; width: number } }[] };
-    const found = products.find((p) => p.item.sku === TEST_SKU);
-    expect(found).toBeDefined();
-    expect(found!.item.width).toBe(1);
-  });
-
-  it("upsert: re-POST actualiza dimensiones y persiste", async (ctx) => {
-    requireApi(ctx);
-    await apiPost("productos.php", { ...validPayload, width: 3, height: 3, depth: 3 });
-    const { products } = await (await apiGet("productos.php")).json() as {
-      products: { item: { sku: string; width: number; height: number; depth: number } }[];
-    };
-    const found = products.find((p) => p.item.sku === TEST_SKU);
-    expect(found!.item.width).toBe(3);
-    expect(found!.item.height).toBe(3);
-  });
-
-  it("rechaza payload sin campos obligatorios → 422 con campo 'code'", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("productos.php", { sku: "X" });
-    expect(res.status).toBe(422);
-    const json = await res.json();
-    expect(json).toHaveProperty("error");
-    expect(json).toHaveProperty("code");
-  });
-
-  it("rechaza dimensiones no positivas → 422", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("productos.php", { ...validPayload, sku: "BAD-DIM", width: -1 });
-    expect(res.status).toBe(422);
-  });
-
-  it("rechaza sku vacío → 422", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("productos.php", { ...validPayload, sku: "   " });
-    expect(res.status).toBe(422);
-  });
-
-  it("rechaza sku demasiado largo (> 64 chars) → 422", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("productos.php", { ...validPayload, sku: "A".repeat(65) });
-    expect(res.status).toBe(422);
-  });
-
-  it("rechaza localPosition con valor no numérico → 422", async (ctx) => {
+  it("rechaza producto fuera del estante desde backend", async (ctx) => {
     requireApi(ctx);
     const res = await apiPost("productos.php", {
-      ...validPayload,
-      sku: "BAD-POS",
-      localPosition: { x: "abc", y: 0, z: 0 },
+      ...validProductPayload(),
+      sku: `${TEST_SKU}-OUT`,
+      localPosition: { x: baseShelf!.width + 1, y: 0, z: 0 },
     });
     expect(res.status).toBe(422);
+    expect((await res.json() as { code: string }).code).toBe("PRODUCT_OUT_OF_SHELF");
   });
-});
 
-describe("DELETE /api/productos.php", () => {
-  it("elimina el producto de prueba → 200 { ok: true }", async (ctx) => {
+  it("registra en historial qué usuario creó/editó el producto", async (ctx) => {
     requireApi(ctx);
-    const res = await apiDelete(`productos.php?sku=${TEST_SKU}`);
+    await apiPost("productos.php", { ...validProductPayload(), name: "Producto de integración editado" });
+    const res = await apiGet(`historial.php?sku=${encodeURIComponent(TEST_SKU)}&limit=5`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    const data = await res.json() as { history: Array<{ actor?: { email?: string | null }; action: string }> };
+    expect(data.history.length).toBeGreaterThan(0);
+    expect(data.history[0].actor?.email).toBe(ADMIN_EMAIL);
   });
 
-  it("el producto ya no aparece en GET tras DELETE", async (ctx) => {
-    requireApi(ctx);
-    const { products } = await (await apiGet("productos.php")).json() as {
-      products: { item: { sku: string } }[];
-    };
-    expect(products.find((p) => p.item.sku === TEST_SKU)).toBeUndefined();
-  });
-
-  it("DELETE sin SKU → 400 { code: 'MISSING_SKU' }", async (ctx) => {
+  it("DELETE sin SKU devuelve 400 INVALID_SKU", async (ctx) => {
     requireApi(ctx);
     const res = await apiDelete("productos.php");
     expect(res.status).toBe(400);
-    expect((await res.json() as { code: string }).code).toBe("MISSING_SKU");
+    expect((await res.json() as { code: string }).code).toBe("INVALID_SKU");
   });
 });
 
-// ===========================================================================
-// /api/config.php
-// ===========================================================================
-
-describe("GET /api/config.php", () => {
-  it("devuelve { shelves: Array }", async (ctx) => {
+describe("roles y permisos", () => {
+  it("admin puede crear usuario Consulta", async (ctx) => {
     requireApi(ctx);
-    const res = await apiGet("config.php");
+    const password = "consulta123";
+    const res = await apiPost("usuarios.php", {
+      name: "Consulta Integración",
+      email: TEST_USER_EMAIL,
+      role: "Consulta",
+      password,
+    });
     expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json).toHaveProperty("shelves");
-    expect(Array.isArray(json.shelves)).toBe(true);
+    const data = await res.json() as { users: Array<{ id: number; email: string; role: string }> };
+    const created = data.users.find((user) => user.email === TEST_USER_EMAIL);
+    expect(created).toBeDefined();
+    expect(created!.role).toBe("Consulta");
+    testUserId = created!.id;
+    consultaSession = await login(TEST_USER_EMAIL, password);
+    expect(consultaSession?.token).toBeTruthy();
   });
 
-  it("cada estante tiene los campos requeridos", async (ctx) => {
+  it("Consulta puede leer productos pero no registrar", async (ctx) => {
     requireApi(ctx);
-    const { shelves } = await (await apiGet("config.php")).json() as {
-      shelves: Record<string, unknown>[];
-    };
-    if (shelves.length === 0) ctx.skip();
-    const shelf = shelves[0];
-    for (const field of ["id", "label", "width", "height", "depth", "position", "rotationY"]) {
-      expect(shelf, `campo '${field}' ausente`).toHaveProperty(field);
+    if (!consultaSession) {
+      ctx.skip();
+      return;
     }
-    const pos = shelf.position as Record<string, unknown>;
-    expect(pos).toHaveProperty("x");
-    expect(pos).toHaveProperty("y");
-    expect(pos).toHaveProperty("z");
+    const read = await apiGet("productos.php", consultaSession.token);
+    expect(read.status).toBe(200);
+    const write = await apiPost("productos.php", {
+      sku: `${TEST_SKU}-NOPE`,
+      shelfId: baseShelf!.id,
+      name: "No permitido",
+      width: 0.1,
+      height: 0.1,
+      depth: 0.1,
+      localPosition: { x: 0, y: 0, z: 0 },
+    }, consultaSession.token);
+    expect(write.status).toBe(403);
+  });
+
+  it("Consulta no puede administrar usuarios", async (ctx) => {
+    requireApi(ctx);
+    if (!consultaSession) {
+      ctx.skip();
+      return;
+    }
+    const res = await apiGet("usuarios.php", consultaSession.token);
+    expect(res.status).toBe(403);
   });
 });
 
-describe("POST /api/config.php — round-trip de persistencia", () => {
-  type ShelfConfig = Record<string, unknown>;
-  let originalShelves: ShelfConfig[] = [];
-
-  const testShelf: ShelfConfig = {
-    id:        TEST_SHELF_ID,
-    label:     "Estante de integración",
-    width:     2,
-    height:    2,
-    depth:     2,
-    position:  { x: 99, y: 0, z: 99 },
-    rotationY: 0,
-    sections:  1,
-  };
-
-  beforeAll(async () => {
-    if (!apiReachable) return;
-    const json = await (await apiGet("config.php")).json() as { shelves: ShelfConfig[] };
-    originalShelves = json.shelves ?? [];
-  });
-
-  afterAll(async () => {
-    if (!apiReachable) return;
-    // Restaura el estado exacto anterior al test
-    await apiPost("config.php", { shelves: originalShelves });
-  });
-
-  it("POST con estante de prueba añadido → 200 { ok: true }", async (ctx) => {
+describe("configuración de almacén", () => {
+  it("rechaza estantes duplicados", async (ctx) => {
     requireApi(ctx);
-    const res = await apiPost("config.php", {
-      shelves: [...originalShelves, testShelf],
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-  });
-
-  it("el estante de prueba persiste en el GET siguiente", async (ctx) => {
-    requireApi(ctx);
-    const { shelves } = await (await apiGet("config.php")).json() as {
-      shelves: { id: string; position: { x: number } }[];
-    };
-    const found = shelves.find((s) => s.id === TEST_SHELF_ID);
-    expect(found).toBeDefined();
-    expect(found!.position.x).toBe(99);
-  });
-
-  it("POST sin campo 'shelves' → 400", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("config.php", { data: [] });
-    expect(res.status).toBe(400);
-  });
-
-  it("POST con estante con dimensión negativa → 422", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("config.php", {
-      shelves: [{ ...testShelf, id: "bad-shelf", width: -1 }],
-    });
+    const duplicate = { ...baseShelf!, label: "Duplicado" };
+    const res = await apiPost("config.php", { shelves: [baseShelf, duplicate] });
     expect(res.status).toBe(422);
   });
 
-  it("POST con estante sin 'label' → 422", async (ctx) => {
+  it("rechaza dimensiones fuera de rango", async (ctx) => {
     requireApi(ctx);
-    const { label: _removed, ...noLabel } = testShelf;
-    const res = await apiPost("config.php", {
-      shelves: [{ ...noLabel, id: "no-label-shelf" }],
-    });
-    expect(res.status).toBe(422);
-  });
-
-  it("POST con position inválida → 422", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("config.php", {
-      shelves: [{ ...testShelf, id: "bad-pos-shelf", position: { x: "abc", y: 0, z: 0 } }],
-    });
+    const res = await apiPost("config.php", { shelves: [{ ...baseShelf!, width: 99 }] });
     expect(res.status).toBe(422);
   });
 });

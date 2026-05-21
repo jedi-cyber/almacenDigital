@@ -15,7 +15,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
-    require_api_session($pdo);
+    $session = require_api_session($pdo);
 } catch (PDOException $e) {
     api_log_error($e, "db_connect");
     http_response_code(500);
@@ -80,34 +80,42 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
     ]);
 
 } elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
+    require_api_permission($session, "shelf:write");
     $body = json_decode(file_get_contents("php://input"), true);
 
-    if (!isset($body["shelves"]) || !is_array($body["shelves"])) {
-        http_response_code(400);
-        echo json_encode(["error" => "Formato invalido"]);
-        exit;
-    }
+	if (!isset($body["shelves"]) || !is_array($body["shelves"])) {
+	    http_response_code(400);
+	    echo json_encode(["error" => "Formato invalido"]);
+	    exit;
+	}
+	if (count($body["shelves"]) < 1 || count($body["shelves"]) > 60) {
+	    api_fail(422, "La configuracion debe tener entre 1 y 60 estantes.", "INVALID_SHELF_COUNT");
+	}
 
-    // Validar cada estante antes de tocar la BD
-    foreach ($body["shelves"] as $i => $shelf) {
-        $errs = [];
-        if (valid_string($shelf["id"] ?? null) === null)       $errs[] = "id";
-        if (valid_string($shelf["label"] ?? null) === null)    $errs[] = "label";
-        if (valid_positive_float($shelf["width"]  ?? null) === null) $errs[] = "width";
-        if (valid_positive_float($shelf["height"] ?? null) === null) $errs[] = "height";
-        if (valid_positive_float($shelf["depth"]  ?? null) === null) $errs[] = "depth";
-        if (!isset($shelf["position"]["x"], $shelf["position"]["y"], $shelf["position"]["z"])
-            || !is_numeric($shelf["position"]["x"])
-            || !is_numeric($shelf["position"]["y"])
-            || !is_numeric($shelf["position"]["z"])) {
-            $errs[] = "position";
-        }
-        if (!empty($errs)) {
-            http_response_code(422);
-            echo json_encode(["error" => "Estante [{$i}] tiene campos invalidos: " . implode(", ", $errs)]);
-            exit;
-        }
-    }
+	// Validar cada estante antes de tocar la BD
+	$seenShelfIds = [];
+	foreach ($body["shelves"] as $i => $shelf) {
+	    $errs = [];
+	    $shelfId = valid_shelf_id($shelf["id"] ?? null);
+	    if ($shelfId === null)       $errs[] = "id";
+	    if (valid_string($shelf["label"] ?? null) === null)    $errs[] = "label";
+	    if (valid_float_range($shelf["width"]  ?? null, 0.2, 20.0) === null) $errs[] = "width";
+	    if (valid_float_range($shelf["height"] ?? null, 0.2, 8.0) === null) $errs[] = "height";
+	    if (valid_float_range($shelf["depth"]  ?? null, 0.2, 10.0) === null) $errs[] = "depth";
+	    if ($shelfId !== null && isset($seenShelfIds[$shelfId])) $errs[] = "id duplicado";
+	    if ($shelfId !== null) $seenShelfIds[$shelfId] = true;
+	    if (isset($shelf["sections"]) && valid_float_range($shelf["sections"], 1, 20) === null) $errs[] = "sections";
+	    if (!isset($shelf["position"]["x"], $shelf["position"]["y"], $shelf["position"]["z"])
+	        || valid_float_range($shelf["position"]["x"], -50.0, 50.0) === null
+	        || valid_float_range($shelf["position"]["y"], 0.0, 20.0) === null
+	        || valid_float_range($shelf["position"]["z"], -50.0, 50.0) === null) {
+	        $errs[] = "position";
+	    }
+	    if (isset($shelf["rotationY"]) && valid_float_range($shelf["rotationY"], -6.2832, 6.2832) === null) $errs[] = "rotationY";
+	    if (!empty($errs)) {
+	        api_fail(422, "Estante [{$i}] tiene campos invalidos: " . implode(", ", $errs), "INVALID_SHELF");
+	    }
+	}
 
     $entrance = normalize_warehouse_entrance($body["entrance"] ?? null);
     $aisles = normalize_warehouse_aisles($body["aisles"] ?? []);

@@ -12,7 +12,7 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 try {
     $pdo = db_connect(true);
     db_ensure_schema($pdo);
-    require_api_session($pdo);
+    $session = require_api_session($pdo);
 } catch (PDOException $e) {
     api_log_error($e, "db_connect");
     http_response_code(500);
@@ -24,6 +24,7 @@ try {
 // ───────────────────────────── GET ─────────────────────────────
 //
 if ($_SERVER["REQUEST_METHOD"] === "GET") {
+    require_api_permission($session, "product:read");
     try {
         $rows = $pdo->query("
             SELECT
@@ -84,23 +85,32 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
 // ───────────────────────────── POST ─────────────────────────────
 //
 elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
+    require_api_permission($session, "product:write");
     $body = json_decode(file_get_contents("php://input"), true);
 
-    $sku     = valid_string($body["sku"]     ?? null, 64);
-    $shelfId = valid_string($body["shelfId"] ?? null, 64);
+    if (!is_array($body)) {
+        api_fail(400, "JSON invalido.", "INVALID_JSON");
+    }
+
+    $sku     = valid_product_sku($body["sku"] ?? null);
+    $shelfId = valid_shelf_id($body["shelfId"] ?? null);
     $name    = valid_string($body["name"]    ?? ($body["sku"] ?? null), 255) ?? $sku;
 
-    $width   = valid_positive_float($body["width"]  ?? null);
-    $height  = valid_positive_float($body["height"] ?? null);
-    $depth   = valid_positive_float($body["depth"]  ?? null);
+    $width   = valid_float_range($body["width"]  ?? null, 0.01, 3.0);
+    $height  = valid_float_range($body["height"] ?? null, 0.01, 3.0);
+    $depth   = valid_float_range($body["depth"]  ?? null, 0.01, 3.0);
 
-    $category = valid_string($body["category"] ?? "Sin categoria", 150) ?? "Sin categoria";
-    $brand = valid_string($body["brand"] ?? ($body["marca"] ?? "Sin marca"), 150) ?? "Sin marca";
+    $category = valid_catalog_name($body["category"] ?? null, "Sin categoria");
+    $brand = valid_catalog_name($body["brand"] ?? ($body["marca"] ?? null), "Sin marca");
     $imageUrl = valid_optional_url($body["imageUrl"] ?? ($body["image_url"] ?? null), 500);
+    if (($body["imageUrl"] ?? ($body["image_url"] ?? null)) !== null && $imageUrl === null) {
+        api_fail(422, "URL de imagen invalida.", "INVALID_IMAGE_URL");
+    }
 
-    $lx = isset($body["localPosition"]["x"]) && is_numeric($body["localPosition"]["x"]) ? (float)$body["localPosition"]["x"] : null;
-    $ly = isset($body["localPosition"]["y"]) && is_numeric($body["localPosition"]["y"]) ? (float)$body["localPosition"]["y"] : null;
-    $lz = isset($body["localPosition"]["z"]) && is_numeric($body["localPosition"]["z"]) ? (float)$body["localPosition"]["z"] : null;
+    $localPosition = is_array($body["localPosition"] ?? null) ? $body["localPosition"] : [];
+    $lx = valid_float_range($localPosition["x"] ?? null, -20.0, 20.0);
+    $ly = valid_float_range($localPosition["y"] ?? null, 0.0, 10.0);
+    $lz = valid_float_range($localPosition["z"] ?? null, -20.0, 20.0);
 
     $missing = array_keys(array_filter(
         compact("sku", "shelfId", "width", "height", "depth"),
@@ -111,12 +121,20 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
     if ($lz === null) $missing[] = "localPosition.z";
 
     if (!empty($missing)) {
-        http_response_code(422);
-        echo json_encode([
-            "error" => "Campos invalidos o faltantes: " . implode(", ", $missing),
-            "code" => "INVALID_FIELDS"
-        ]);
-        exit;
+        api_fail(422, "Campos invalidos o faltantes: " . implode(", ", $missing), "INVALID_FIELDS");
+    }
+
+    $shelfStmt = $pdo->prepare("SELECT width, height, depth FROM estantes WHERE id = :id LIMIT 1");
+    $shelfStmt->execute([":id" => $shelfId]);
+    $shelf = $shelfStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$shelf) {
+        api_fail(422, "El estante indicado no existe.", "INVALID_SHELF");
+    }
+    if ($width > (float)$shelf["width"] || $height > (float)$shelf["height"] || $depth > (float)$shelf["depth"]) {
+        api_fail(422, "El producto supera las medidas del estante.", "PRODUCT_TOO_LARGE");
+    }
+    if ($lx + $width > (float)$shelf["width"] + 0.0001 || $ly + $height > (float)$shelf["height"] + 0.0001 || $lz + $depth > (float)$shelf["depth"] + 0.0001) {
+        api_fail(422, "La posicion del producto queda fuera del estante.", "PRODUCT_OUT_OF_SHELF");
     }
 
     try {
@@ -208,7 +226,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
         ]);
 
         $action = getProductHistoryAction($previous, $shelfId, $name, $category, $brand, $width, $height, $depth, $lx, $ly, $lz);
-        insertProductHistory($pdo, $sku, $action, $previous, [
+        insertProductHistory($pdo, $session, $sku, $action, $previous, [
             "shelf_id" => $shelfId,
             "name" => $name,
             "category" => $category,
@@ -239,12 +257,11 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
 // ───────────────────────────── DELETE ─────────────────────────────
 //
 elseif ($_SERVER["REQUEST_METHOD"] === "DELETE") {
-    $sku = $_GET["sku"] ?? "";
+    require_api_permission($session, "product:delete");
+    $sku = valid_product_sku($_GET["sku"] ?? null);
 
-    if ($sku === "") {
-        http_response_code(400);
-        echo json_encode(["error" => "El parametro 'sku' es requerido.", "code" => "MISSING_SKU"]);
-        exit;
+    if ($sku === null) {
+        api_fail(400, "El parametro 'sku' es requerido o invalido.", "INVALID_SKU");
     }
 
     try {
@@ -280,7 +297,7 @@ elseif ($_SERVER["REQUEST_METHOD"] === "DELETE") {
         ");
         $stmt->execute([":sku" => $sku]);
         if ($previous) {
-            insertProductHistory($pdo, $sku, "eliminado", $previous, null);
+            insertProductHistory($pdo, $session, $sku, "eliminado", $previous, null);
         }
         $pdo->commit();
     } catch (Throwable $e) {
@@ -308,20 +325,28 @@ function getProductHistoryAction(?array $previous, string $shelfId, string $name
     return $moved ? "movido" : "editado";
 }
 
-function insertProductHistory(PDO $pdo, string $sku, string $action, ?array $previous, ?array $next): void
+function insertProductHistory(PDO $pdo, array $session, string $sku, string $action, ?array $previous, ?array $next): void
 {
     $summary = buildProductHistorySummary($sku, $action, $previous, $next);
+    $user = $session["user"] ?? [];
     $details = json_encode([
         "before" => $previous,
-        "after" => $next
+        "after" => $next,
+        "actor" => [
+            "id" => $user["id"] ?? null,
+            "name" => $user["name"] ?? null,
+            "email" => $user["email"] ?? null,
+            "role" => $user["role"] ?? null,
+        ],
     ], JSON_UNESCAPED_UNICODE);
 
     $stmt = $pdo->prepare("
         INSERT INTO producto_historial
         (producto_sku, accion, shelf_id_anterior, shelf_id_nuevo, local_x_anterior, local_y_anterior, local_z_anterior,
-         local_x_nuevo, local_y_nuevo, local_z_nuevo, resumen, detalles)
+         local_x_nuevo, local_y_nuevo, local_z_nuevo, resumen, detalles, usuario_id, usuario_nombre, usuario_email, usuario_rol)
         VALUES
-        (:sku, :accion, :shelf_old, :shelf_new, :x_old, :y_old, :z_old, :x_new, :y_new, :z_new, :resumen, :detalles)
+        (:sku, :accion, :shelf_old, :shelf_new, :x_old, :y_old, :z_old, :x_new, :y_new, :z_new, :resumen, :detalles,
+         :usuario_id, :usuario_nombre, :usuario_email, :usuario_rol)
     ");
     $stmt->execute([
         ":sku" => $sku,
@@ -335,7 +360,11 @@ function insertProductHistory(PDO $pdo, string $sku, string $action, ?array $pre
         ":y_new" => isset($next["local_y"]) ? (float)$next["local_y"] : null,
         ":z_new" => isset($next["local_z"]) ? (float)$next["local_z"] : null,
         ":resumen" => $summary,
-        ":detalles" => $details
+        ":detalles" => $details,
+        ":usuario_id" => isset($user["id"]) ? (int)$user["id"] : null,
+        ":usuario_nombre" => $user["name"] ?? null,
+        ":usuario_email" => $user["email"] ?? null,
+        ":usuario_rol" => $user["role"] ?? null
     ]);
 }
 
