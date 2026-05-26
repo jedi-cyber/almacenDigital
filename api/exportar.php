@@ -43,9 +43,10 @@ api_fail(422, "Tipo de exportacion no soportado.", "INVALID_EXPORT_TYPE");
 function inventory_rows(PDO $pdo): array
 {
     return $pdo->query(
-        "SELECT
-            p.sku,
-            p.name,
+	        "SELECT
+	            p.sku,
+	            p.numero_serie,
+	            p.name,
             p.shelf_id,
             COALESCE(cat.nombre, p.category, 'Sin categoria') AS category,
             COALESCE(m.nombre, 'Sin marca') AS brand,
@@ -70,11 +71,11 @@ function export_inventory_csv(PDO $pdo): void
     header("Content-Disposition: attachment; filename=\"{$filename}\"");
     $out = fopen("php://output", "w");
     fwrite($out, "\xEF\xBB\xBF");
-    fputcsv($out, ["SKU", "Producto", "Estante", "Categoria", "Marca", "X", "Y", "Z", "Ancho", "Alto", "Profundidad"]);
+	    fputcsv($out, ["Numero de serie", "Producto", "Estante", "Categoria", "Marca", "X", "Y", "Z", "Ancho", "Alto", "Profundidad"]);
     foreach (inventory_rows($pdo) as $row) {
-        fputcsv($out, [
-            $row["sku"],
-            $row["name"],
+	        fputcsv($out, [
+	            $row["numero_serie"],
+	            $row["name"],
             $row["shelf_id"],
             $row["category"],
             $row["brand"],
@@ -99,11 +100,11 @@ function export_inventory_printable_html(PDO $pdo): void
     echo "<style>body{font-family:Arial,sans-serif;margin:24px;color:#172033}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #cbd5e1;padding:6px;text-align:left}th{background:#e2e8f0}@media print{button{display:none}}</style>";
     echo "<button onclick=\"window.print()\">Guardar como PDF</button>";
     echo "<h1>Inventario del almacén</h1><p>Generado: " . htmlspecialchars(date("Y-m-d H:i:s"), ENT_QUOTES, "UTF-8") . "</p>";
-    echo "<table><thead><tr><th>SKU</th><th>Producto</th><th>Estante</th><th>Categoria</th><th>Marca</th><th>Posicion</th><th>Medidas</th></tr></thead><tbody>";
+	    echo "<table><thead><tr><th>Numero de serie</th><th>Producto</th><th>Estante</th><th>Categoria</th><th>Marca</th><th>Posicion</th><th>Medidas</th></tr></thead><tbody>";
     foreach ($rows as $row) {
-        echo "<tr>";
-        echo "<td>" . htmlspecialchars((string)$row["sku"], ENT_QUOTES, "UTF-8") . "</td>";
-        echo "<td>" . htmlspecialchars((string)$row["name"], ENT_QUOTES, "UTF-8") . "</td>";
+	        echo "<tr>";
+	        echo "<td>" . htmlspecialchars((string)($row["numero_serie"] ?? ""), ENT_QUOTES, "UTF-8") . "</td>";
+	        echo "<td>" . htmlspecialchars((string)$row["name"], ENT_QUOTES, "UTF-8") . "</td>";
         echo "<td>" . htmlspecialchars((string)$row["shelf_id"], ENT_QUOTES, "UTF-8") . "</td>";
         echo "<td>" . htmlspecialchars((string)$row["category"], ENT_QUOTES, "UTF-8") . "</td>";
         echo "<td>" . htmlspecialchars((string)$row["brand"], ENT_QUOTES, "UTF-8") . "</td>";

@@ -184,9 +184,10 @@ describe("endpoints protegidos", () => {
 
 describe("productos y auditoría", () => {
   function validProductPayload() {
-    return {
-      sku: TEST_SKU,
-      shelfId: baseShelf!.id,
+	    return {
+	      sku: TEST_SKU,
+	      serialNumber: "SERIE-INTEGRACION-001",
+	      shelfId: baseShelf!.id,
       name: "Producto de integración",
       width: Math.min(0.2, baseShelf!.width),
       height: Math.min(0.2, baseShelf!.height),
@@ -197,12 +198,62 @@ describe("productos y auditoría", () => {
     };
   }
 
-  it("crea producto válido con usuario autenticado", async (ctx) => {
-    requireApi(ctx);
-    const res = await apiPost("productos.php", validProductPayload());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-  });
+	  it("crea producto válido con usuario autenticado", async (ctx) => {
+	    requireApi(ctx);
+	    const res = await apiPost("productos.php", validProductPayload());
+	    expect(res.status).toBe(200);
+	    expect(await res.json()).toEqual({ ok: true });
+	  });
+
+	  it("devuelve el numero de serie del producto", async (ctx) => {
+	    requireApi(ctx);
+	    await apiPost("productos.php", validProductPayload());
+	    const res = await apiGet("productos.php");
+	    expect(res.status).toBe(200);
+	    const data = await res.json() as { products: Array<{ item: { sku: string; serialNumber?: string | null } }> };
+	    const product = data.products.find((entry) => entry.item.sku === TEST_SKU);
+	    expect(product?.item.serialNumber).toBe("SERIE-INTEGRACION-001");
+	  });
+
+	  it("permite crear producto sin exponer SKU si tiene numero de serie", async (ctx) => {
+	    requireApi(ctx);
+	    const serialNumber = `SERIE-SIN-SKU-${TEST_SUFFIX}`;
+	    const res = await apiPost("productos.php", {
+	      ...validProductPayload(),
+	      sku: undefined,
+	      serialNumber,
+	    });
+	    expect(res.status).toBe(200);
+	    const list = await apiGet("productos.php");
+	    const data = await list.json() as { products: Array<{ item: { sku: string; serialNumber?: string | null } }> };
+	    const product = data.products.find((entry) => entry.item.serialNumber === serialNumber);
+	    expect(product?.item.sku).toBeTruthy();
+	    if (product?.item.sku) {
+	      await apiDelete(`productos.php?sku=${encodeURIComponent(product.item.sku)}`);
+	    }
+	  });
+
+	  it("rechaza productos sin numero de serie", async (ctx) => {
+	    requireApi(ctx);
+	    const res = await apiPost("productos.php", {
+	      ...validProductPayload(),
+	      serialNumber: undefined,
+	    });
+	    expect(res.status).toBe(422);
+	    expect((await res.json() as { code: string }).code).toBe("SERIAL_NUMBER_REQUIRED");
+	  });
+
+	  it("rechaza numero de serie repetido en otro producto", async (ctx) => {
+	    requireApi(ctx);
+	    await apiPost("productos.php", validProductPayload());
+	    const res = await apiPost("productos.php", {
+	      ...validProductPayload(),
+	      sku: `${TEST_SKU}-SERIE-DUP`,
+	    });
+	    expect(res.status).toBe(409);
+	    expect((await res.json() as { code: string }).code).toBe("DUPLICATE_SERIAL_NUMBER");
+	    await apiDelete(`productos.php?sku=${encodeURIComponent(`${TEST_SKU}-SERIE-DUP`)}`);
+	  });
 
   it("rechaza producto fuera del estante desde backend", async (ctx) => {
     requireApi(ctx);

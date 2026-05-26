@@ -3003,7 +3003,7 @@ body {
     linear-gradient(180deg, #07111f 0%, #030812 100%);
 }
 
-.app-shell[data-auth-required="true"] .auth-panel {
+.app-shell[data-auth-required="true"] > #auth-panel {
   position: fixed;
   left: 50%;
   top: 50%;
@@ -3017,12 +3017,16 @@ body {
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.5);
 }
 
-.app-shell[data-auth-required="true"] .auth-panel::before {
+.app-shell[data-auth-required="true"] > #auth-panel::before {
   content: "Inicia sesión para continuar";
   display: block;
   color: #f4f7ff;
   font-size: 1.15rem;
   font-weight: 900;
+}
+
+.app-shell[data-auth-required="true"] > #user-admin-panel {
+  display: none !important;
 }
 
 .app-shell[data-auth-required="true"] .hud,

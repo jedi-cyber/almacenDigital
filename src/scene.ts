@@ -27,14 +27,21 @@ export const SHELF_PALETTE = ["#8b5e34", "#a56f3a", "#6d8a4f", "#46646f", "#ad84
  * Crea y configura la escena Three.js: fondo, fog, renderer con sombras, cámara y OrbitControls.
  */
 export function buildScene(canvas: HTMLCanvasElement): SceneObjects {
+  const isMobileRouteMode = document.documentElement.dataset.appMode === "mobile-route";
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#e9dcc9");
-  scene.fog = new THREE.Fog("#e9dcc9", 14, 26);
+  scene.fog = isMobileRouteMode ? null : new THREE.Fog("#e9dcc9", 14, 26);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: !isMobileRouteMode,
+    powerPreference: isMobileRouteMode ? "low-power" : "high-performance"
+  });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobileRouteMode ? 1 : 2));
+  renderer.shadowMap.enabled = !isMobileRouteMode;
+  if (!isMobileRouteMode) {
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  }
 
   const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
   camera.position.set(5.6, 1.65, 1.7);
@@ -58,13 +65,14 @@ export function buildScene(canvas: HTMLCanvasElement): SceneObjects {
  * Agrega iluminación ambiental, key light direccional con sombras y fill light a la escena.
  */
 export function addLights(scene: THREE.Scene): void {
+  const isMobileRouteMode = document.documentElement.dataset.appMode === "mobile-route";
   const ambientLight = new THREE.AmbientLight("#fff3d6", 0.9);
   scene.add(ambientLight);
 
   const keyLight = new THREE.DirectionalLight("#fff2c4", 1.7);
   keyLight.position.set(8, 10, 6);
-  keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.castShadow = !isMobileRouteMode;
+  keyLight.shadow.mapSize.set(isMobileRouteMode ? 512 : 2048, isMobileRouteMode ? 512 : 2048);
   keyLight.shadow.camera.left = -14;
   keyLight.shadow.camera.right = 14;
   keyLight.shadow.camera.top = 14;
@@ -992,15 +1000,23 @@ export function getOrCreateInstancedMesh(
 ): THREE.InstancedMesh {
   const key = makeProductGeoKey(width, height, depth);
   let mesh = instancedMeshByGeo.get(key);
-  if (!mesh) {
-    mesh = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(width, height, depth),
-      new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.14 }),
-      MAX_INSTANCES_PER_GEO
-    );
-    mesh.count = 0;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
+	  if (!mesh) {
+    const material = new THREE.MeshStandardMaterial({
+      roughness: 0.5,
+      metalness: 0.08,
+      vertexColors: true,
+      emissive: 0x111827,
+      emissiveIntensity: 0.18
+    });
+	    mesh = new THREE.InstancedMesh(
+	      new THREE.BoxGeometry(width, height, depth),
+	      material,
+	      MAX_INSTANCES_PER_GEO
+	    );
+	    mesh.count = 0;
+    mesh.frustumCulled = false;
+	    mesh.castShadow = true;
+	    mesh.receiveShadow = true;
     mesh.userData.geoKey = key;
     scene.add(mesh);
     instancedMeshByGeo.set(key, mesh);

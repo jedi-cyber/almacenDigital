@@ -365,9 +365,10 @@ function db_ensure_schema(PDO $pdo): void
     );
 
     $pdo->exec(
-        "CREATE TABLE IF NOT EXISTS productos (
-            sku VARCHAR(100) NOT NULL PRIMARY KEY,
-            shelf_id VARCHAR(100) NOT NULL,
+	        "CREATE TABLE IF NOT EXISTS productos (
+	            sku VARCHAR(100) NOT NULL PRIMARY KEY,
+	            numero_serie VARCHAR(120) NULL,
+	            shelf_id VARCHAR(100) NOT NULL,
             name VARCHAR(255) NOT NULL,
             category VARCHAR(150) NOT NULL DEFAULT 'Sin categoria',
             categoria_id INT NULL,
@@ -377,7 +378,8 @@ function db_ensure_schema(PDO $pdo): void
             local_x FLOAT NOT NULL DEFAULT 0,
             local_y FLOAT NOT NULL DEFAULT 0,
             local_z FLOAT NOT NULL DEFAULT 0,
-            INDEX idx_productos_categoria_id (categoria_id),
+	            INDEX idx_productos_numero_serie (numero_serie),
+	            INDEX idx_productos_categoria_id (categoria_id),
             INDEX idx_productos_marca_id (marca_id),
             INDEX idx_productos_dimension_id (dimension_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
@@ -411,7 +413,8 @@ function db_ensure_schema(PDO $pdo): void
 	        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 	    );
 
-    db_add_column_if_missing($pdo, "productos", "category", "VARCHAR(150) NOT NULL DEFAULT 'Sin categoria'");
+	    db_add_column_if_missing($pdo, "productos", "category", "VARCHAR(150) NOT NULL DEFAULT 'Sin categoria'");
+	    db_add_column_if_missing($pdo, "productos", "numero_serie", "VARCHAR(120) NULL");
     db_add_column_if_missing($pdo, "productos", "categoria_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "marca_id", "INT NULL");
     db_add_column_if_missing($pdo, "productos", "dimension_id", "INT NULL");
@@ -423,7 +426,8 @@ function db_ensure_schema(PDO $pdo): void
 	    db_add_column_if_missing($pdo, "producto_historial", "usuario_rol", "VARCHAR(80) NULL");
 	    db_seed_default_user($pdo);
     $pdo->exec("ALTER TABLE usuarios MODIFY COLUMN password_hash VARCHAR(255) NOT NULL");
-    $pdo->exec("ALTER TABLE productos MODIFY COLUMN name VARCHAR(255) NOT NULL");
+	    $pdo->exec("ALTER TABLE productos MODIFY COLUMN name VARCHAR(255) NOT NULL");
+	    db_add_index_if_missing($pdo, "productos", "idx_productos_numero_serie", "numero_serie");
     db_add_index_if_missing($pdo, "productos", "idx_productos_categoria_id", "categoria_id");
     db_add_index_if_missing($pdo, "productos", "idx_productos_marca_id", "marca_id");
 	    db_add_index_if_missing($pdo, "productos", "idx_productos_dimension_id", "dimension_id");

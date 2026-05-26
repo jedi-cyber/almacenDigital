@@ -59,6 +59,7 @@ export interface WarehouseConfig {
  * Definición de un producto almacenable. */
 export interface Item {
   sku: string;
+  serialNumber?: string | null;
   name: string;
   width: number;
   height: number;

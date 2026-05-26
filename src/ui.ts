@@ -105,6 +105,7 @@ export interface SearchFormDeps {
   editorSkuDisplay: HTMLElement;
   editorForm: HTMLFormElement;
   editorName: HTMLInputElement;
+  editorSerialNumber: HTMLInputElement;
   editorCategory: HTMLInputElement;
   editorBrand: HTMLInputElement;
   editorImageUrl: HTMLInputElement;
@@ -516,10 +517,11 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
     event.preventDefault();
 
     const data = new FormData(form);
-    const shelfId = String(data.get("shelfId") ?? "");
-    const sku = String(data.get("sku") ?? "").trim();
-    const productName = String(data.get("productName") ?? "").trim() || getProductName(sku);
-    const category = String(data.get("category") ?? "").trim() || "Sin categoria";
+	    const shelfId = String(data.get("shelfId") ?? "");
+	    const serialNumber = String(data.get("serialNumber") ?? "").trim();
+	    const sku = buildInternalSkuFromSerial(serialNumber);
+	    const productName = String(data.get("productName") ?? "").trim() || getProductName(serialNumber);
+	    const category = String(data.get("category") ?? "").trim() || "Sin categoria";
     const brand = String(data.get("brand") ?? "").trim() || "Sin marca";
     const imageFile = data.get("imageFile");
     const imageUrl = imageFile instanceof File && imageFile.size > 0
@@ -538,10 +540,18 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
       return;
     }
 
-	    if (!sku) {
-	      setStatus(statusMessage, getInvalidSkuMessage(), true);
-	      return;
-	    }
+		    if (!serialNumber || !sku) {
+		      setStatus(statusMessage, getInvalidSkuMessage(), true);
+		      return;
+		    }
+
+		    const serialExists = [...runtime.productEntryBySku.values()].some(
+		      (entry) => normalizeSearchText(entry.item.serialNumber) === normalizeSearchText(serialNumber)
+		    );
+		    if (serialExists) {
+		      setStatus(statusMessage, `Ya existe un producto con el numero de serie "${serialNumber}".`, true);
+		      return;
+		    }
 	
 	    const skuExists = [...runtime.productEntryBySku.keys()].some(
 	      (currentSku) => currentSku.trim().toLowerCase() === sku.toLowerCase()
@@ -573,27 +583,27 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 	      return;
 	    }
 	
-		    const item: Item = { sku, name: productName, category, brand, imageUrl, width, height, depth };
+			    const item: Item = { sku, serialNumber, name: productName, category, brand, imageUrl, width, height, depth };
 	    const placedItems = runtime.productsByShelf.get(shelfId) ?? [];
-	    const previewPlacement = canPlace(shelf, placedItems, item, { preferredSection });
-	    if (!previewPlacement) {
-	      setStatus(statusMessage, getNoSpaceMessage(sku, shelf.id, preferredSection), true);
-	      return;
-	    }
+		    const previewPlacement = canPlace(shelf, placedItems, item, { preferredSection });
+		    if (!previewPlacement) {
+		      setStatus(statusMessage, getNoSpaceMessage(serialNumber, shelf.id, preferredSection), true);
+		      return;
+		    }
 
 	    const placement = placeItem(runtime, scene, item, shelf, shelfMesh, preferredSection);
 
-    if (!placement) {
-      setStatus(statusMessage, getNoSpaceMessage(sku, shelf.id, preferredSection), true);
-      return;
-    }
+	    if (!placement) {
+	      setStatus(statusMessage, getNoSpaceMessage(serialNumber, shelf.id, preferredSection), true);
+	      return;
+	    }
 
     const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
     updateLegendCount(shelfId, count);
     onProductPlaced?.();
     refreshShelfSummary(shelfId);
     flashShelfMesh(shelfMesh);
-    setStatus(statusMessage, getPlacementSuccessMessage(sku, shelf.id, placement.localPosition, preferredSection), false);
+	    setStatus(statusMessage, getPlacementSuccessMessage(serialNumber, shelf.id, placement.localPosition, preferredSection), false);
 
     removeGhost();
     form.reset();
@@ -661,11 +671,12 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     transferSectionSelect,
     transferConfirmBtn,
     transferCancelBtn,
-    productEditor,
-    editorSkuDisplay,
-    editorForm,
-    editorName,
-    editorCategory,
+	    productEditor,
+	    editorSkuDisplay,
+	    editorForm,
+	    editorName,
+	    editorSerialNumber,
+	    editorCategory,
     editorBrand,
     editorImageUrl,
     editorWidth,
@@ -961,7 +972,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	    const section = getSectionNumberForPosition(shelf, localPos.y);
 	    const locationText = formatProductLocation(shelfId, shelfLabel, getSectionLabel(shelf, section), localPos);
 	    activeSku = sku;
-	    searchResultSku.textContent = item.name ? `${item.name} (${sku})` : sku;
+		    searchResultSku.textContent = item.serialNumber
+		      ? `${item.name || "Producto sin nombre"} · Serie ${item.serialNumber}`
+		      : item.name || "Producto sin serie";
 	    searchResultShelf.textContent = reportMatches.length <= 1
 	      ? locationText
 	      : getReportSummary(reportMatches, shelfId, shelfLabel);
@@ -973,13 +986,14 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     if (clearSearchBtn) clearSearchBtn.hidden = false;
 
 	    const input = searchForm.elements.namedItem("searchSku");
-	    if (input instanceof HTMLInputElement) input.value = item.name || sku;
-    const globalSearchInput = document.querySelector<HTMLInputElement>(".global-search input");
-    if (globalSearchInput) globalSearchInput.value = item.name || sku;
+		    if (input instanceof HTMLInputElement) input.value = item.serialNumber || item.name || "";
+	    const globalSearchInput = document.querySelector<HTMLInputElement>(".global-search input");
+	    if (globalSearchInput) globalSearchInput.value = item.serialNumber || item.name || "";
 
-    editorSkuDisplay.textContent = `SKU: ${sku}`;
-    editorName.value = item.name ?? "";
-    editorCategory.value = item.category ?? "Sin categoria";
+	    editorSkuDisplay.textContent = "";
+	    editorName.value = item.name ?? "";
+	    editorSerialNumber.value = item.serialNumber ?? "";
+	    editorCategory.value = item.category ?? "Sin categoria";
     editorBrand.value = item.brand ?? "Sin marca";
     editorWidth.value = String(item.width);
     editorHeight.value = String(item.height);
@@ -996,40 +1010,40 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	    }
 	    highlightProduct(runtime, sku, scene);
 	    setActiveSectionHighlight(shelfMesh, shelf, localPos.y);
-    setStatus(statusMessage, getSearchSuccessMessage(sku, shelfId, reportMatches.length), false);
-    return true;
+    setStatus(statusMessage, getSearchSuccessMessage(item.serialNumber || item.name || sku, shelfId, reportMatches.length), false);
   };
 
-	  const handleSearchSubmit = (event: SubmitEvent) => {
-	    event.preventDefault();
-	    stopBarcodeScanner();
-	
-	    const query = String(new FormData(searchForm).get("searchSku") ?? "").trim();
-	    const categoryFilter = searchCategoryFilter?.value.trim() ?? "";
-	    const brandFilter = searchBrandFilter?.value.trim() ?? "";
-	
+  const handleSearchSubmit = (event: SubmitEvent) => {
+    event.preventDefault();
+    stopBarcodeScanner();
+
+    const query = String(new FormData(searchForm).get("searchSku") ?? "").trim();
+    const categoryFilter = searchCategoryFilter?.value.trim() ?? "";
+    const brandFilter = searchBrandFilter?.value.trim() ?? "";
+
     const globalSearchInput = document.querySelector<HTMLInputElement>(".global-search input");
     if (globalSearchInput && globalSearchInput.value.trim() !== query) {
       globalSearchInput.value = query;
     }
 
-	    if (!query && !categoryFilter && !brandFilter) {
-	      hideResult();
-	      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
-	      return;
-	    }
-	
-	    const baseMatches = query
-	      ? resolveProductSearchMatches(runtime.productEntryBySku, query)
-	      : [...runtime.productEntryBySku.entries()].map(([sku, entry]) => ({ sku, entry, score: 1 }));
-	    const matches = filterSearchMatches(baseMatches, categoryFilter, brandFilter);
-	    selectProduct(matches[0]?.sku ?? query, matches);
-	  };
+    if (!query && !categoryFilter && !brandFilter) {
+      hideResult();
+      setStatus(statusMessage, UI_COPY.status.emptySearchSku, true);
+      return;
+    }
+
+    const baseMatches = query
+      ? resolveProductSearchMatches(runtime.productEntryBySku, query)
+      : [...runtime.productEntryBySku.entries()].map(([sku, entry]) => ({ sku, entry, score: 1 }));
+    const matches = filterSearchMatches(baseMatches, categoryFilter, brandFilter);
+    selectProduct(matches[0]?.sku ?? query, matches);
+  };
 
   const handleMoveProductClick = () => {
     if (!activeSku) return;
+    const label = getProductDisplayCode(runtime.productEntryBySku.get(activeSku)?.item, activeSku);
     onMoveRequested(activeSku);
-    setStatus(statusMessage, getMoveReadyMessage(activeSku), false);
+    setStatus(statusMessage, getMoveReadyMessage(label), false);
   };
 
   const handleDeleteProductClick = () => {
@@ -1043,8 +1057,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
       return;
     }
 
-    const sku = activeSku;
-    resetDeleteBtn();
+	    const sku = activeSku;
+	    const label = getProductDisplayCode(runtime.productEntryBySku.get(sku)?.item, sku);
+	    resetDeleteBtn();
     const removedShelfId = removeItem(runtime, scene, sku);
     hideResult();
 
@@ -1052,7 +1067,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
       const remaining = runtime.productsByShelf.get(removedShelfId)?.length ?? 0;
       updateLegendCount(removedShelfId, remaining);
       onProductRemoved(removedShelfId);
-      setStatus(statusMessage, getDeleteSuccessMessage(sku, removedShelfId), false);
+	      setStatus(statusMessage, getDeleteSuccessMessage(label, removedShelfId), false);
     }
 
     const input = searchForm.elements.namedItem("searchSku");
@@ -1078,10 +1093,11 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 
     const result = transferItem(runtime, scene, config, shelfMeshes, activeSku, toShelfId, toSection);
 
-    if (!result) {
-      setStatus(statusMessage, getTransferNoSpaceMessage(activeSku, toShelfId, toSection), true);
-      return;
-    }
+	    const label = getProductDisplayCode(runtime.productEntryBySku.get(activeSku)?.item, activeSku);
+	    if (!result) {
+	      setStatus(statusMessage, getTransferNoSpaceMessage(label, toShelfId, toSection), true);
+	      return;
+	    }
 
     const sku = activeSku;
     hideTransferPanel();
@@ -1106,7 +1122,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	      }
     }
 
-    setStatus(statusMessage, getTransferSuccessMessage(sku, fromShelfId, toShelfId, toSection), false);
+	    setStatus(statusMessage, getTransferSuccessMessage(label, fromShelfId, toShelfId, toSection), false);
 
     const input = searchForm.elements.namedItem("searchSku");
     if (input instanceof HTMLInputElement) input.value = "";
@@ -1120,8 +1136,9 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     event.preventDefault();
     if (!activeSku) return;
 
-    const name = editorName.value.trim();
-    const category = editorCategory.value.trim() || "Sin categoria";
+	    const name = editorName.value.trim();
+	    const serialNumber = editorSerialNumber.value.trim() || null;
+	    const category = editorCategory.value.trim() || "Sin categoria";
     const brand = editorBrand.value.trim() || "Sin marca";
     const imageFile = editorImageUrl.files?.[0] ?? null;
     const imageUrl = imageFile ? await uploadProductImage(imageFile) : undefined;
@@ -1129,10 +1146,23 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     const height = Number(editorHeight.value);
     const depth = Number(editorDepth.value);
 
-    if (width <= 0 || height <= 0 || depth <= 0) {
-      setStatus(statusMessage, UI_COPY.status.invalidProductForm, true);
-      return;
-    }
+	    if (width <= 0 || height <= 0 || depth <= 0) {
+	      setStatus(statusMessage, UI_COPY.status.invalidProductForm, true);
+	      return;
+	    }
+
+	    if (!serialNumber) {
+	      setStatus(statusMessage, getInvalidSkuMessage(), true);
+	      return;
+	    }
+
+	    const duplicateSerial = [...runtime.productEntryBySku.entries()].some(
+	      ([entrySku, entry]) => entrySku !== activeSku && normalizeSearchText(entry.item.serialNumber) === normalizeSearchText(serialNumber)
+	    );
+	    if (duplicateSerial) {
+	      setStatus(statusMessage, `Ya existe otro producto con el numero de serie "${serialNumber}".`, true);
+	      return;
+	    }
 
     const editorEntry = runtime.productEntryBySku.get(activeSku);
     const shelfId = editorEntry?.shelfId ?? "";
@@ -1150,11 +1180,11 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
       return;
     }
 
-	    const ok = updateItemDimensions(runtime, scene, activeSku, { name, category, brand, imageUrl, width, height, depth }, shelfMesh);
+		    const ok = updateItemDimensions(runtime, scene, activeSku, { name, serialNumber, category, brand, imageUrl, width, height, depth }, shelfMesh);
 	    if (ok) {
 	      highlightProduct(runtime, activeSku, scene);
 	      setActiveSectionHighlight(shelfMesh, shelf, editorEntry.localPosition.y);
-	      setStatus(statusMessage, `Producto ${activeSku} actualizado correctamente.`, false);
+		      setStatus(statusMessage, `Producto ${serialNumber} actualizado correctamente.`, false);
 	    }
   };
 
@@ -1196,7 +1226,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	        getSectionLabel(shelf, section),
 	        entry.localPosition
 	      );
-	      const dimensionsText = `${formatMetric(item.width)} x ${formatMetric(item.height)} x ${formatMetric(item.depth)} m`;
+		      const dimensionsText = `${formatMetric(item.width)} x ${formatMetric(item.height)} x ${formatMetric(item.depth)} m`;
+		      const serialText = item.serialNumber ? `Serie: ${item.serialNumber}` : "Serie no asignada";
 	      const catalogText = [
 	        item.category ? `Categoria: ${item.category}` : "",
 	        item.brand ? `Marca: ${item.brand}` : ""
@@ -1208,7 +1239,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
       row.dataset.sku = matchSku;
       row.innerHTML = `
         <span class="search-report-item-title">${escapeHtml(item.name || "Sin nombre registrado")}</span>
-	        <span>SKU: ${escapeHtml(matchSku)}</span>
+		        <span>${escapeHtml(serialText)}</span>
 	        ${catalogText ? `<span>${escapeHtml(catalogText)}</span>` : ""}
 	        <span>${escapeHtml(locationText)}</span>
 	        <span>${escapeHtml(dimensionsText)}</span>
@@ -1396,25 +1427,29 @@ function getUniqueCatalogValues(values: Array<string | undefined>): string[] {
 
 function getSearchScore(query: string, sku: string, entry: ProductEntry): number {
   const item = entry.item;
-  const normalizedSku = normalizeSearchText(sku);
-  const normalizedName = normalizeSearchText(item.name);
-  const normalizedCategory = normalizeSearchText(item.category);
-  const normalizedBrand = normalizeSearchText(item.brand);
-  const normalizedAll = [normalizedSku, normalizedName, normalizedCategory, normalizedBrand].filter(Boolean).join(" ");
+	  const normalizedSku = normalizeSearchText(sku);
+	  const normalizedSerial = normalizeSearchText(item.serialNumber);
+	  const normalizedName = normalizeSearchText(item.name);
+	  const normalizedCategory = normalizeSearchText(item.category);
+	  const normalizedBrand = normalizeSearchText(item.brand);
+	  const normalizedAll = [normalizedSku, normalizedSerial, normalizedName, normalizedCategory, normalizedBrand].filter(Boolean).join(" ");
   const tokens = query.split(/\s+/).filter(Boolean);
 
-  if (normalizedSku === query) return 1000;
-  if (normalizedName === query) return 920;
+	  if (normalizedSku === query) return 1000;
+	  if (normalizedSerial === query) return 980;
+	  if (normalizedName === query) return 920;
   if (normalizedBrand === query) return 820;
   if (normalizedCategory === query) return 800;
 
   let score = 0;
-  if (normalizedSku.startsWith(query)) score = Math.max(score, 760);
-  if (normalizedName.startsWith(query)) score = Math.max(score, 700);
+	  if (normalizedSku.startsWith(query)) score = Math.max(score, 760);
+	  if (normalizedSerial.startsWith(query)) score = Math.max(score, 740);
+	  if (normalizedName.startsWith(query)) score = Math.max(score, 700);
   if (normalizedBrand.startsWith(query)) score = Math.max(score, 620);
   if (normalizedCategory.startsWith(query)) score = Math.max(score, 600);
-  if (normalizedSku.includes(query)) score = Math.max(score, 540);
-  if (normalizedName.includes(query)) score = Math.max(score, 500);
+	  if (normalizedSku.includes(query)) score = Math.max(score, 540);
+	  if (normalizedSerial.includes(query)) score = Math.max(score, 520);
+	  if (normalizedName.includes(query)) score = Math.max(score, 500);
   if (normalizedBrand.includes(query)) score = Math.max(score, 430);
   if (normalizedCategory.includes(query)) score = Math.max(score, 410);
 
@@ -1427,11 +1462,12 @@ function getSearchScore(query: string, sku: string, entry: ProductEntry): number
 
 function getSearchCandidateLabels(sku: string, entry: ProductEntry): string[] {
   return [
-    sku,
-    entry.item.name,
+	    sku,
+	    entry.item.serialNumber,
+	    entry.item.name,
     entry.item.category,
     entry.item.brand,
-    `${entry.item.name} ${sku}`,
+	    `${entry.item.name} ${sku} ${entry.item.serialNumber ?? ""}`.trim(),
     `${entry.item.category ?? ""} ${entry.item.brand ?? ""}`.trim()
   ].filter((value): value is string => Boolean(value && value.trim()));
 }
@@ -1462,7 +1498,7 @@ function getSearchDistance(a: string, b: string): number {
   return previous[b.length];
 }
 
-function normalizeSearchText(value: string | undefined): string {
+function normalizeSearchText(value: string | null | undefined): string {
   return (value ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -1470,9 +1506,28 @@ function normalizeSearchText(value: string | undefined): string {
     .toLowerCase();
 }
 
+function buildInternalSkuFromSerial(serialNumber: string): string {
+  const clean = serialNumber
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!clean) return "";
+  const hash = Array.from(serialNumber).reduce((acc, char) => ((acc * 31) + char.charCodeAt(0)) >>> 0, 2166136261);
+  const suffix = hash.toString(36).toUpperCase();
+  const base = clean.slice(0, Math.max(1, 61 - suffix.length));
+  return `S${base}-${suffix}`.slice(0, 64);
+}
+
+function getProductDisplayCode(item: Item | undefined, fallback: string): string {
+  return item?.serialNumber || item?.name || fallback;
+}
+
 function getReportSummary(matches: SearchMatch[], shelfId: string, shelfLabel: string): string {
   if (matches.length <= 1) return `${shelfId} · ${shelfLabel}`;
-  return `${matches.length} coincidencias por nombre, SKU, categoria o marca. Selecciona una para enfocarla.`;
+	  return `${matches.length} coincidencias por numero de serie, nombre, categoria o marca. Selecciona una para enfocarla.`;
 }
 
 function formatProductLocation(

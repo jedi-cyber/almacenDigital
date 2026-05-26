@@ -42,6 +42,13 @@ export interface WarehouseRuntime {
 }
 
 function resolveApiBaseUrl(): string {
+  if (typeof window !== "undefined") {
+    const nativeApiBase = new URLSearchParams(window.location.search).get("nativeApiBase");
+    if (nativeApiBase) {
+      return nativeApiBase.replace(/\/$/, "");
+    }
+  }
+
   const configuredApiUrl = import.meta.env.VITE_API_URL;
   if (configuredApiUrl) {
     return configuredApiUrl;
@@ -834,7 +841,7 @@ export function updateItemDimensions(
   runtime: WarehouseRuntime,
   scene: THREE.Scene,
   sku: string,
-  newDimensions: { name: string; category?: string; brand?: string; imageUrl?: string | null; width: number; height: number; depth: number },
+  newDimensions: { name: string; serialNumber?: string | null; category?: string; brand?: string; imageUrl?: string | null; width: number; height: number; depth: number },
   shelfMesh: THREE.Mesh
 ): boolean {
   const entry = runtime.productEntryBySku.get(sku);
@@ -850,9 +857,10 @@ export function updateItemDimensions(
 
   clearHighlight(runtime);
 
-  // Update logical item
-  if (newDimensions.name) placedItem.item.name = newDimensions.name;
-  placedItem.item.category = newDimensions.category ?? placedItem.item.category ?? "Sin categoria";
+	  // Update logical item
+	  if (newDimensions.name) placedItem.item.name = newDimensions.name;
+	  placedItem.item.serialNumber = newDimensions.serialNumber ?? null;
+	  placedItem.item.category = newDimensions.category ?? placedItem.item.category ?? "Sin categoria";
   placedItem.item.brand = newDimensions.brand ?? placedItem.item.brand ?? "Sin marca";
   if ("imageUrl" in newDimensions) {
     placedItem.item.imageUrl = newDimensions.imageUrl ?? null;
@@ -964,9 +972,10 @@ function persistPlacedItem(
   fetch(`${API}/productos.php`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({
-      sku: item.sku,
-      shelfId: shelfId,
+	    body: JSON.stringify({
+	      sku: item.sku,
+	      serialNumber: item.serialNumber ?? null,
+	      shelfId: shelfId,
       name: item.name,
       width: item.width,
       height: item.height,

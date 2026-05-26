@@ -2,11 +2,11 @@ import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, focusOnProductFromAisle, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
+import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, focusOnProductFromAisle, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, skuToColor, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
 import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
 import type { HudRefs } from "./hud.js";
-import type { PlacedItem, Shelf, WarehouseAisle, WarehouseConfig } from "./types.js";
+import type { Item, PlacedItem, Shelf, WarehouseAisle, WarehouseConfig } from "./types.js";
 import { getSectionBoundaries } from "./canPlace.js";
 import {
 	  createRuntime,
@@ -658,10 +658,11 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     transferConfirmBtn: refs.transferConfirmBtn,
     transferCancelBtn: refs.transferCancelBtn,
     productEditor: refs.productEditor,
-	    editorSkuDisplay: refs.editorSkuDisplay,
-	    editorForm: refs.editorForm,
-	    editorName: refs.editorName,
-	    editorCategory: refs.editorCategory,
+		    editorSkuDisplay: refs.editorSkuDisplay,
+		    editorForm: refs.editorForm,
+		    editorName: refs.editorName,
+		    editorSerialNumber: refs.editorSerialNumber,
+		    editorCategory: refs.editorCategory,
 	    editorBrand: refs.editorBrand,
 	    editorImageUrl: refs.editorImageUrl,
 	    editorWidth: refs.editorWidth,
@@ -674,13 +675,17 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
 	      }
 	      updateDashboardSummary(refs, runtime, 0);
 	    },
-		    beforeProductSelected: canChangeRouteProduct,
-		    onProductLocated: (worldPos, shelfMesh, sku) => {
-		      selectedProductSku = sku;
-		      refs.selectedProductPanel.hidden = true;
-		      guidedRouteSku = sku;
-	      const routeEntry = runtime.productEntryBySku.get(sku);
-	      const routeShelf = routeEntry ? config.shelves.find((shelf) => shelf.id === routeEntry.shelfId) : undefined;
+	     beforeProductSelected: canChangeRouteProduct,
+				    onProductLocated: (worldPos, shelfMesh, sku) => {
+				      selectedProductSku = sku;
+				      refs.selectedProductPanel.hidden = true;
+				      guidedRouteSku = sku;
+			      const routeEntry = runtime.productEntryBySku.get(sku);
+	          if (isMobileRouteMode) {
+	            makeShelvesReadableForMobileRoute(shelfMeshes, shelfMesh);
+	            showMobileRouteProductMarker(scene, worldPos, routeEntry?.item);
+	          }
+			      const routeShelf = routeEntry ? config.shelves.find((shelf) => shelf.id === routeEntry.shelfId) : undefined;
 	      const productLabel = routeEntry?.item.name ? `${routeEntry.item.name} (${sku})` : sku;
 	      const destinationLabel = routeEntry
 	        ? `${routeEntry.shelfId} · ${routeShelf?.label ?? routeEntry.shelfId} · ${getRouteSectionLabel(routeShelf, routeEntry.localPosition.y)}`
@@ -923,18 +928,24 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     renderer.setSize(clientWidth, clientHeight, false);
   };
 
-  resize();
-  window.addEventListener("resize", resize);
-  const updateWASDMovement = wireWASDMovement(camera, controls);
-  const clock = new THREE.Clock();
+	  resize();
+	  window.addEventListener("resize", resize);
+	  const updateWASDMovement = wireWASDMovement(camera, controls);
+	  const clock = new THREE.Clock();
+	  const targetFrameMs = isMobileRouteMode ? 1000 / 30 : 0;
+	  let lastRenderAt = 0;
 
-  renderer.setAnimationLoop(() => {
-    updateWASDMovement(clock.getDelta());
-    controls.update();
-    blockCameraAtWalls();
-    updateShelfTransparency(camera, shelfMeshes);
-    renderer.render(scene, camera);
-  });
+	  renderer.setAnimationLoop((time) => {
+	    if (targetFrameMs > 0 && time - lastRenderAt < targetFrameMs) return;
+	    lastRenderAt = time;
+	    updateWASDMovement(clock.getDelta());
+	    controls.update();
+	    blockCameraAtWalls();
+	    if (!isMobileRouteMode) {
+	      updateShelfTransparency(camera, shelfMeshes);
+	    }
+	    renderer.render(scene, camera);
+	  });
 }
 
 function updateDashboardSummary(refs: HudRefs, runtime: WarehouseRuntime, completedRouteDelta: number): void {
@@ -987,7 +998,7 @@ function updateSelectedProductPanel(
   refs.selectedProductPanel.hidden = false;
   refs.selectedProductStatus.textContent = "Disponible";
   refs.selectedProductName.textContent = entry.item.name || sku;
-  refs.selectedProductSku.textContent = `SKU: ${sku}`;
+	  refs.selectedProductSku.textContent = entry.item.serialNumber ? `Serie: ${entry.item.serialNumber}` : "Serie no asignada";
   refs.selectedProductImage.textContent = entry.item.imageUrl ? "" : "Sin imagen";
   refs.selectedProductImage.style.backgroundImage = entry.item.imageUrl ? `url("${entry.item.imageUrl.replace(/"/g, "%22")}")` : "";
   refs.selectedProductImage.dataset.hasImage = entry.item.imageUrl ? "true" : "false";
@@ -1253,6 +1264,100 @@ function createRouteButton(label: string): HTMLButtonElement {
   button.className = "route-step-btn";
   button.textContent = label;
   return button;
+}
+
+let mobileRouteProductMarker: THREE.Group | null = null;
+
+function makeShelvesReadableForMobileRoute(shelfMeshes: Map<string, THREE.Mesh>, targetShelf: THREE.Mesh): void {
+  shelfMeshes.forEach((mesh) => {
+    const isTarget = mesh === targetShelf;
+    mesh.children
+      .filter((child): child is THREE.Mesh => child instanceof THREE.Mesh && child.name === "__shelf_visual__")
+      .forEach((part) => {
+        const material = part.material as THREE.MeshStandardMaterial;
+        gsap.killTweensOf(material);
+        material.transparent = true;
+        material.depthWrite = false;
+        gsap.to(material, {
+          opacity: isTarget ? 0.18 : 0.32,
+          duration: 0.25,
+          ease: "power1.out"
+        });
+      });
+  });
+}
+
+function showMobileRouteProductMarker(scene: THREE.Scene, productWorldPos: THREE.Vector3, item?: Item): void {
+  if (mobileRouteProductMarker) {
+    scene.remove(mobileRouteProductMarker);
+    mobileRouteProductMarker.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (Array.isArray(child.material)) {
+          child.material.forEach((material) => material.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    });
+  }
+
+	  const group = new THREE.Group();
+	  group.name = "__mobile_route_product_marker__";
+	  group.position.copy(productWorldPos);
+
+	  if (item) {
+	    const productMaterial = new THREE.MeshBasicMaterial({
+	      color: skuToColor(item.sku),
+	      depthTest: false,
+	      depthWrite: false,
+	      transparent: true,
+	      opacity: 0.98
+	    });
+	    const productProxy = new THREE.Mesh(
+	      new THREE.BoxGeometry(item.width, item.height, item.depth),
+	      productMaterial
+	    );
+	    productProxy.name = "__mobile_route_product_proxy__";
+	    productProxy.renderOrder = 78;
+	    group.add(productProxy);
+	  }
+	
+	  const markerMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffd43b,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0.96
+  });
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0.9
+  });
+
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 16), markerMaterial);
+  sphere.position.y = 0.34;
+  sphere.renderOrder = 80;
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.026, 12, 42), ringMaterial);
+  ring.position.y = 0.34;
+  ring.rotation.x = Math.PI / 2;
+  ring.renderOrder = 79;
+  group.add(sphere, ring);
+  scene.add(group);
+  mobileRouteProductMarker = group;
+
+  gsap.to(group.scale, {
+    x: 1.25,
+    y: 1.25,
+    z: 1.25,
+    duration: 0.7,
+    repeat: -1,
+    yoyo: true,
+    ease: "sine.inOut"
+  });
 }
 
 function getConfiguredEntrancePosition(config: WarehouseConfig, fallback?: THREE.Vector3): THREE.Vector3 {
@@ -1813,10 +1918,13 @@ function moveCameraToRouteEnd(route: GuidedRoute): void {
     travelDirection.normalize();
   }
 
-  const cameraTarget = point.clone().addScaledVector(travelDirection, -0.75);
-  cameraTarget.y = 1.45;
+  const isMobileRouteMode = document.documentElement.dataset.appMode === "mobile-route";
+  const cameraTarget = point.clone().addScaledVector(travelDirection, isMobileRouteMode ? -2.15 : -0.75);
+  cameraTarget.y = isMobileRouteMode ? Math.max(1.55, route.productFocus.y + 0.9) : 1.45;
   const controlsTarget = route.productFocus.clone();
-  controlsTarget.y = Math.max(1.2, route.productFocus.y);
+  controlsTarget.y = isMobileRouteMode
+    ? Math.max(0.95, route.productFocus.y + 0.22)
+    : Math.max(1.2, route.productFocus.y);
 
   gsap.killTweensOf(route.camera.position);
   gsap.killTweensOf(route.orbitControls.target);

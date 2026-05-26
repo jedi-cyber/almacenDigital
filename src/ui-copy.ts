@@ -57,8 +57,8 @@ export const UI_COPY = {
   },
   search: {
     title: "Buscar producto",
-    description: "Encuentra por nombre o SKU y enfoca automaticamente la ruta en la escena.",
-    label: "Nombre o SKU del producto",
+	    description: "Encuentra por numero de serie, nombre, categoria o marca y enfoca automaticamente la ruta en la escena.",
+	    label: "Numero de serie, nombre o producto",
     buttonAriaLabel: "Buscar producto",
     transferTitle: "Trasladar a otro estante",
     transferShelfLabel: "Estante destino",
@@ -69,11 +69,11 @@ export const UI_COPY = {
     description: "Elige ubicacion, identifica el producto y valida sus medidas antes de guardarlo.",
     steps: {
       selectShelf: "Ubicacion",
-      productCode: "2. Ingresa el SKU y nombre",
+	      productCode: "2. Ingresa serie y nombre",
       productName: "Nombre del producto",
       measures: "3. Define medidas"
     },
-    skuLabel: "SKU",
+	    skuLabel: "Identificador interno",
     sectionLabel: "Piso o nivel del estante",
     shelfManager: {
       title: "Gestionar estante",
@@ -110,7 +110,7 @@ export const UI_COPY = {
       legacyTitle: "Referencia del estante"
     },
     selectedShelfLabel: "Estante de registro",
-    skuTip: "El SKU identifica una unidad unica. El nombre sirve como alias de busqueda y puede repetirse.",
+	    skuTip: "El numero de serie identifica la unidad fisica. El identificador interno no se muestra al usuario.",
     dimensions: {
       hint: "Todos los valores se registran en metros.",
       groupAriaLabel: "Tamanos sugeridos",
@@ -152,9 +152,9 @@ export const UI_COPY = {
     productsLoadFailed: "No se pudo conectar con la API de productos. La lista no esta vacia necesariamente; la carga fallo.",
     productsLoadRetry: "Reintentar carga",
     initial: "",
-    legacyInitial: "Agrega un producto y luego buscalo por nombre o SKU para probar la fase 5.",
+	    legacyInitial: "Agrega un producto y luego buscalo por numero de serie o nombre.",
     shelfNotFound: "No se encontro el estante seleccionado.",
-    emptySearchSku: "Ingresa un nombre o SKU para ejecutar la busqueda.",
+	    emptySearchSku: "Ingresa un numero de serie, nombre, categoria o marca para ejecutar la busqueda.",
     invalidProductForm: "Completa el nombre y las medidas con valores mayores a cero.",
     productTooLargeForShelf: "Las medidas no pueden superar los limites del estante y del piso actual.",
     invalidShelfName: "Ingresa un nombre valido para el estante.",
@@ -165,7 +165,7 @@ export const UI_COPY = {
     barcodeUnsupported: "Este navegador no permite leer codigos de barras desde la camara.",
     barcodeCameraError: "No se pudo acceder a la camara para escanear el codigo de barras.",
     barcodeScanning: "Apunta la camara al codigo de barras del producto.",
-    barcodeNotFound: "Codigo capturado, pero no existe un producto con ese SKU."
+	    barcodeNotFound: "Codigo capturado, pero no existe un producto con ese numero de serie."
   }
 } as const;
 
@@ -174,7 +174,7 @@ export function getProductName(sku: string): string {
 }
 
 export function getSearchNotFoundMessage(query: string, suggestions: string[] = []): string {
-  const base = `No se encontro un producto con nombre, SKU, categoria o marca "${query}".`;
+  const base = `No se encontro un producto con numero de serie, nombre, categoria o marca "${query}".`;
   if (suggestions.length === 0) return base;
   return `${base} Sugerencias cercanas: ${suggestions.join(", ")}.`;
 }
@@ -197,11 +197,11 @@ export function getDeleteSuccessMessage(sku: string, shelfId: string): string {
 }
 
 export function getDuplicateSkuMessage(sku: string): string {
-  return `Ya existe un producto con SKU "${sku}". Usa un identificador diferente.`;
+  return `Ya existe un producto con ese identificador interno. Usa otro numero de serie.`;
 }
 
 export function getInvalidSkuMessage(): string {
-  return "Ingresa un SKU valido antes de guardar el producto.";
+  return "Ingresa un numero de serie valido antes de guardar el producto.";
 }
 
 export function getInvalidProductDimensionsMessage(): string {

@@ -44,6 +44,16 @@ describe("resolveProductSearchQuery", () => {
     expect(resolveProductSearchQuery(products, "acrílica")).toEqual({ sku: "SKU-003", matchCount: 1 });
   });
 
+  it("encuentra una unidad por numero de serie", () => {
+    const first = entry("IMP-001", "IMPRESORA EPSON G3500");
+    const second = entry("IMP-002", "IMPRESORA EPSON G3500");
+    first[1].item.serialNumber = "G3500-A-001";
+    second[1].item.serialNumber = "G3500-A-002";
+    const products = new Map<string, ProductEntry>([first, second]);
+
+    expect(resolveProductSearchQuery(products, "G3500-A-002")).toEqual({ sku: "IMP-002", matchCount: 1 });
+  });
+
   it("devuelve null cuando no hay coincidencias", () => {
     const products = new Map<string, ProductEntry>([
       entry("SKU-004", "Martillo"),

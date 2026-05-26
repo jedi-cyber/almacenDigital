@@ -27,9 +27,10 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
     require_api_permission($session, "product:read");
     try {
         $rows = $pdo->query("
-            SELECT
-                p.sku,
-                p.shelf_id,
+	            SELECT
+	                p.sku,
+	                p.numero_serie,
+	                p.shelf_id,
                 p.name,
                 COALESCE(cat.nombre, p.category, 'Sin categoria') AS category,
                 cat.id AS category_id,
@@ -59,8 +60,9 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
         return [
             "shelfId" => $row["shelf_id"],
             "item" => [
-                "sku"    => $row["sku"],
-                "name"   => $row["name"],
+	                "sku"    => $row["sku"],
+	                "serialNumber" => $row["numero_serie"] ?? null,
+	                "name"   => $row["name"],
                 "width"  => (float)$row["width"],
                 "height" => (float)$row["height"],
                 "depth"  => (float)$row["depth"],
@@ -92,9 +94,13 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
         api_fail(400, "JSON invalido.", "INVALID_JSON");
     }
 
-    $sku     = valid_product_sku($body["sku"] ?? null);
-    $shelfId = valid_shelf_id($body["shelfId"] ?? null);
-    $name    = valid_string($body["name"]    ?? ($body["sku"] ?? null), 255) ?? $sku;
+	    $serialNumber = valid_string($body["serialNumber"] ?? ($body["numero_serie"] ?? null), 120);
+	    if ($serialNumber === null) {
+	        api_fail(422, "El numero de serie es obligatorio.", "SERIAL_NUMBER_REQUIRED");
+	    }
+	    $sku = valid_product_sku($body["sku"] ?? null) ?? build_internal_sku_from_serial($serialNumber);
+	    $shelfId = valid_shelf_id($body["shelfId"] ?? null);
+	    $name = valid_string($body["name"] ?? null, 255) ?? $serialNumber;
 
     $width   = valid_float_range($body["width"]  ?? null, 0.01, 3.0);
     $height  = valid_float_range($body["height"] ?? null, 0.01, 3.0);
@@ -133,20 +139,29 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
     if ($width > (float)$shelf["width"] || $height > (float)$shelf["height"] || $depth > (float)$shelf["depth"]) {
         api_fail(422, "El producto supera las medidas del estante.", "PRODUCT_TOO_LARGE");
     }
-    if ($lx + $width > (float)$shelf["width"] + 0.0001 || $ly + $height > (float)$shelf["height"] + 0.0001 || $lz + $depth > (float)$shelf["depth"] + 0.0001) {
-        api_fail(422, "La posicion del producto queda fuera del estante.", "PRODUCT_OUT_OF_SHELF");
-    }
+	    if ($lx + $width > (float)$shelf["width"] + 0.0001 || $ly + $height > (float)$shelf["height"] + 0.0001 || $lz + $depth > (float)$shelf["depth"] + 0.0001) {
+	        api_fail(422, "La posicion del producto queda fuera del estante.", "PRODUCT_OUT_OF_SHELF");
+	    }
 
-    try {
+	    if ($serialNumber !== null) {
+	        $serialStmt = $pdo->prepare("SELECT sku FROM productos WHERE numero_serie = :serial AND sku <> :sku LIMIT 1");
+	        $serialStmt->execute([":serial" => $serialNumber, ":sku" => $sku]);
+	        if ($serialStmt->fetch(PDO::FETCH_ASSOC)) {
+	            api_fail(409, "Ya existe otro producto con ese numero de serie.", "DUPLICATE_SERIAL_NUMBER");
+	        }
+	    }
+	
+	    try {
         $pdo->beginTransaction();
 
         $categoryId = upsertCatalogValue($pdo, "categorias", $category);
         $brandId = upsertCatalogValue($pdo, "marcas", $brand);
 
         $existingStmt = $pdo->prepare("
-            SELECT
-                p.sku,
-                p.shelf_id,
+	            SELECT
+	                p.sku,
+	                p.numero_serie,
+	                p.shelf_id,
                 p.name,
                 COALESCE(cat.nombre, p.category, 'Sin categoria') AS category,
                 COALESCE(m.nombre, 'Sin marca') AS brand,
@@ -194,13 +209,14 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
             $dimensionId = (int)$pdo->lastInsertId();
         }
 
-        $stmt = $pdo->prepare("
-            INSERT INTO productos
-            (sku, shelf_id, name, category, categoria_id, marca_id, dimension_id, image_url, local_x, local_y, local_z)
-            VALUES
-            (:sku, :shelf_id, :name, :category, :categoria_id, :marca_id, :dimension_id, :image_url, :local_x, :local_y, :local_z)
-            ON DUPLICATE KEY UPDATE
-                shelf_id = VALUES(shelf_id),
+	        $stmt = $pdo->prepare("
+	            INSERT INTO productos
+	            (sku, numero_serie, shelf_id, name, category, categoria_id, marca_id, dimension_id, image_url, local_x, local_y, local_z)
+	            VALUES
+	            (:sku, :numero_serie, :shelf_id, :name, :category, :categoria_id, :marca_id, :dimension_id, :image_url, :local_x, :local_y, :local_z)
+	            ON DUPLICATE KEY UPDATE
+	                numero_serie = VALUES(numero_serie),
+	                shelf_id = VALUES(shelf_id),
                 name = VALUES(name),
                 category = VALUES(category),
                 categoria_id = VALUES(categoria_id),
@@ -211,9 +227,10 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
                 local_y = VALUES(local_y),
                 local_z = VALUES(local_z)
         ");
-        $stmt->execute([
-            ":sku"      => $sku,
-            ":shelf_id" => $shelfId,
+	        $stmt->execute([
+	            ":sku"      => $sku,
+	            ":numero_serie" => $serialNumber,
+	            ":shelf_id" => $shelfId,
             ":name"     => $name,
             ":category" => $category,
             ":categoria_id" => $categoryId,
@@ -226,9 +243,10 @@ elseif ($_SERVER["REQUEST_METHOD"] === "POST") {
         ]);
 
         $action = getProductHistoryAction($previous, $shelfId, $name, $category, $brand, $width, $height, $depth, $lx, $ly, $lz);
-        insertProductHistory($pdo, $session, $sku, $action, $previous, [
-            "shelf_id" => $shelfId,
-            "name" => $name,
+	        insertProductHistory($pdo, $session, $sku, $action, $previous, [
+	            "shelf_id" => $shelfId,
+	            "numero_serie" => $serialNumber,
+	            "name" => $name,
             "category" => $category,
             "brand" => $brand,
             "image_url" => $imageUrl,
@@ -393,6 +411,20 @@ function upsertCatalogValue(PDO $pdo, string $table, string $name): int
     $select = $pdo->prepare("SELECT id FROM `{$table}` WHERE nombre = :nombre");
     $select->execute([":nombre" => $cleanName]);
     return (int)$select->fetchColumn();
+}
+
+function build_internal_sku_from_serial(string $serialNumber): string
+{
+    $normalized = iconv("UTF-8", "ASCII//TRANSLIT//IGNORE", $serialNumber);
+    $clean = strtoupper(trim((string)$normalized));
+    $clean = preg_replace('/[^A-Z0-9._-]+/', '-', $clean) ?? "";
+    $clean = trim($clean, "-");
+    if ($clean === "") {
+        $clean = "SERIE";
+    }
+    $suffix = strtoupper(base_convert((string)sprintf("%u", crc32($serialNumber)), 10, 36));
+    $base = substr($clean, 0, max(1, 61 - strlen($suffix)));
+    return substr("S{$base}-{$suffix}", 0, 64);
 }
 
 function valid_optional_url(mixed $v, int $maxLen = 500): ?string

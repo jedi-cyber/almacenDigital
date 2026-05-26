@@ -28,6 +28,7 @@ export interface HudRefs {
   editorSkuDisplay: HTMLElement;
   editorForm: HTMLFormElement;
   editorName: HTMLInputElement;
+  editorSerialNumber: HTMLInputElement;
   editorCategory: HTMLInputElement;
   editorBrand: HTMLInputElement;
   editorImageUrl: HTMLInputElement;
@@ -182,7 +183,6 @@ function buildHudTemplate(): string {
         <section class="quick-summary" aria-label="Resumen rapido">
           <div class="quick-summary-head">
             <strong>Resumen rápido</strong>
-            <span>↗</span>
           </div>
           <dl>
             <div>
@@ -248,7 +248,7 @@ function buildHudTemplate(): string {
             <label class="search-label">
               <span>${UI_COPY.search.label}</span>
               <div class="search-row">
-		                <input name="searchSku" type="text" placeholder="SKU, nombre, categoria o marca" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
+		                <input name="searchSku" type="text" placeholder="Serie, nombre, categoria o marca" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
                 <button type="submit" class="icon-button" aria-label="${UI_COPY.search.buttonAriaLabel}" title="${UI_COPY.search.buttonAriaLabel}" data-testid="search-submit-btn">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path
@@ -538,18 +538,18 @@ function buildHudTemplate(): string {
               <span>2</span>
               <strong>Identificacion</strong>
             </div>
-            <div class="sku-name-group">
-              <label>
-                <span>${UI_COPY.productForm.skuLabel}</span>
-                <input name="sku" type="text" placeholder="Ej. SKU-001" required data-testid="product-sku-input" />
-              </label>
-              <div class="sku-name-divider" aria-hidden="true"></div>
+	            <div class="sku-name-group">
 	              <label>
-	                <span>${UI_COPY.productForm.steps.productName}</span>
-	                <input name="productName" type="text" placeholder="Ej. Caja de tornillos" data-testid="product-name-input" />
+	                <span>Numero de serie</span>
+	                <input name="serialNumber" type="text" maxlength="120" placeholder="Ej. G3500-EPSON-001" required data-testid="product-serial-input" />
 	              </label>
-	            </div>
-		            <div class="field-row">
+	              <div class="sku-name-divider" aria-hidden="true"></div>
+		              <label>
+		                <span>${UI_COPY.productForm.steps.productName}</span>
+		                <input name="productName" type="text" placeholder="Ej. Impresora Epson G3500" data-testid="product-name-input" />
+		              </label>
+		            </div>
+			            <div class="field-row">
 		              <label>
 		                <span>Categoria</span>
 			                <input name="category" type="text" list="category-options" placeholder="Ej. Ferreteria" data-testid="product-category-input" />
@@ -609,15 +609,18 @@ function buildHudTemplate(): string {
             </div>
           </div>
           <form id="editor-form" class="editor-form" aria-label="${UI_COPY.productEditor.title}" data-testid="editor-form">
-            <div class="sku-name-group">
-              <p class="editor-sku" id="editor-sku-display" aria-live="polite"></p>
-              <div class="sku-name-divider" aria-hidden="true"></div>
-	              <label>
-	                <span>${UI_COPY.productEditor.nameLabel}</span>
-	                <input id="editor-name" type="text" placeholder="Ej. Caja de tornillos" />
-	              </label>
-	            </div>
-	            <div class="field-row">
+	            <div class="sku-name-group">
+	              <p class="editor-sku" id="editor-sku-display" aria-live="polite" hidden></p>
+		              <label>
+		                <span>${UI_COPY.productEditor.nameLabel}</span>
+		                <input id="editor-name" type="text" placeholder="Ej. Caja de tornillos" />
+		              </label>
+		              <label>
+		                <span>Numero de serie</span>
+		                <input id="editor-serial-number" type="text" maxlength="120" placeholder="Ej. G3500-EPSON-001" required />
+		              </label>
+		            </div>
+		            <div class="field-row">
 	              <label>
 	                <span>Categoria</span>
 		                <input id="editor-category" type="text" list="category-options" placeholder="Ej. Ferreteria" />
@@ -894,7 +897,7 @@ function buildHudTemplate(): string {
           </div>
 	          <label class="global-search">
 	            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.03 11.6l4.43 4.43 1.41-1.41-4.43-4.43A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z" fill="currentColor"/></svg>
-	            <input type="text" placeholder="Buscar SKU, producto o ubicación..." aria-label="Buscar SKU, producto o ubicación" />
+	            <input type="text" placeholder="Buscar serie, producto o ubicación..." aria-label="Buscar serie, producto o ubicación" />
 	            <button type="button" id="global-clear-search-btn" aria-label="Cancelar búsqueda" title="Cancelar búsqueda">×</button>
 	          </label>
           <div class="top-actions">
@@ -943,7 +946,7 @@ function buildHudTemplate(): string {
             <div class="selected-product-thumb" id="selected-product-image">Sin imagen</div>
             <div>
               <h2 id="selected-product-name">Producto</h2>
-              <p id="selected-product-sku">SKU: -</p>
+              <p id="selected-product-sku">Serie: -</p>
             </div>
           </div>
           <div class="selected-product-location">
@@ -1026,9 +1029,10 @@ export function buildHtml(container: HTMLElement): HudRefs {
   const transferCancelBtn = container.querySelector<HTMLButtonElement>("#transfer-cancel-btn");
   const productEditor = container.querySelector<HTMLElement>("#product-editor");
   const editorSkuDisplay = container.querySelector<HTMLElement>("#editor-sku-display");
-  const editorForm = container.querySelector<HTMLFormElement>("#editor-form");
-  const editorName = container.querySelector<HTMLInputElement>("#editor-name");
-  const editorCategory = container.querySelector<HTMLInputElement>("#editor-category");
+	  const editorForm = container.querySelector<HTMLFormElement>("#editor-form");
+	  const editorName = container.querySelector<HTMLInputElement>("#editor-name");
+	  const editorSerialNumber = container.querySelector<HTMLInputElement>("#editor-serial-number");
+	  const editorCategory = container.querySelector<HTMLInputElement>("#editor-category");
   const editorBrand = container.querySelector<HTMLInputElement>("#editor-brand");
   const editorImageUrl = container.querySelector<HTMLInputElement>("#editor-image-url");
   const editorWidth = container.querySelector<HTMLInputElement>("#editor-width");
@@ -1107,9 +1111,10 @@ export function buildHtml(container: HTMLElement): HudRefs {
     !transferCancelBtn ||
     !productEditor ||
     !editorSkuDisplay ||
-    !editorForm ||
-    !editorName ||
-    !editorCategory ||
+	    !editorForm ||
+	    !editorName ||
+	    !editorSerialNumber ||
+	    !editorCategory ||
     !editorBrand ||
     !editorImageUrl ||
     !editorWidth ||
@@ -1190,10 +1195,11 @@ export function buildHtml(container: HTMLElement): HudRefs {
     transferConfirmBtn,
     transferCancelBtn,
     productEditor,
-    editorSkuDisplay,
-    editorForm,
-    editorName,
-    editorCategory,
+	    editorSkuDisplay,
+	    editorForm,
+	    editorName,
+	    editorSerialNumber,
+	    editorCategory,
     editorBrand,
     editorImageUrl,
     editorWidth,

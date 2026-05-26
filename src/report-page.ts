@@ -196,7 +196,7 @@ function buildReportHtml(data: ReportData): string {
   const topProductsHtml = topProducts.map((e, i) => {
     const vol = e.item.width * e.item.height * e.item.depth;
     const medals = ["🥇", "🥈", "🥉"];
-    return `<div class="top-item"><span class="top-rank">${medals[i]}</span><span class="top-name">${e.item.name || e.item.sku}</span><span class="top-vol">${fmt(vol)} m³</span></div>`;
+	    return `<div class="top-item"><span class="top-rank">${medals[i]}</span><span class="top-name">${e.item.name || e.item.serialNumber || "Sin nombre"}</span><span class="top-vol">${fmt(vol)} m³</span></div>`;
   }).join("");
   const categoryStats = countByCatalog(allProducts, (entry) => entry.item.category);
   const brandStats = countByCatalog(allProducts, (entry) => entry.item.brand);
@@ -206,13 +206,13 @@ function buildReportHtml(data: ReportData): string {
   const brandOptions = brandStats.map((item) => `<option value="${esc(item.name)}">${esc(item.name)}</option>`).join("");
   const shelfOptions = shelves.map((shelf) => `<option value="${esc(shelf.id)}">${esc(shelf.id)} · ${esc(shelf.label ?? shelf.id)}</option>`).join("");
   const productsCsv = [
-    ["SKU", "Nombre", "Categoria", "Marca", "Estante", "Piso", "Ancho", "Alto", "Profundidad", "Volumen", "X", "Y", "Z"],
+	    ["Numero de serie", "Nombre", "Categoria", "Marca", "Estante", "Piso", "Ancho", "Alto", "Profundidad", "Volumen", "X", "Y", "Z"],
     ...allProducts.map((entry) => {
       const shelf = shelves.find((item) => item.id === entry.shelfId);
       const section = shelf ? getSectionForProduct(shelf, entry) : "";
       const volume = entry.item.width * entry.item.height * entry.item.depth;
       return [
-        entry.item.sku,
+	        entry.item.serialNumber ?? "",
         entry.item.name,
         entry.item.category ?? "Sin categoria",
         entry.item.brand ?? "Sin marca",
@@ -235,7 +235,7 @@ function buildReportHtml(data: ReportData): string {
     `<div class="intel-row"><span class="intel-label">${brand.name}</span><span class="intel-value">${brand.count} prod.</span></div>`
   ).join("");
   const incompleteRowsHtml = incompleteProducts.slice(0, 8).map((entry) =>
-    `<div class="intel-row"><span class="intel-label">${entry.item.sku}</span><span class="intel-value warn">${entry.item.name || "Sin nombre"} · ${entry.shelfId || "Sin estante"}</span></div>`
+	    `<div class="intel-row"><span class="intel-label">${entry.item.serialNumber || "Sin serie"}</span><span class="intel-value warn">${entry.item.name || "Sin nombre"} · ${entry.shelfId || "Sin estante"}</span></div>`
   ).join("");
 
   const donutSvg = buildDonutChart(usedVolume, totalVolume);
@@ -292,7 +292,7 @@ function buildReportHtml(data: ReportData): string {
           const lastActivity = lastActivityBySku.get(e.item.sku) ?? "";
 	          return `
 	          <tr data-report-product-row data-shelf="${esc(e.shelfId)}" data-category="${esc(category)}" data-brand="${esc(brand)}" data-moved="${moved ? "true" : "false"}" data-has-image="${hasImage ? "true" : "false"}" data-last-activity="${esc(lastActivity)}">
-	            <td><span class="sku-badge">${esc(e.item.sku)}</span></td>
+		            <td><span class="sku-badge">${esc(e.item.serialNumber || "Sin serie")}</span></td>
 	            <td>${esc(e.item.name || "—")}</td>
 	            <td class="catalog-cell">${esc(category)}<br><small>${esc(brand)}</small></td>
 	            <td class="dim-cell">${fmt(e.item.width)} × ${fmt(e.item.height)} × ${fmt(e.item.depth)}</td>
@@ -326,7 +326,7 @@ function buildReportHtml(data: ReportData): string {
       </div>
       ${wasteAlert}
       <table class="product-table">
-        <thead><tr><th>SKU</th><th>NOMBRE</th><th>CAT./MARCA</th><th>DIMENSIONES (M)</th><th>VOLUMEN</th><th>UBICACIÓN</th></tr></thead>
+	        <thead><tr><th>SERIE</th><th>NOMBRE</th><th>CAT./MARCA</th><th>DIMENSIONES (M)</th><th>VOLUMEN</th><th>UBICACIÓN</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
