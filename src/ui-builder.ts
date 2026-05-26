@@ -247,7 +247,11 @@ function buildHudTemplate(): string {
             <label class="search-label">
               <span>${UI_COPY.search.label}</span>
               <div class="search-row">
-		                <input name="searchSku" type="text" placeholder="Serie, nombre, categoria o marca" aria-describedby="search-result-shelf" data-testid="search-sku-input" />
+                <button type="button" id="barcode-scan-btn" class="icon-button icon-button--scan icon-button--scan-primary" aria-label="${UI_COPY.buttons.scanBarcode}" title="${UI_COPY.buttons.scanBarcode}" data-testid="barcode-scan-btn">
+                  ${renderIcon(ICON_PATHS.barcode)}
+                  <span class="scan-btn-label">${UI_COPY.buttons.scanBarcode}</span>
+                </button>
+                <input name="searchSku" type="text" placeholder="${UI_COPY.search.placeholder}" aria-describedby="search-result-shelf" data-testid="search-sku-input" inputmode="text" autocomplete="off" spellcheck="false" />
                 <button type="submit" class="icon-button" aria-label="${UI_COPY.search.buttonAriaLabel}" title="${UI_COPY.search.buttonAriaLabel}" data-testid="search-submit-btn">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path
@@ -256,15 +260,25 @@ function buildHudTemplate(): string {
                     />
                   </svg>
                 </button>
-                <button type="button" id="barcode-scan-btn" class="icon-button icon-button--scan" aria-label="${UI_COPY.buttons.scanBarcode}" title="${UI_COPY.buttons.scanBarcode}" data-testid="barcode-scan-btn">
-                  ${renderIcon(ICON_PATHS.barcode)}
-                  <span class="visually-hidden">${UI_COPY.buttons.scanBarcode}</span>
-                </button>
                 <button type="button" id="clear-search-btn" class="icon-button icon-button--ghost" aria-label="${UI_COPY.buttons.clearSearch}" title="${UI_COPY.buttons.clearSearch}" data-testid="clear-search-btn" hidden>
                   ${renderIcon(ICON_PATHS.close)}
                 </button>
-	              </div>
+              </div>
 	            </label>
+            <div class="recent-serials" id="recent-serials" hidden aria-label="Numeros de serie recientes">
+              <span class="recent-serials-title">Recientes:</span>
+              <div class="recent-serials-chips" id="recent-serials-chips"></div>
+            </div>
+            <details class="bulk-search">
+              <summary>Buscar varias series a la vez</summary>
+              <p class="bulk-search-hint">Pega una serie por linea. Te devolvera la ubicacion de cada producto encontrado.</p>
+              <textarea id="bulk-search-input" rows="4" placeholder="SN-001&#10;SN-002&#10;SN-003"></textarea>
+              <div class="bulk-search-actions">
+                <button type="button" id="bulk-search-btn" class="bulk-search-btn">Buscar lote</button>
+                <button type="button" id="bulk-search-clear-btn" class="bulk-search-clear-btn">Limpiar</button>
+              </div>
+              <div class="bulk-search-results" id="bulk-search-results" hidden></div>
+            </details>
 	            <div class="catalog-filter-row" aria-label="Filtros de catalogo">
 	              <label>
 	                <span>Categoria</span>
@@ -468,9 +482,6 @@ function buildHudTemplate(): string {
             <strong class="edit-group-title">${UI_COPY.editPanel.moveSection}</strong>
             <button type="button" id="edit-shelves-btn" class="shelf-config-action-btn shelf-config-action-btn--soft edit-shelves-btn">
               ${UI_COPY.buttons.moveShelf}
-            </button>
-            <button type="button" id="move-product-btn" class="shelf-config-action-btn shelf-config-action-btn--soft">
-              ${UI_COPY.buttons.moveProduct}
             </button>
             <p class="edit-group-hint">${UI_COPY.editPanel.movePisosHint}</p>
           </div>
@@ -678,6 +689,13 @@ function buildHudTemplate(): string {
                   ${UI_COPY.buttons.cancelTransfer}
                 </button>
               </div>
+              <details class="transfer-advanced">
+                <summary>${UI_COPY.search.advancedToggle}</summary>
+                <p class="transfer-advanced-hint">${UI_COPY.search.advancedHint}</p>
+                <button type="button" id="move-product-btn" class="transfer-advanced-btn">
+                  ${UI_COPY.search.advancedStart}
+                </button>
+              </details>
             </div>
           </div>
         </section>

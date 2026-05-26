@@ -62,6 +62,54 @@ declare global {
   }
 }
 
+// Recent-serials history kept in localStorage so warehouse workers can repeat
+// frequent lookups without retyping the serial.
+const RECENT_SERIALS_KEY = "almacen-recent-serials";
+const RECENT_SERIALS_MAX = 5;
+
+function loadRecentSerials(): string[] {
+  try {
+    const raw = window.localStorage.getItem(RECENT_SERIALS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushRecentSerial(serial: string | null | undefined): string[] {
+  const clean = (serial ?? "").trim();
+  if (!clean) return loadRecentSerials();
+  const list = [clean, ...loadRecentSerials().filter((s) => s.toLowerCase() !== clean.toLowerCase())]
+    .slice(0, RECENT_SERIALS_MAX);
+  try {
+    window.localStorage.setItem(RECENT_SERIALS_KEY, JSON.stringify(list));
+  } catch {
+    // localStorage may fail in private modes — silently ignore.
+  }
+  return list;
+}
+
+function renderRecentSerials(container: HTMLElement, chipsHost: HTMLElement, onPick: (serial: string) => void): void {
+  const list = loadRecentSerials();
+  chipsHost.replaceChildren();
+  if (list.length === 0) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+  list.forEach((serial) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "recent-serial-chip";
+    btn.textContent = serial;
+    btn.title = `Buscar ${serial}`;
+    btn.addEventListener("click", () => onPick(serial));
+    chipsHost.appendChild(btn);
+  });
+}
+
 export interface ProductFormDeps {
   config: WarehouseConfig;
   form: HTMLFormElement;
@@ -701,6 +749,26 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
   const searchBrandFilter = searchForm.querySelector<HTMLSelectElement>("#search-brand-filter");
   const categoryDatalist = document.querySelector<HTMLDataListElement>("#category-options");
   const brandDatalist = document.querySelector<HTMLDataListElement>("#brand-options");
+  const recentSerialsContainer = searchForm.querySelector<HTMLElement>("#recent-serials");
+  const recentSerialsChips = searchForm.querySelector<HTMLElement>("#recent-serials-chips");
+  const bulkSearchInput = searchForm.querySelector<HTMLTextAreaElement>("#bulk-search-input");
+  const bulkSearchBtn = searchForm.querySelector<HTMLButtonElement>("#bulk-search-btn");
+  const bulkSearchClearBtn = searchForm.querySelector<HTMLButtonElement>("#bulk-search-clear-btn");
+  const bulkSearchResults = searchForm.querySelector<HTMLElement>("#bulk-search-results");
+  const searchInput = searchForm.querySelector<HTMLInputElement>("input[name='searchSku']");
+
+  const triggerSerialSearch = (serial: string) => {
+    if (!searchInput) return;
+    searchInput.value = serial;
+    searchForm.requestSubmit();
+  };
+
+  const refreshRecentSerialsUi = () => {
+    if (recentSerialsContainer && recentSerialsChips) {
+      renderRecentSerials(recentSerialsContainer, recentSerialsChips, triggerSerialSearch);
+    }
+  };
+  refreshRecentSerialsUi();
 
   attachMaxClamp(editorWidth);
   attachMaxClamp(editorHeight);
@@ -904,6 +972,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 
   const hideTransferPanel = () => {
     transferPanel.hidden = true;
+    // Reset the advanced 3D placement section so it starts collapsed next time.
+    transferPanel.querySelector<HTMLDetailsElement>(".transfer-advanced")?.removeAttribute("open");
   };
 
 	  const hideResult = () => {
@@ -971,7 +1041,7 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	    const locationText = formatProductLocation(shelfId, shelfLabel, getSectionLabel(shelf, section), localPos);
 	    activeSku = sku;
 		    searchResultSku.textContent = item.serialNumber
-		      ? `${item.name || "Producto sin nombre"} · Serie ${item.serialNumber}`
+		      ? `Serie ${item.serialNumber} · ${item.name || "Producto sin nombre"}`
 		      : item.name || "Producto sin serie";
 	    searchResultShelf.textContent = reportMatches.length <= 1
 	      ? locationText
@@ -1009,6 +1079,10 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 	    highlightProduct(runtime, sku, scene);
 	    setActiveSectionHighlight(shelfMesh, shelf, localPos.y);
     setStatus(statusMessage, getSearchSuccessMessage(item.serialNumber || item.name || sku, shelfId, reportMatches.length), false);
+    if (item.serialNumber) {
+      pushRecentSerial(item.serialNumber);
+      refreshRecentSerialsUi();
+    }
   };
 
   const handleSearchSubmit = (event: SubmitEvent) => {
@@ -1030,6 +1104,17 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
       return;
     }
 
+    // Exact serial-number match → jump straight to the product, skip the
+    // suggestions/picker step. Same for exact SKU. Most-common warehouse worker flow.
+    if (query && !categoryFilter && !brandFilter) {
+      const exactSerial = resolveProductByExactSerial(runtime.productEntryBySku, query);
+      const exactSku = exactSerial ?? resolveProductByExactSku(runtime.productEntryBySku, query);
+      if (exactSku) {
+        selectProduct(exactSku.sku, [{ sku: exactSku.sku, entry: exactSku.entry, score: 1000 }]);
+        return;
+      }
+    }
+
     const baseMatches = query
       ? resolveProductSearchMatches(runtime.productEntryBySku, query)
       : [...runtime.productEntryBySku.entries()].map(([sku, entry]) => ({ sku, entry, score: 1 }));
@@ -1040,6 +1125,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
   const handleMoveProductClick = () => {
     if (!activeSku) return;
     const label = getProductDisplayCode(runtime.productEntryBySku.get(activeSku)?.item, activeSku);
+    // Close the unified panel so the user can see the 3D scene to drop the product.
+    hideTransferPanel();
     onMoveRequested(activeSku);
     setStatus(statusMessage, getMoveReadyMessage(label), false);
   };
@@ -1314,6 +1401,77 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
 
   searchForm.addEventListener("submit", handleSearchSubmit);
   barcodeScanBtn?.addEventListener("click", handleBarcodeScanClick);
+
+  const runBulkSearch = () => {
+    if (!bulkSearchInput || !bulkSearchResults) return;
+    const raw = bulkSearchInput.value;
+    const queries = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    bulkSearchResults.replaceChildren();
+    if (queries.length === 0) {
+      bulkSearchResults.hidden = true;
+      return;
+    }
+    bulkSearchResults.hidden = false;
+
+    const seen = new Set<string>();
+    const rows = queries
+      .filter((q) => {
+        const key = q.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((query) => {
+        const match = resolveProductByExactSerial(runtime.productEntryBySku, query)
+          ?? resolveProductByExactSku(runtime.productEntryBySku, query);
+        return { query, match };
+      });
+
+    const list = document.createElement("ul");
+    list.className = "bulk-search-list";
+    let foundCount = 0;
+    rows.forEach(({ query, match }) => {
+      const li = document.createElement("li");
+      if (match) {
+        foundCount++;
+        const shelf = config.shelves.find((s) => s.id === match.entry.shelfId);
+        const shelfLabel = shelf?.label || match.entry.shelfId;
+        const section = getSectionNumberForPosition(shelf, match.entry.localPosition.y);
+        const sectionLabel = shelf ? getSectionLabel(shelf, section) : `Piso ${section}`;
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "bulk-search-result bulk-search-result--found";
+        link.textContent = `${query} · ${match.entry.item.name || "Sin nombre"} → ${shelfLabel} / ${sectionLabel}`;
+        link.title = `Enfocar ${query}`;
+        link.addEventListener("click", () => selectProduct(match.sku, [{ sku: match.sku, entry: match.entry, score: 1000 }]));
+        li.appendChild(link);
+      } else {
+        const span = document.createElement("span");
+        span.className = "bulk-search-result bulk-search-result--missing";
+        span.textContent = `${query} · no encontrado`;
+        li.appendChild(span);
+      }
+      list.appendChild(li);
+    });
+
+    const summary = document.createElement("p");
+    summary.className = "bulk-search-summary";
+    summary.textContent = `${foundCount} de ${rows.length} encontrados.`;
+    bulkSearchResults.appendChild(summary);
+    bulkSearchResults.appendChild(list);
+  };
+
+  bulkSearchBtn?.addEventListener("click", runBulkSearch);
+  bulkSearchClearBtn?.addEventListener("click", () => {
+    if (bulkSearchInput) bulkSearchInput.value = "";
+    if (bulkSearchResults) {
+      bulkSearchResults.hidden = true;
+      bulkSearchResults.replaceChildren();
+    }
+  });
   editorForm.addEventListener("submit", handleEditorSave);
   clearSearchBtn?.addEventListener("click", handleClearSearch);
   moveProductBtn.addEventListener("click", handleMoveProductClick);
@@ -1344,6 +1502,20 @@ export function resolveProductByExactSku(
   const sku = [...productsBySku.keys()].find((key) => normalizeSearchText(key) === query);
   const entry = sku ? productsBySku.get(sku) : undefined;
   return sku && entry ? { sku, entry } : null;
+}
+
+export function resolveProductByExactSerial(
+  productsBySku: Map<string, ProductEntry>,
+  rawSerial: string
+): { sku: string; entry: ProductEntry } | null {
+  const query = normalizeSearchText(rawSerial);
+  if (!query) return null;
+
+  for (const [sku, entry] of productsBySku) {
+    const serial = entry.item.serialNumber;
+    if (serial && normalizeSearchText(serial) === query) return { sku, entry };
+  }
+  return null;
 }
 
 interface SearchMatch {

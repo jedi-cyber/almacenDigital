@@ -991,6 +991,62 @@ code {
   background: rgba(74, 53, 32, 0.15);
 }
 
+.transfer-advanced {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(126, 160, 205, 0.28);
+}
+
+.transfer-advanced > summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #8fa0b8;
+  list-style: none;
+  user-select: none;
+}
+
+.transfer-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.transfer-advanced > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s;
+}
+
+.transfer-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.transfer-advanced-hint {
+  margin: 8px 0 10px;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: #8fa0b8;
+}
+
+.transfer-advanced-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(126, 160, 205, 0.28);
+  background: transparent;
+  color: var(--color-text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.transfer-advanced-btn:hover {
+  background: rgba(60, 100, 180, 0.14);
+  border-color: rgba(126, 160, 205, 0.48);
+}
+
 .shelf-summary {
   display: grid;
   gap: 8px;
@@ -1311,6 +1367,222 @@ code {
 .icon-button--scan[data-scanning="true"] {
   background: var(--color-error-bg);
   color: var(--color-error-text);
+}
+
+/* Recent-serials chips above the search input. */
+.recent-serials {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.recent-serials-title {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.recent-serials-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.recent-serial-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  background: rgba(56, 189, 248, 0.1);
+  color: #bae6fd;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.recent-serial-chip:hover {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: rgba(125, 211, 252, 0.6);
+}
+
+/* Bulk-paste pick list. */
+.bulk-search {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(126, 160, 205, 0.28);
+}
+
+.bulk-search > summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  list-style: none;
+  user-select: none;
+}
+
+.bulk-search > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bulk-search > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s;
+}
+
+.bulk-search[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.bulk-search-hint {
+  margin: 8px 0;
+  font-size: 0.76rem;
+  color: var(--color-text-muted);
+}
+
+#bulk-search-input {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(126, 160, 205, 0.28);
+  background: rgba(15, 30, 50, 0.6);
+  color: var(--color-text);
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  font-size: 0.82rem;
+  box-sizing: border-box;
+}
+
+.bulk-search-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bulk-search-btn,
+.bulk-search-clear-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bulk-search-btn {
+  background: rgba(56, 189, 248, 0.22);
+  color: #bae6fd;
+}
+
+.bulk-search-btn:hover {
+  background: rgba(56, 189, 248, 0.32);
+}
+
+.bulk-search-clear-btn {
+  background: rgba(74, 53, 32, 0.12);
+  color: var(--color-text);
+}
+
+.bulk-search-results {
+  margin-top: 10px;
+}
+
+.bulk-search-summary {
+  margin: 0 0 6px;
+  font-size: 0.76rem;
+  color: var(--color-text-muted);
+}
+
+.bulk-search-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.bulk-search-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  border: 1px solid transparent;
+}
+
+.bulk-search-result--found {
+  background: rgba(34, 197, 94, 0.12);
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.3);
+  cursor: pointer;
+}
+
+.bulk-search-result--found:hover {
+  background: rgba(34, 197, 94, 0.22);
+}
+
+.bulk-search-result--missing {
+  background: rgba(248, 113, 113, 0.08);
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+/* Scan-by-serial primary button — leads the search row so worker eye lands on it first. */
+.icon-button--scan-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  background: rgba(56, 189, 248, 0.18);
+  color: #bae6fd;
+  font-weight: 700;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+}
+
+.icon-button--scan-primary:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: rgba(125, 211, 252, 0.7);
+}
+
+.icon-button--scan-primary:active {
+  transform: scale(0.97);
+}
+
+.icon-button--scan-primary svg {
+  width: 20px;
+  height: 20px;
+}
+
+.scan-btn-label {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* On narrow viewports collapse the label, icon stays. */
+@media (max-width: 520px) {
+  .scan-btn-label {
+    display: none;
+  }
+  .icon-button--scan-primary {
+    padding: 0 10px;
+  }
 }
 
 .edit-group {
@@ -1867,6 +2139,13 @@ html[data-app-mode="mobile-route"] .scene-canvas {
 .scene-canvas--edit-mode {
   box-shadow:
     0 0 0 4px rgba(125, 211, 252, 0.28),
+    var(--shadow-strong);
+}
+
+.scene-canvas--product-move {
+  cursor: crosshair !important;
+  box-shadow:
+    0 0 0 4px rgba(250, 204, 21, 0.55),
     var(--shadow-strong);
 }
 
@@ -3053,6 +3332,18 @@ body {
   font-weight: 800;
   text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+#profile-role {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid rgba(147, 197, 253, 0.45);
+  color: #93c5fd;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .profile-readonly {

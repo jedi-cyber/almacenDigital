@@ -428,6 +428,7 @@ function db_ensure_schema(PDO $pdo): void
     $pdo->exec("ALTER TABLE usuarios MODIFY COLUMN password_hash VARCHAR(255) NOT NULL");
 	    $pdo->exec("ALTER TABLE productos MODIFY COLUMN name VARCHAR(255) NOT NULL");
 	    db_add_index_if_missing($pdo, "productos", "idx_productos_numero_serie", "numero_serie");
+	    db_add_unique_index_if_missing($pdo, "productos", "idx_productos_numero_serie", "numero_serie");
     db_add_index_if_missing($pdo, "productos", "idx_productos_categoria_id", "categoria_id");
     db_add_index_if_missing($pdo, "productos", "idx_productos_marca_id", "marca_id");
 	    db_add_index_if_missing($pdo, "productos", "idx_productos_dimension_id", "dimension_id");
@@ -462,6 +463,44 @@ function db_add_index_if_missing(PDO $pdo, string $table, string $index, string 
     if (!$stmt->fetch(PDO::FETCH_ASSOC)) {
         $pdo->exec("ALTER TABLE `{$table}` ADD INDEX `{$index}` (`{$column}`)");
     }
+}
+
+/**
+ * Add a UNIQUE index on `$column` if not already present. Detects duplicate values
+ * first; if any exist, the unique key is NOT added and a warning is written to the
+ * PHP error log so the operator can clean the data manually. NULL values are allowed
+ * to repeat (MySQL/MariaDB treat NULL as distinct in unique indexes).
+ */
+function db_add_unique_index_if_missing(PDO $pdo, string $table, string $index, string $column): void
+{
+    $check = $pdo->prepare("SHOW INDEX FROM `{$table}` WHERE Key_name = :index_name");
+    $check->execute([":index_name" => $index]);
+    $existing = $check->fetch(PDO::FETCH_ASSOC);
+    if ($existing && (int)($existing["Non_unique"] ?? 1) === 0) {
+        return;
+    }
+
+    $dupStmt = $pdo->query(
+        "SELECT `{$column}` AS value, COUNT(*) AS total
+         FROM `{$table}`
+         WHERE `{$column}` IS NOT NULL AND `{$column}` <> ''
+         GROUP BY `{$column}` HAVING total > 1 LIMIT 5"
+    );
+    $duplicates = $dupStmt ? $dupStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    if (!empty($duplicates)) {
+        $sample = array_map(fn($row) => $row["value"], $duplicates);
+        error_log(
+            "[almacen] No se puede crear UNIQUE `{$index}` en `{$table}`.`{$column}`: " .
+            "existen duplicados (muestra: " . implode(", ", $sample) . "). " .
+            "Corrige los datos y vuelve a ejecutar migrate.php."
+        );
+        return;
+    }
+
+    if ($existing) {
+        $pdo->exec("ALTER TABLE `{$table}` DROP INDEX `{$index}`");
+    }
+    $pdo->exec("ALTER TABLE `{$table}` ADD UNIQUE INDEX `{$index}` (`{$column}`)");
 }
 
 function db_migrate_inline_product_dimensions(PDO $pdo): void

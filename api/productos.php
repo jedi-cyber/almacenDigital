@@ -25,6 +25,75 @@ try {
 //
 if ($_SERVER["REQUEST_METHOD"] === "GET") {
     require_api_permission($session, "product:read");
+
+    // Fast single-product lookup by serial. Used by scanner workflows so a single
+    // scan doesn't have to fetch the whole inventory client-side.
+    $serialQuery = isset($_GET["serial"]) ? trim((string)$_GET["serial"]) : "";
+    if ($serialQuery !== "") {
+        try {
+            $stmt = $pdo->prepare("
+                SELECT
+                    p.sku,
+                    p.numero_serie,
+                    p.shelf_id,
+                    p.name,
+                    COALESCE(cat.nombre, p.category, 'Sin categoria') AS category,
+                    cat.id AS category_id,
+                    COALESCE(m.nombre, 'Sin marca') AS brand,
+                    m.id AS brand_id,
+                    p.image_url,
+                    p.local_x,
+                    p.local_y,
+                    p.local_z,
+                    d.width,
+                    d.height,
+                    d.depth
+                FROM productos p
+                INNER JOIN producto_dimensiones d ON d.id = p.dimension_id
+                LEFT JOIN categorias cat ON cat.id = p.categoria_id
+                LEFT JOIN marcas m ON m.id = p.marca_id
+                WHERE p.numero_serie = :serial
+                LIMIT 1
+            ");
+            $stmt->execute([":serial" => $serialQuery]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            api_log_error($e, "productos:GET:serial");
+            http_response_code(500);
+            echo json_encode(["error" => "No se pudo buscar por numero de serie.", "code" => "PRODUCT_LOOKUP_ERROR"]);
+            exit;
+        }
+
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(["product" => null, "error" => "Producto no encontrado.", "code" => "SERIAL_NOT_FOUND"]);
+            exit;
+        }
+
+        echo json_encode(["product" => [
+            "shelfId" => $row["shelf_id"],
+            "item" => [
+                "sku" => $row["sku"],
+                "serialNumber" => $row["numero_serie"] ?? null,
+                "name" => $row["name"],
+                "width" => (float)$row["width"],
+                "height" => (float)$row["height"],
+                "depth" => (float)$row["depth"],
+                "category" => $row["category"] ?? "Sin categoria",
+                "categoryId" => isset($row["category_id"]) ? (int)$row["category_id"] : null,
+                "brand" => $row["brand"] ?? "Sin marca",
+                "brandId" => isset($row["brand_id"]) ? (int)$row["brand_id"] : null,
+                "imageUrl" => $row["image_url"] ?? null
+            ],
+            "localPosition" => [
+                "x" => (float)$row["local_x"],
+                "y" => (float)$row["local_y"],
+                "z" => (float)$row["local_z"]
+            ]
+        ]]);
+        exit;
+    }
+
     try {
         $rows = $pdo->query("
 	            SELECT

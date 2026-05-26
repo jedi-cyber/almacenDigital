@@ -2151,6 +2151,10 @@ function wireShelfDrag(
   let pointerDownPos = { x: 0, y: 0 };
   let suppressClick = false;
   let editModeEnabled = false;
+  // Narrow "product move" lock: arm via the Mover producto panel. Unlike edit mode,
+  // this blocks shelf and board drag paths so the user can't accidentally move a
+  // shelf while trying to place a product.
+  let productMoveLock = false;
   const cameraHomePosition = camera.position.clone();
   const cameraHomeTarget = controls.target.clone();
   const cameraHomeFov = camera.fov;
@@ -2283,7 +2287,15 @@ function wireShelfDrag(
 
   const armProductMove = (sku: string) => {
     pendingProductSku = sku;
-    setEditMode(true);
+    productMoveLock = true;
+    canvas.classList.add("scene-canvas--product-move");
+  };
+
+  const cancelProductMove = () => {
+    if (!productMoveLock && !pendingProductSku) return;
+    pendingProductSku = null;
+    productMoveLock = false;
+    canvas.classList.remove("scene-canvas--product-move");
   };
 
   editShelvesBtn.addEventListener("click", () => {
@@ -2299,7 +2311,7 @@ function wireShelfDrag(
 
   canvas.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    if (!editModeEnabled) return;
+    if (!editModeEnabled && !productMoveLock) return;
 
     if (pendingProductSku) {
       const pendingEntry = runtime.productEntryBySku.get(pendingProductSku);
@@ -2332,6 +2344,15 @@ function wireShelfDrag(
         return;
       }
       pendingProductSku = null;
+    }
+
+    // While product-move is armed but no pending SKU was found above, never let the
+    // click fall through to shelf or board drag paths — that was the original
+    // accidental-shelf-move bug.
+    if (productMoveLock) {
+      productMoveLock = false;
+      canvas.classList.remove("scene-canvas--product-move");
+      return;
     }
 
     toNdc(event);
@@ -2429,7 +2450,7 @@ function wireShelfDrag(
   });
 
   canvas.addEventListener("pointermove", (event) => {
-    if (!editModeEnabled) {
+    if (!editModeEnabled && !productMoveLock) {
       if (!dragging) canvas.style.cursor = "";
       return;
     }
@@ -2598,12 +2619,20 @@ function wireShelfDrag(
     controls.enabled = true;
     canvas.style.cursor = "";
     canvas.releasePointerCapture(event.pointerId);
+    if (productMoveLock) {
+      productMoveLock = false;
+      canvas.classList.remove("scene-canvas--product-move");
+    }
   };
 
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
 
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && productMoveLock && !dragging) {
+      cancelProductMove();
+      return;
+    }
     if (!editModeEnabled || (event.key !== "r" && event.key !== "R") || !selectedShelfId) return;
 
     const mesh = shelfMeshes.get(selectedShelfId);
