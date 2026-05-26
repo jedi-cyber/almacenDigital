@@ -14,7 +14,8 @@ services:
       DB_USER: almacen_user
       DB_PASSWORD: almacen_password
       DB_CHARSET: utf8mb4
-      ALLOWED_ORIGIN: http://localhost:8080
+      # Web origin plus the Android WebView origin, so the embedded 3D viewer passes CORS.
+      ALLOWED_ORIGIN: http://localhost:8080,https://appassets.androidplatform.net
     depends_on:
       db:
         condition: service_healthy
@@ -28,7 +29,8 @@ services:
 
   db:
     container_name: almacen-digital-db
-    image: mysql:8.4
+    # MariaDB to match the exported dump (MariaDB syntax) and typical XAMPP dev setups.
+    image: mariadb:11.4
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     ports:
       - "3307:3306"
@@ -39,11 +41,12 @@ services:
       MYSQL_ROOT_PASSWORD: root_password
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./productos_sinTamano.sql:/docker-entrypoint-initdb.d/01_catalogo_productos.sql:ro
-      - ./scripts/importar_catalogo_dimensiones.sql:/docker-entrypoint-initdb.d/02_importar_catalogo_dimensiones.sql:ro
+      # Any *.sql / *.sh placed in db/init runs on first boot (alphabetical order).
+      # Drop your almacensekai dump there. Dumps are gitignored (they hold credentials).
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 10

@@ -15,8 +15,6 @@ datasets
 *.tmp
 *.temp
 *.sql
-!productos_sinTamano.sql
-!scripts/*.sql
 *.bak
 *.backup
 docs/

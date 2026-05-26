@@ -153,14 +153,15 @@ URLs:
 - App: `http://localhost:8080/`
 - API: `http://localhost:8080/api/config.php`
 - Catálogos: `http://localhost:8080/api/catalogos.php`
-- MySQL: `localhost:3307`
+- MariaDB: `localhost:3307`
 
-El contenedor MySQL importa automáticamente:
+La base de datos corre sobre **MariaDB** (coincide con el dump exportado y con XAMPP).
+En el primer arranque importa automáticamente cualquier `*.sql` que coloques en
+`db/init/` (ver `db/README.md`). Los dumps están en `.gitignore` porque contienen
+credenciales, así que debes copiar el tuyo antes de levantar Docker.
 
-```text
-productos_sinTamano.sql
-scripts/importar_catalogo_dimensiones.sql
-```
+`ALLOWED_ORIGIN` ya incluye `https://appassets.androidplatform.net` para que la vista
+3D embebida en la app Android pase CORS.
 
 El healthcheck usa `/api/config.php`; no usa migraciones.
 
@@ -176,6 +177,8 @@ docker compose up --build -d
 ```bash
 npm run dev
 npm run build
+npm run build:android   # build + copia dist/ a la app Android (ver abajo)
+npm run sync:android    # solo copia el último build a la app Android
 npm run preview
 npm test
 npm run test:integration
@@ -183,23 +186,42 @@ npm run test:integration
 
 ## Web Y Móvil
 
-Este repositorio contiene la web y la API. La app móvil está separada en:
-
-```text
-C:\Users\HP\AndroidStudioProjects\Almacen3D2
-```
+Este repositorio contiene la web y la API. La app móvil (Android) vive en el repo
+`almacenDigital-Android` (en este equipo está en
+`C:\Users\HP\AndroidStudioProjects\Almacen3D2`). La app es **híbrida**: las pantallas
+nativas (login, productos, búsqueda) llaman a la API PHP, y la vista de **ruta 3D**
+carga el frontend web compilado dentro de un WebView.
 
 Separación funcional:
 
 - Web: administra estantes, elimina productos, edita estructura del almacén y opera la escena completa.
 - Móvil: busca, crea y edita productos; no elimina productos ni edita estantes.
-- Ambos consumen la API PHP/MySQL.
+- Ambos consumen la API PHP/MariaDB.
 
-La app móvil usa:
+### Mantener la app Android sincronizada con la web
 
-```text
-http://192.168.18.189/almacenDigital/api/
+La vista 3D embebida usa una copia del build de Vite dentro de
+`<android>/app/src/main/assets/`. Para que **no se desincronice** al cambiar la web,
+regenera y copia con un solo comando. Si los repos están lado a lado:
+
+```bash
+npm run build:android
 ```
+
+Si están en otra ruta (caso típico en este equipo), pásala explícitamente:
+
+```bash
+npm run sync:android -- "C:/Users/HP/AndroidStudioProjects/Almacen3D2/app/src/main/assets"
+# o
+ANDROID_ASSETS_DIR="C:/Users/HP/AndroidStudioProjects/Almacen3D2/app/src/main/assets" npm run sync:android
+```
+
+### Configuración de la API en el móvil
+
+Ya **no** hay ninguna IP fija en el código web. La URL del servidor la define la app
+Android (en su pantalla **Configuración**) y la inyecta al WebView como `nativeApiBase`.
+Usa la IP local de tu PC en la misma red Wi-Fi, por ejemplo
+`http://192.168.1.50/almacenDigital/api/` (en el emulador, `http://10.0.2.2/almacenDigital/api/`).
 
 ## Uso
 

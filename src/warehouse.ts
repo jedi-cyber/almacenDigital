@@ -42,6 +42,8 @@ export interface WarehouseRuntime {
 }
 
 function resolveApiBaseUrl(): string {
+  // When embedded in the Android app, the native side passes the configured server
+  // URL as `nativeApiBase` so there is a single source of truth (the app's Settings).
   if (typeof window !== "undefined") {
     const nativeApiBase = new URLSearchParams(window.location.search).get("nativeApiBase");
     if (nativeApiBase) {
@@ -52,13 +54,6 @@ function resolveApiBaseUrl(): string {
   const configuredApiUrl = import.meta.env.VITE_API_URL;
   if (configuredApiUrl) {
     return configuredApiUrl;
-  }
-
-  if (
-    typeof window !== "undefined" &&
-    window.location.hostname === "appassets.androidplatform.net"
-  ) {
-    return "http://192.168.18.189/almacenDigital/api";
   }
 
   return "/api";
