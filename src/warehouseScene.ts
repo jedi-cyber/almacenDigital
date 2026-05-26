@@ -4,8 +4,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import { SHELF_PALETTE, addDoorS01S02, addFloor, addLights, addWalls, buildScene, buildShelfMesh, collectBoardOffsets, focusOnProductFromAisle, getInstanceWorldPosition, localToWorld, setInstanceWorldPosition, skuToColor, updateShelfLabelSprite, updateShelfTransparency } from "./scene.js";
 import { getProductMovedInsideShelfMessage, UI_COPY } from "./ui-copy.js";
-import { buildHtml, populateShelves, setStatus, updateLegendCount, wireProductForm, wireSceneClick, wireSearchForm } from "./hud.js";
-import type { HudRefs } from "./hud.js";
+import { buildHtml, populateShelves, setStatus, wireProductForm, wireSceneClick, wireSearchForm } from "./ui.js";
+import type { HudRefs } from "./ui.js";
 import type { Item, PlacedItem, Shelf, WarehouseAisle, WarehouseConfig } from "./types.js";
 import { getSectionBoundaries } from "./canPlace.js";
 import {
@@ -512,7 +512,7 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     shelfSprites.set(shelf.id, sprite);
   });
 
-  populateShelves(refs.legend, refs.shelfSelect, config.shelves);
+  populateShelves(refs.shelfSelect, config.shelves);
 
   setLoadingText(UI_COPY.status.loadingProducts);
   refs.statusMessage.textContent = UI_COPY.status.loadingProducts;
@@ -522,7 +522,6 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     runtime.productsByShelf.forEach((_, shelfId) => {
       runtime.productsByShelf.set(shelfId, []);
       runtime.productSkusByShelf.set(shelfId, []);
-      updateLegendCount(shelfId, 0);
     });
     runtime.productEntryBySku.clear();
     runtime.instanceOwner.clear();
@@ -568,8 +567,6 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
       const shelfMesh = shelfMeshes.get(shelfId);
       if (!shelfMesh) continue;
       restoreItem(runtime, scene, shelfId, item, localPosition, shelfMesh);
-      const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
-      updateLegendCount(shelfId, count);
     }
     updateDashboardSummary(refs, runtime, 0);
     return true;

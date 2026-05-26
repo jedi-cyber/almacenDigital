@@ -3,7 +3,6 @@ import { wireHudInteractions } from "./ui-handlers.js";
 
 export interface HudRefs {
   canvas: HTMLCanvasElement;
-  legend: HTMLUListElement;
   searchForm: HTMLFormElement;
   productForm: HTMLFormElement;
   shelfSelect: HTMLSelectElement;
@@ -901,10 +900,6 @@ function buildHudTemplate(): string {
 	            <button type="button" id="global-clear-search-btn" aria-label="Cancelar búsqueda" title="Cancelar búsqueda">×</button>
 	          </label>
           <div class="top-actions">
-            <button type="button" data-legend-toggle aria-controls="legend" aria-expanded="false" title="${UI_COPY.buttons.showLegend}">
-              ${renderIcon(ICON_PATHS.layers)}
-              <span>Ver leyenda</span>
-            </button>
 	            <button type="button" data-panel-toggle="edit-panel">
 	              ${renderIcon(ICON_PATHS.edit)}
 	              <span>Modo edición</span>
@@ -980,19 +975,6 @@ function buildHudTemplate(): string {
           <button type="button" id="zoom-out-btn" aria-label="Alejar" title="Alejar">−</button>
           <button type="button" id="fullscreen-btn" aria-label="Pantalla completa" title="Pantalla completa">⛶</button>
         </div>
-        <button
-          type="button"
-          id="legend-toggle-btn"
-          class="legend-toggle-btn"
-          data-legend-toggle
-          aria-controls="legend"
-          aria-expanded="false"
-          title="${UI_COPY.buttons.showLegend}"
-          data-testid="legend-toggle-btn"
-        >
-          ${UI_COPY.buttons.showLegend}
-        </button>
-        <ul class="legend" id="legend" aria-label="Lista de estantes" data-testid="legend" hidden></ul>
 	      </main>
 	      <datalist id="category-options"></datalist>
 	      <datalist id="brand-options"></datalist>
@@ -1006,7 +988,6 @@ export function buildHtml(container: HTMLElement): HudRefs {
   wireHudInteractions(container);
 
   const canvas = container.querySelector<HTMLCanvasElement>(".scene-canvas");
-  const legend = container.querySelector<HTMLUListElement>("#legend");
   const searchForm = container.querySelector<HTMLFormElement>("#search-form");
   const productForm = container.querySelector<HTMLFormElement>("#product-form");
   const shelfSelect = container.querySelector<HTMLSelectElement>("#shelfId");
@@ -1088,7 +1069,6 @@ export function buildHtml(container: HTMLElement): HudRefs {
 
   if (
     !canvas ||
-    !legend ||
     !searchForm ||
     !productForm ||
     !shelfSelect ||
@@ -1173,7 +1153,6 @@ export function buildHtml(container: HTMLElement): HudRefs {
 
   return {
     canvas,
-    legend,
     searchForm,
     productForm,
     shelfSelect,

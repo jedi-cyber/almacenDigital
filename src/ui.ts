@@ -39,12 +39,12 @@ import {
   getTransferSuccessMessage,
   UI_COPY
 } from "./ui-copy.js";
-import { populateShelves, setStatus, updateLegendCount } from "./ui-handlers.js";
+import { populateShelves, setStatus } from "./ui-handlers.js";
 import { type WarehouseRuntime, clearHighlight, highlightProduct, loadProductCatalogs, placeItem, removeItem, transferItem, updateItemDimensions, uploadProductImage } from "./warehouse.js";
 import type { ProductEntry } from "./warehouse.js";
 import { canPlace } from "./canPlace.js";
 
-export { buildHtml, populateShelves, setStatus, updateLegendCount };
+export { buildHtml, populateShelves, setStatus };
 export type { HudRefs };
 
 interface BarcodeDetectorConstructor {
@@ -598,8 +598,6 @@ export function wireProductForm(params: ProductFormDeps): { refreshShelfSummary:
 	      return;
 	    }
 
-    const count = runtime.productsByShelf.get(shelfId)?.length ?? 0;
-    updateLegendCount(shelfId, count);
     onProductPlaced?.();
     refreshShelfSummary(shelfId);
     flashShelfMesh(shelfMesh);
@@ -1064,8 +1062,6 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     hideResult();
 
     if (removedShelfId) {
-      const remaining = runtime.productsByShelf.get(removedShelfId)?.length ?? 0;
-      updateLegendCount(removedShelfId, remaining);
       onProductRemoved(removedShelfId);
 	      setStatus(statusMessage, getDeleteSuccessMessage(label, removedShelfId), false);
     }
@@ -1104,10 +1100,8 @@ export function wireSearchForm(params: SearchFormDeps): (sku: string) => boolean
     hideResult();
 
     if (fromShelfId && fromShelfId !== toShelfId) {
-      updateLegendCount(fromShelfId, runtime.productsByShelf.get(fromShelfId)?.length ?? 0);
       onProductRemoved(fromShelfId);
     }
-    updateLegendCount(toShelfId, runtime.productsByShelf.get(toShelfId)?.length ?? 0);
 
     const newEntry = runtime.productEntryBySku.get(sku);
     const newShelfMesh = shelfMeshes.get(toShelfId);

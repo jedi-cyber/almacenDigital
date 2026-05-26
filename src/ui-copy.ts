@@ -25,8 +25,6 @@ export const UI_COPY = {
   buttons: {
     showPanel: "Mostrar panel",
     hidePanel: "Ocultar panel",
-    showLegend: "Ver leyenda",
-    hideLegend: "Ocultar leyenda",
     manageShelf: "Gestionar estante",
     edit: "Editar",
     exitEdit: "Desactivar entorno de edicion",

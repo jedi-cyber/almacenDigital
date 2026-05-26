@@ -1264,7 +1264,6 @@ code {
 .shelf-config button:not(.icon-action-btn):hover,
 .shelf-config-action-btn:hover,
 .route-step-btn:hover,
-.legend-toggle-btn:hover,
 .icon-action-btn:hover,
 .card-toggle-btn:hover,
 .theme-toggle-btn:hover {
@@ -1592,40 +1591,6 @@ code {
   border: 0;
 }
 
-.legend {
-  position: absolute;
-  top: 88px;
-  right: 32px;
-  z-index: 8;
-  display: grid;
-  gap: 12px;
-  margin: 0;
-  padding: 0;
-  width: min(260px, calc(100% - 64px));
-  max-height: calc(100vh - 96px);
-  overflow-y: auto;
-  list-style: none;
-  pointer-events: none;
-}
-
-.legend-toggle-btn {
-  position: absolute;
-  top: 32px;
-  right: 32px;
-  z-index: 9;
-  padding: 10px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-overlay);
-  color: var(--color-text);
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: var(--shadow-soft);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-}
-
 .route-step-controls {
   position: absolute;
   left: 50%;
@@ -1745,9 +1710,7 @@ html[data-app-mode="mobile-route"] #product-card,
 html[data-app-mode="mobile-route"] #product-editor,
 html[data-app-mode="mobile-route"] .nav-help,
 html[data-app-mode="mobile-route"] .click-info,
-html[data-app-mode="mobile-route"] #mobile-hud-toggle,
-html[data-app-mode="mobile-route"] #legend-toggle-btn,
-html[data-app-mode="mobile-route"] #legend {
+html[data-app-mode="mobile-route"] #mobile-hud-toggle {
   display: none !important;
 }
 
@@ -1881,43 +1844,6 @@ html[data-app-mode="mobile-route"] .scene-canvas {
   }
 }
 
-.legend li {
-  display: grid;
-  gap: 4px;
-  padding: 14px 16px;
-  border-radius: 8px;
-  background: var(--color-surface-soft);
-  border: 1px solid var(--color-border-soft);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  box-shadow: var(--shadow-soft);
-}
-
-.legend strong {
-  font-size: 0.9rem;
-}
-
-.legend span {
-  color: var(--color-text-secondary);
-}
-
-.legend-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.legend-swatch {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  box-shadow: 0 0 0 2px rgba(62, 45, 27, 0.12);
-}
-
-.legend small {
-  color: var(--color-text-muted);
-}
-
 .viewport {
   position: relative;
   height: 100vh;
@@ -2013,20 +1939,6 @@ textarea:focus-visible,
 	    max-height: min(70vh, 520px);
 	    margin-top: 14px;
 	  }
-
-  .legend {
-    top: auto;
-    right: 12px;
-    bottom: 64px;
-    width: min(220px, calc(100% - 24px));
-    max-height: 42vh;
-  }
-
-  .legend-toggle-btn {
-    top: auto;
-    right: 12px;
-    bottom: 12px;
-  }
 
   .size-presets {
     grid-template-columns: 1fr;
@@ -2512,7 +2424,6 @@ body {
 .product-editor,
 .search-result-panel,
 .route-step-controls,
-.legend li,
 .click-info {
   border: 1px solid rgba(112, 153, 204, 0.18);
   background: linear-gradient(180deg, rgba(13, 31, 54, 0.92), rgba(8, 21, 39, 0.92));
@@ -2761,25 +2672,10 @@ body {
 .card-toggle-btn,
 .icon-action-btn,
 .theme-toggle-btn,
-.legend-toggle-btn,
 .route-step-btn {
   border-color: rgba(126, 160, 205, 0.22);
   background: rgba(16, 35, 60, 0.78);
   color: #eef5ff;
-}
-
-.legend-toggle-btn {
-  top: 112px;
-  right: 36px;
-}
-
-.viewport > .legend-toggle-btn {
-  display: none;
-}
-
-.legend {
-  top: 168px;
-  right: 36px;
 }
 
 .search-result--modal {
