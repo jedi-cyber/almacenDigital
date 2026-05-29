@@ -21,7 +21,11 @@ import {
 /**
  * Inicializa la aplicación 3D del almacén dentro del contenedor indicado.
  */
-export async function createWarehouseApp(container: HTMLElement): Promise<void> {
+export interface WarehouseApp {
+  getShelves: () => import("./types.js").Shelf[];
+}
+
+export async function createWarehouseApp(container: HTMLElement): Promise<WarehouseApp> {
   const refs = buildHtml(container);
 
   // Propagar errores de red en background al status message del HUD.
@@ -268,6 +272,10 @@ export async function createWarehouseApp(container: HTMLElement): Promise<void> 
     updateShelfTransparency(camera, shelfMeshes);
     renderer.render(scene, camera);
   });
+
+  return {
+    getShelves: () => config.shelves,
+  };
 }
 
 function setCameraAtEntrance(

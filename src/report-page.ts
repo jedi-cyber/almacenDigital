@@ -1,5 +1,6 @@
 import type { Shelf } from "./types.js";
 import type { ProductEntry } from "./warehouse.js";
+import { getCajasPorEstante, getResumenEstantes, type CajaInventario, type ResumenEstante } from "./inventarioService.js";
 
 export interface ReportData {
   shelves: Shelf[];
@@ -7,8 +8,21 @@ export interface ReportData {
   generatedAt: Date;
 }
 
-export function openReportWindow(data: ReportData): void {
-  const html = buildReportHtml(data);
+export async function openReportWindow(data: ReportData): Promise<void> {
+  // Carga inventario de cajas en paralelo para todos los estantes
+  const [resumen, cajasPorEstante] = await Promise.all([
+    getResumenEstantes().catch(() => [] as ResumenEstante[]),
+    Promise.all(
+      data.shelves.map((s) =>
+        getCajasPorEstante(s.id).catch(() => [] as CajaInventario[])
+      )
+    ),
+  ]);
+
+  const cajasMapa = new Map<string, CajaInventario[]>();
+  data.shelves.forEach((s, i) => cajasMapa.set(s.id, cajasPorEstante[i]));
+
+  const html = buildReportHtml(data, resumen, cajasMapa);
   const blob = new Blob([html], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   window.open(url, "_blank");
@@ -93,7 +107,11 @@ function buildDonutChart(used: number, total: number): string {
   </svg>`;
 }
 
-function buildReportHtml(data: ReportData): string {
+function buildReportHtml(
+  data: ReportData,
+  resumen: ResumenEstante[],
+  cajasMapa: Map<string, CajaInventario[]>
+): string {
   const { shelves, productsBySku, generatedAt } = data;
   const allProducts = [...productsBySku.values()];
   const totalProducts = allProducts.length;
@@ -405,6 +423,39 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',sans-serif;pa
 <!-- Detalle por estante -->
 <div class="tabs">${shelfTabs}</div>
 ${shelfCards}
+
+<!-- Inventario de cajas -->
+<div class="analysis-card" style="margin-top:1.5rem">
+  <p class="analysis-title">📦 Inventario de cajas por estante</p>
+  ${resumen.length === 0
+    ? `<p style="color:var(--muted);font-size:.8rem">No hay cajas registradas en el inventario.</p>`
+    : resumen.map((r) => {
+        const cajas = cajasMapa.get(r.shelf_id) ?? [];
+        const pct = Number(r.ocupacion_pct ?? 0);
+        const col = pct > 70 ? "var(--danger)" : pct > 35 ? "var(--warn)" : "var(--success)";
+        const filas = cajas.length === 0
+          ? `<tr><td colspan="5" class="empty-row">Sin cajas registradas.</td></tr>`
+          : cajas.map((c) => `
+            <tr>
+              <td><span class="sku-badge">${c.codigo_caja}</span></td>
+              <td>${c.categoria_nombre}</td>
+              <td><span class="vol-chip">${c.tipo_caja}</span> ${c.medida_caja}</td>
+              <td>${c.unidades_actual} / ${c.unidades_max}</td>
+              <td><span class="status-badge ${c.estado === 'LLENA' ? 'danger' : c.estado === 'VACIA' ? 'warn' : 'ok'}">${c.estado}</span></td>
+            </tr>`).join("");
+        return `
+        <div style="margin-bottom:1.2rem">
+          <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem">
+            <span class="shelf-id-badge">${r.shelf_id}</span>
+            <span style="font-size:.8rem;color:var(--muted)">${r.total_cajas} caja${r.total_cajas !== 1 ? "s" : ""} · ${r.total_unidades} unidades · <span style="color:${col};font-weight:700">${pct}% ocupación</span></span>
+          </div>
+          <table class="product-table">
+            <thead><tr><th>CÓDIGO</th><th>CATEGORÍA</th><th>TIPO / MEDIDA</th><th>UNIDADES</th><th>ESTADO</th></tr></thead>
+            <tbody>${filas}</tbody>
+          </table>
+        </div>`;
+      }).join("")}
+</div>
 
 <!-- Botón imprimir -->
 <div class="print-section">

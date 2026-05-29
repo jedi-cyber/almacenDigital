@@ -1345,5 +1345,259 @@ textarea:focus-visible,
 	
 	  .shelf-config-row {
 	    grid-template-columns: 1fr;
-	  }
+	}
+}
+
+/* ── Scanner Panel ─────────────────────────────────────────────────────────── */
+
+#scanner-panel-container {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: min(400px, calc(100vw - 32px));
+}
+
+.scanner-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  background: var(--color-overlay);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-strong);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+.scanner-panel-head {
+  display: grid;
+  gap: 4px;
+}
+
+.scanner-panel-title {
+  font-size: 1rem;
+  color: var(--color-text);
+}
+
+.scanner-step {
+  display: grid;
+  gap: 12px;
+}
+
+.scanner-label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.scanner-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.scanner-input-row input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-strong);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.92rem;
+}
+
+.scanner-status {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.84rem;
+}
+
+.scanner-status[data-state="error"] {
+  background: var(--color-error-bg);
+  color: var(--color-error-text);
+  border: 1px solid rgba(248, 113, 113, 0.28);
+}
+
+.scanner-status[data-state="success"] {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  border: 1px solid rgba(92, 122, 71, 0.28);
+}
+
+.scanner-product-info {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--color-info-bg);
+  border: 1px solid var(--color-info-border);
+}
+
+.scanner-product-dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.scanner-product-dl dt {
+  color: var(--color-text-muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.scanner-product-dl dd {
+  margin: 0;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.scanner-units-hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.scanner-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.scanner-fields input,
+.scanner-fields select {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-strong);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.scanner-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.scanner-btn {
+  min-height: 42px;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.scanner-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.scanner-btn--primary {
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-strong) 100%);
+  color: #f9f5ea;
+}
+
+.scanner-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.scanner-btn--ghost {
+  background: var(--color-surface-soft);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+
+.scanner-btn--ghost:hover:not(:disabled) {
+  background: var(--color-surface-strong);
+}
+
+.scanner-btn--soft {
+  width: 100%;
+  background: var(--color-info-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-info-border);
+}
+
+.scanner-result {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+  border: 1px solid rgba(92, 122, 71, 0.28);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.scanner-result[data-state="info"] {
+  background: var(--color-info-bg);
+  color: var(--color-text);
+  border-color: var(--color-info-border);
+}
+
+@media (max-width: 900px), (hover: none) and (pointer: coarse) {
+  #scanner-panel-container {
+    top: auto;
+    bottom: 120px;
+    left: 12px;
+    right: 12px;
+    transform: none;
+    width: auto;
+  }
+}
+
+.scanner-video{
+  width:100%;
+  max-width:420px;
+  border-radius:12px;
+  margin-top:12px;
+  background:#000;
+}
+
+/* ── Botones ENTRADA / SALIDA ─────────────────────────────────────────────── */
+
+.scanner-tipo-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.scanner-btn--tipo {
+  background: var(--color-surface-soft);
+  color: var(--color-text-muted);
+  border: 2px solid var(--color-border);
+  opacity: 0.7;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.scanner-btn--tipo:hover:not(:disabled) {
+  opacity: 0.9;
+  background: var(--color-surface-strong);
+}
+
+.scanner-btn--tipo-active {
+  opacity: 1;
+  border: 2px solid transparent;
+  color: #f9f5ea;
+}
+
+#scanner-tipo-entrada.scanner-btn--tipo-active {
+  background: linear-gradient(135deg, #5c7a47 0%, #3f5b32 100%);
+  border-color: rgba(92, 122, 71, 0.4);
+}
+
+#scanner-tipo-salida.scanner-btn--tipo-active {
+  background: linear-gradient(135deg, #ad5335 0%, #7a2d1f 100%);
+  border-color: rgba(173, 83, 53, 0.4);
 }
